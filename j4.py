@@ -858,20 +858,18 @@ def apply_resource_policy(policy):
         pass
 
     vms_mb = process_vms_mb()
-    rlimit_mb = memory_mb
-    if vms_mb and rlimit_mb < vms_mb+256:
-        if policy["memory_source"] == "manual":
-            raise RuntimeError(
-                "CDC_RESOURCE_MEMORY_MB=%d is below current virtual memory %.0fMB + 256MB safety"
-                % (memory_mb,vms_mb))
-        # Keep the logical memory budget unchanged. RLIMIT_AS is only the last-resort
-        # per-process fuse and may need to sit above pre-existing virtual mappings.
-        rlimit_mb = int(vms_mb+256)
-        policy["memory_rlimit_relaxed_mb"] = rlimit_mb
-        log(
-            "RESOURCE RLIMIT_AS relaxed_to_mb=%d logical_budget_mb=%d current_vms_mb=%.0f"
-            % (rlimit_mb,memory_mb,vms_mb)
-        )
+    # RLIMIT_AS counts reserved address space, not resident memory. Python/C
+    # worker stacks, allocator arenas and mmap can reserve gigabytes without
+    # consuming the logical RSS budget. Leave virtual headroom for startup;
+    # process-tree RSS monitoring and engine budgets enforce resident usage.
+    virtual_headroom_mb = max(4096,memory_mb*2)
+    rlimit_mb = max(memory_mb*4,int(vms_mb or 0)+virtual_headroom_mb)
+    policy["memory_address_space_mb"] = rlimit_mb
+    log(
+        "RESOURCE address_space_limit_mb=%d rss_budget_mb=%d current_vms_mb=%.0f "
+        "virtual_reservation_is_not_rss=1"
+        % (rlimit_mb,memory_mb,vms_mb or 0)
+    )
 
     if hasattr(resource,"RLIMIT_AS"):
         requested = rlimit_mb*1024**2

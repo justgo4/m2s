@@ -87,7 +87,8 @@ def state(directory):
 
 def live_process(proc):
     if proc.poll() is not None:
-        detail = RUNTIME_LOG.read_text(errors='replace')[-6000:] if RUNTIME_LOG and RUNTIME_LOG.exists() else 'no log'
+        text = RUNTIME_LOG.read_text(errors='replace') if RUNTIME_LOG and RUNTIME_LOG.exists() else 'no log'
+        detail = text[:3500] + '\n...\n' + text[-6000:]
         for name in ('M2S_TEST_MYSQL_PASSWORD', 'M2S_TEST_SR_PASSWORD'):
             secret = os.environ.get(name, '')
             if secret:
@@ -172,11 +173,12 @@ def change(source, sequence):
             cur.execute('UPDATE ' + DATABASE + '.events SET id=id+100000 WHERE id=%s AND part=0', (512 + key,))
             cur.execute('INSERT INTO ' + DATABASE + '.events VALUES(%s,1,%s,%s,%s,1)',
                         (1000000 + sequence, sequence, f' marker_{sequence} ', Decimal('0.1234')))
+        commit_started = time.perf_counter()
         source.commit()
     except BaseException:
         source.rollback()
         raise
-    return time.perf_counter()
+    return commit_started
 
 
 def sample_visible(proc, cfg, commits, samples, directory):
@@ -262,7 +264,7 @@ def main():
                           gtid_mode=gtid_mode, protocol=args.load_mode, event_group_events=args.group_size,
                           initial_rows=args.rows, transactions=args.transactions,
                           marker_samples=len(samples), visible_during_backfill=sum(item['during_backfill'] for item in samples.values()),
-                          observation='client_commit_return_to_first_successful_target_poll_upper_bound',
+                          observation='client_commit_start_to_first_successful_target_poll_upper_bound_includes_commit_roundtrip',
                           observation_poll_interval_seconds=.2,
                           latency_seconds=dict(p50=percentile(latencies,.5),p95=percentile(latencies,.95),p99=percentile(latencies,.99),max=max(latencies)),
                           before_restart_rows=before_count, after_restart_rows=after_count,

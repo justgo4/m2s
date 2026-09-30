@@ -54,6 +54,10 @@ jobs:
         run: |
           cmake -S native -B build/native -DCMAKE_BUILD_TYPE=Release
           cmake --build build/native --parallel 2
+      - name: Release space from unused hosted-runner toolchains
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
       - name: Isolated database services
         run: |
           docker run --detach --name m2s-e2e-mysql -p 127.0.0.1:3306:3306 \
