@@ -1,0 +1,84 @@
+name: Public baseline CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: public-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  privacy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.14'
+      - run: |
+          python tools/privacy_selftest.py
+          python tools/privacy_check.py
+
+  baseline:
+    needs: privacy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.12', '3.14']
+    env:
+      PYTHONUNBUFFERED: '1'
+      CDC_NATIVE_PARTITION: required
+      CDC_NATIVE_JSON: auto
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - name: Install fixed baseline dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Syntax and CLI
+        run: |
+          python -m compileall -q j4.py cdc_catalog.py cdc_selftest.py native tools
+          python j4.py --help
+      - name: Verify bundled native ABI and offline recovery
+        run: |
+          python native/native_abi_selftest.py
+          python j4.py selftest
+      - name: Build all native sources
+        run: |
+          cmake -S native -B build/native -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/native --parallel 2
+          cp build/native/mysql_arrow_reader mysql_arrow_reader-linux-x86_64
+          ./mysql_arrow_reader-linux-x86_64 --selftest
+          if readelf -d native/libj4_native.so | grep -q NEEDED; then
+            echo 'native partition library unexpectedly depends on libc'
+            exit 1
+          fi
+      - name: Verify built native ABI and full offline regression
+        run: |
+          python native/native_abi_selftest.py
+          python j4.py selftest
+      - name: Same-byte row and snapshot differential tests and 1000 native faults
+        run: python tools/binlog_parity.py --cases 1000 --faults --output benchmark-results/native-contract.json
+      - name: Native capture recovery from durable cursor, 1000 traces
+        run: python tools/native_recovery_test.py --cases 1000
+      - name: Decoder and durable local A/B smoke
+        run: |
+          python tools/decoder_benchmark.py --events 128 --rows-per-event 4 --repeats 3 --layer decoder
+          python tools/decoder_benchmark.py --events 128 --rows-per-event 4 --repeats 3 --layer local --output benchmark-results/local.json
+      - name: Synthetic benchmark smoke
+        run: python tools/partition_benchmark.py --rows 10000 --repeats 3 --commit '${{ github.sha }}'

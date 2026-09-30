@@ -1,0 +1,46 @@
+name: Synthetic partition benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      rows:
+        description: Synthetic rows (1..10000000)
+        default: '1000000'
+        required: true
+      repeats:
+        description: Repetitions (3..100)
+        default: '7'
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: synthetic-benchmark-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      BENCH_ROWS: ${{ inputs.rows }}
+      BENCH_REPEATS: ${{ inputs.repeats }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.14'
+          cache: pip
+      - run: python tools/privacy_check.py
+      - run: python -m pip install -r requirements.txt
+      - name: Repeat synthetic algorithm comparison
+        run: python tools/partition_benchmark.py --rows "$BENCH_ROWS" --repeats "$BENCH_REPEATS" --commit '${{ github.sha }}' --output benchmark-results/partition.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: synthetic-partition-${{ github.sha }}
+          path: benchmark-results/partition.json
+          if-no-files-found: error
+          retention-days: 14
