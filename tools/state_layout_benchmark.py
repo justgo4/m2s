@@ -6,6 +6,7 @@ SQLite FULL/WAL Arrow batches+key references with DuckDB typed latest rows+WAL.
 Includes layout/codec/index costs, not a pure storage-engine leaderboard.
 """
 import argparse
+import base64
 from decimal import Decimal
 import hashlib
 import json
@@ -31,8 +32,15 @@ SCHEMA = j4.pa.schema([('id',j4.pa.int64()),('part',j4.pa.uint32()),('v',j4.pa.i
                       ('_sync_op',j4.pa.int8()),('_sync_order',j4.pa.int64())])
 
 
-def fixtures(rows, transactions, changes, width):
-    base = [dict(id=i,part=i%7,v=i,note='x'*width if width else 'initial🙂',
+def fixtures(rows, transactions, changes, width, entropy):
+    rng = random.Random(991)
+    def text(fill):
+        if not width:
+            return fill + '🙂'
+        if entropy == 'low':
+            return fill[0] * width
+        return base64.b64encode(rng.randbytes((width*3+3)//4)).decode()[:width]
+    base = [dict(id=i,part=i%7,v=i,note=text('initial'),
                  amount=Decimal('123.4567'),_sync_op=0,_sync_order=i) for i in range(rows)]
     batches = [j4.pa.Table.from_pylist(base,schema=SCHEMA)]
     for sequence in range(1,transactions+1):
@@ -41,13 +49,15 @@ def fixtures(rows, transactions, changes, width):
             key = (sequence*changes+change)%rows
             op = int((sequence+change)%5==0)
             delta.append(dict(id=key,part=key%7,v=-sequence,
-                              note=None if change%3==0 else 'y'*width if width else 'changed🙂',
+                              note=None if change%3==0 else text('changed'),
                               amount=None if change%7==0 else Decimal('-0.0001'),
                               _sync_op=op,_sync_order=change))
         # Same-key repeated images in one transaction: final image must win.
         if delta:
             copy = dict(delta[0],v=sequence,_sync_op=0,_sync_order=len(delta))
             delta.append(copy)
+        if sequence % 2 == 0:
+            delta.reverse()  # Physical Arrow row order need not equal source order.
         batches.append(j4.pa.Table.from_pylist(delta,schema=SCHEMA))
     return batches
 
@@ -93,6 +103,8 @@ def apply(con, method, batch, sequence, crash=None):
         raise ValueError('source schema or key contract mismatch')
     if j4.pc.any(j4.pc.invert(j4.pc.is_in(batch['_sync_op'],value_set=j4.pa.array([0,1],type=j4.pa.int8())))).as_py():
         raise ValueError('unsupported row operation')
+    if j4.pc.count_distinct(batch['_sync_order']).as_py() != batch.num_rows:
+        raise ValueError('ambiguous source order')
     con.execute('BEGIN TRANSACTION')
     registered = False
     try:
@@ -107,13 +119,14 @@ def apply(con, method, batch, sequence, crash=None):
             raise ValueError('source transaction gap')
         con.execute('INSERT INTO commits VALUES(?,?,?)',[sequence,data,digest])
         if method=='sqlite_arrow_index':
-            ids,parts,ops = [batch[name].to_pylist() for name in ('id','part','_sync_op')]
+            ids,parts,ops,orders = [batch[name].to_pylist() for name in ('id','part','_sync_op','_sync_order')]
             # Only key/op metadata becomes Python scalars. Business columns stay
             # in immutable Arrow; references keep exact typed values.
             con.executemany('''INSERT INTO source_index VALUES(?,?,?,?,?)
                 ON CONFLICT(id,part) DO UPDATE SET batch_seq=excluded.batch_seq,
                     row_index=excluded.row_index,deleted=excluded.deleted''',
-                [(key,part,sequence,index,op) for index,(key,part,op) in enumerate(zip(ids,parts,ops))])
+                [(ids[index],parts[index],sequence,index,ops[index])
+                 for index in sorted(range(batch.num_rows),key=orders.__getitem__)])
         else:
             con.register('_incoming',batch)
             registered = True
@@ -153,7 +166,7 @@ def scan(con, method):
 def oracle(batches):
     latest = {}
     for batch in batches:
-        for row in batch.to_pylist():
+        for row in sorted(batch.to_pylist(),key=lambda value:value['_sync_order']):
             key = row['id'],row['part']
             if row['_sync_op']:
                 latest.pop(key,None)
@@ -231,7 +244,7 @@ def verify_fixed_checkpoint(args, batches):
 
 
 def worker(args):
-    batches = fixtures(args.rows,args.transactions,args.changes,args.width)
+    batches = fixtures(args.rows,args.transactions,args.changes,args.width,args.entropy)
     directory = args.directory
     directory.mkdir(exist_ok=True,parents=True)
     con = open_engine(args.worker,directory)
@@ -277,6 +290,24 @@ def worker(args):
         raise AssertionError('conflicting replay identity was accepted')
     if not scan(con,args.worker).equals(expected):
         raise AssertionError('replay rejection changed committed state')
+    for name in ('id', 'part', '_sync_op', '_sync_order'):
+        position = batches[-1].schema.get_field_index(name)
+        malformed = batches[-1].set_column(position, name, j4.pa.nulls(
+            batches[-1].num_rows, type=SCHEMA.field(name).type))
+        try:
+            apply(con, args.worker, malformed, args.transactions+1)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError('NULL source identity/order/operation accepted')
+    try:
+        apply(con, args.worker, batches[-1], args.transactions+2)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError('source transaction gap accepted')
+    if con.execute('SELECT seq FROM checkpoint WHERE id=1').fetchone()[0] != args.transactions:
+        raise AssertionError('invalid source input advanced durable cursor')
     checkpoint_bytes = verify_fixed_checkpoint(args, batches)
     close_started = time.perf_counter()
     con.close()
@@ -287,6 +318,7 @@ def worker(args):
                   exact_result=True,rows=actual.num_rows,transactions_applied_this_process=int(applied),
                   state_changelog_checkpoint_atomic=True,conflicting_replay_rejected=True,
                   fixed_w_checkpoint_replay_exact=True, fixed_w=3,
+                  shuffled_arrow_row_order_exact=True, invalid_input_cursor_unchanged=True,
                   fixed_w_checkpoint_bytes=checkpoint_bytes,
                   fixed_w_checkpoint_seconds=checkpoint_seconds,
                   checkpoint_scope='paused_writer_full_copy_prototype_not_online_MVCC',
@@ -304,7 +336,7 @@ def percentile(values,p):
 
 def command(args, method, directory, output, crash=None, recover=False):
     result = [sys.executable,__file__,'--worker',method,'--directory',str(directory),'--output',str(output),
-              '--rows',str(args.rows),'--transactions',str(args.transactions),'--changes',str(args.changes),'--width',str(args.width)]
+              '--rows',str(args.rows),'--transactions',str(args.transactions),'--changes',str(args.changes),'--width',str(args.width),'--entropy',args.entropy]
     if crash:
         result += ['--crash',crash]
     if recover:
@@ -318,6 +350,7 @@ def main():
     parser.add_argument('--transactions',type=int,default=100)
     parser.add_argument('--changes',type=int,default=50)
     parser.add_argument('--width',type=int,default=0)
+    parser.add_argument('--entropy',choices=['low','high'],default='low')
     parser.add_argument('--repeats',type=int,default=5)
     parser.add_argument('--faults',action='store_true')
     parser.add_argument('--worker',choices=['sqlite_arrow_index','duckdb_typed'])
@@ -365,7 +398,7 @@ def main():
                         raise AssertionError('state/changelog/checkpoint commit boundary torn')
                     faults.append(dict(method=method,boundary=fault,exact_result=True,duplicate_commits=0))
     report = dict(format_version=1,kind='candidate_state_layout_AB_not_production',rows=args.rows,
-                  transactions=args.transactions,changes_per_transaction=args.changes,width=args.width,
+                  transactions=args.transactions,changes_per_transaction=args.changes,width=args.width,entropy=args.entropy,
                   repeats=args.repeats,samples=samples,faults=faults,
                   durability={'sqlite':'FULL_WAL','duckdb':'default_transactional_WAL'},
                   scope='includes_codec_index_state_changelog_commit_scan; no_socket_no_sink_no_GC_no_50M',

@@ -107,14 +107,14 @@ python j4.py cli
 | P0 公开基线 | 保留独立可运行仓库及隐私边界 | 公共依赖、合成配置、源码/ABI 和离线回归通过；没有业务数据、配置和原有历史 | 已建立，见实施记录 |
 | P1 正确性合同 | 固定 SQL/类型/键语义、事务边界、初始化完整度与 schema 行为 | 同字节 Python/C 差分；再以真实数据库语义和事务级最终状态独立校验；DDL、键改变、过滤翻转、删除重插及多表事务覆盖；不支持项部署前拒绝 | 部分完成：原生差分与真实 MySQL 通过，完整 SQL/初始化合同待实现 |
 | P2 故障与输出协议 | 源/计算/输出各提交边界的恢复；进程 kill、断网、磁盘满、未知事务、日志过期、升级 | 至少 1,000 可重放故障案例，并逐个覆盖提交前后边界；GTID/文件模式恢复无漏无旧值覆盖；真实管线端到端校验；非法数据与暂时故障分流，不无限重启同一错误 | 部分完成：协议故障、capture 恢复和 SR 协议测试通过，完整故障矩阵未完成 |
-| P3 测量平台 | 补实际 snapshot 和 MySQL COMMIT→目标查询四层测量 | 保留 decoder/local；增加生产 reader 对照，独立 Python oracle 不能代表生产 Python 性能；同时记录 source/sink、本地 CPU、RSS、spill、磁盘实际写入与空间、积压斜率及延迟 | 部分完成：合成 decoder/local A/B 已有 |
+| P3 测量平台 | 补实际 snapshot 和 MySQL COMMIT→目标查询四层测量 | 保留 decoder/local；增加生产 reader 对照，独立 Python oracle 不能代表生产 Python 性能；同时记录 source/sink、本地 CPU、RSS、spill、磁盘实际写入与空间、积压斜率及延迟 | 部分完成：decoder/local A/B、真实 COMMIT→查询短测已有；完整性能 profile 未完成 |
 | P4 原生接入与批处理 | 按 profile 决定 socket、snapshot、组批是否下沉 | P1/P2 无回退；认证/TLS/GTID/取消/巨型事务支持明确；相同耐久性下 source-bound 与端到端验证收益，小事务不能等待不确定时长才发批；没有收益则不替换默认 | 部分完成：有界组批候选已实现；原生 socket 未实现，非 P6/P7 前置 |
 | P5 布局和融合 | 去掉有证据的重复解码、复制、分区和编码 | 窄/宽行、稀疏/密集变化均测；公布复制分配、内存和总 CPU；单核收益不得掩盖全路径回退，按性能合同晋升默认 | 计划，按瓶颈插入 |
-| P6 共享源状态 | 源捕获与任务解耦；全允许列镜像、changelog、schema、可扫描持久状态 | 源状态+源水位原子提交；任务状态+任务水位+outbox 原子提交；内存预算内恢复；源表增加/移除、DDL、日志保留和一致初始化可诊断；状态引擎经更新/扫描/恢复比较后选择 | 下一核心实现阶段 |
-| P7 动态新增下游 | 先完成单源投影/过滤的 W→构建→追赶→发布→取消闭环 | 10 次交错部署/更新/删除/重启场景；旧任务继续运行；新目标最终逐键逐字段等于 oracle；构建进度可恢复、旧 generation 被隔离，最新行不被历史覆盖；登记 completeness 和 time-to-ready | 计划，依赖 P6 和最小 P10 |
+| P6 共享源状态 | 源捕获与任务解耦；全允许列镜像、changelog、schema、可扫描持久状态 | 源状态+源水位原子提交；任务状态+任务水位+outbox 原子提交；内存预算内恢复；源表增加/移除、DDL、日志保留和一致初始化可诊断；状态引擎经更新/扫描/恢复比较后选择 | 候选布局、原子恢复及固定 W 原型已有；尚未接入 daemon |
+| P7 动态新增下游 | 先完成单源投影/过滤的 W→构建→追赶→发布→取消闭环 | 10 次交错部署/更新/删除/重启场景；旧任务继续运行；新目标最终逐键逐字段等于 oracle；构建进度可恢复、旧 generation 被隔离，最新行不被历史覆盖；登记 completeness 和 time-to-ready | 基线在线新增下游通过四组真实数据库测试；本地状态 W/generation 闭环仍依赖 P6 |
 | P8 增量 SQL | 先 COUNT/SUM/AVG 及索引 INNER JOIN，再 LEFT JOIN、MIN/MAX、DISTINCT | 至少 10,000 组有重复/NULL/撤回/跨表同事务的随机用例；SQL 三值逻辑、空分组、匹配数归零及输出主键正确；状态/输出放大可界定；每类算子单独验收，窗口不隐含支持 | 计划，逐算子开放 |
 | P9 共享执行与策略 | 多任务共享扫描/索引/子图，必要时增量与重算切换 | 1/10/100 任务真实成本对照；持久基底/索引可共享但不强求零构建成本；热点/fanout/策略维护计入；切换可恢复且结果等价 | 计划，等待多任务 profile |
-| P10 输出与回填调度 | 前置最小可用输出：顺序、可见性、未知状态恢复、预算；后续再编码优化 | 默认 SR 服务参数下回填可限速也可恢复；同键旧请求不覆盖新数据；不丢 delete；积压有界且回填不永久饥饿；merge/2PC 分开验收，不承诺消除 compaction | 基线已有部分机制，端到端 gate 待完成；与 P3/P6/P7 并行 |
+| P10 输出与回填调度 | 前置最小可用输出：顺序、可见性、未知状态恢复、预算；后续再编码优化 | 默认 SR 服务参数下回填可限速也可恢复；同键旧请求不覆盖新数据；不丢 delete；积压有界且回填不永久饥饿；merge/2PC 分开验收，不承诺消除 compaction | 四组短时端到端正确性通过；未知请求/完整压力故障矩阵仍待验收 |
 | P11 目标规模与长跑 | 从小规模持续测试扩到 50M + 50 行/s，并动态建任务 | 固定资源连续至少 72 小时；基础镜像及已就绪任务正常时段 P95 <= 5 秒、P99 <= 10 秒；记录最大延迟和违约率，故障期单报；排空后逐键字段正确；测 time-to-ready、回填总时长和容量余量；默认 SR 参数 | 计划；机器/行宽/任务数与资源预算须固定 |
 | P12 硬件参考与对标 | 分层瓶颈上界与七系统相同语义比较 | 同资源/版本/耐久性/正确性、至少 5 次重复及区间；不支持项单列；复制、状态计算、目标导入分开比较，禁止用微基准宣称全面领先；低负载测延迟，高负载扫描饱和点及持续积压，50 行/s 本身不能证明吞吐极限 | 计划，不作为首个可用版本的阻塞条件 |
 | P13 控制接口、MCP 与发布 | 先定版本化 deploy/explain/status/cancel，再自然语言入口和可回滚发布 | MCP 复用相同校验与部署事务，不绕过权限/成本检查；状态格式迁移、升级失败/回滚及备份恢复实测；72h、恢复和目标能力 gate 通过才标对应范围生产候选 | 计划；接口先行，MCP 不要求先完成七系统对标 |
@@ -211,3 +211,40 @@ A/B 每个样本独立 Python 进程，输出 Python/C/总 CPU、wall、RSS、ro
 宽行反例：同机 2,048 行、每行 4 KiB BLOB、4 个 SQLite FULL/WAL 源事务（各 5 次）中，逐事件/组批 wall 中位数 0.191/0.190 秒，总 CPU 0.224/0.211 秒，区间重叠且 Python 参考路径 wall 0.177 秒。此样本没有显著组批 wall 收益，也不能证明 native 总是更快。默认保持逐事件模式；优化选择需要负载和固定机器实测。
 
 本地完整样本：[tiny decoder](reports/local-decoder-tiny.json)、[narrow durable local](reports/local-durable-narrow.json)、[wide durable local](reports/local-durable-wide.json)。六个 CI A/B job 已全部通过：[run 36743206446](https://github.com/justgo4/m2s/actions/runs/36743206446)，Actions artifact 提供 runner 样本；每个 workload 只在自身同一 runner 内比较方法，不跨 runner 排名。
+
+
+### 2026-10-01：真实 daemon 与在线新增下游
+
+[四组端到端 CI 36787425832](https://github.com/justgo4/m2s/actions/runs/36787425832) 全部通过：MySQL 8.4.6 → 实际 `j4.py` → StarRocks 4.1.1；两种协议各测 GTID ON/OFF。合成初始 2,048 行、80 个源事务，覆盖过滤翻转、NULL、DECIMAL、主键修改、删除重插；实际断开复制连接一次；运行中用 `j4.py sql` 新建第二个不同投影/过滤的下游，两任务均持续处理增量；排空后强制退出，再产生数据并重启，两个目标的最终逐键逐字段结果均等于独立 MySQL SELECT。
+
+| 协议 | GTID | 初始阶段 P95 / P99 / 最大观察延迟（秒） | 新增任务 P99（秒） |
+|---|---|---|---|
+| transaction | ON | 1.948 / 2.197 / 2.319 | 1.657 |
+| transaction | OFF | 1.999 / 2.249 / 2.385 | 1.677 |
+| merge_async | ON | 3.614 / 3.781 / 3.865 | 3.478 |
+| merge_async | OFF | 3.473 / 3.729 / 3.816 | 3.892 |
+
+这是从客户端发起 COMMIT 到第一次成功目标查询的观察上界，包含提交往返和轮询等待；不是服务器精确提交时刻。仅为共享 runner 上的小规模功能短测，不是 50M、50 行/s 或 72 小时 SLO 认证。聚合记录见 [e2e aggregate](reports/e2e-20261001.json)，每条 marker 的完整样本见该 workflow artifacts。StarRocks 使用镜像默认服务参数；隔离测试表副本数为 1。固定测试程序逻辑内存预算 2,048 MB、每个 DuckDB 引擎 64 MB，为第二任务留出预算，不调整 StarRocks 配置。
+
+修复与诊断：虚拟地址空间限制为线程栈/Arrow 映射留出空间，RSS 仍由原有资源预算监测，不能把 RLIMIT_AS 当作即时物理内存硬限。暂时源连接故障超过重试窗口后进入可取消的低频等待，仍从 durable cursor 重建；decoder 故障计数独立，持续同一非法输入或权限/日志缺失仍会明确停止。SQL 文件部署若已经提交 catalog、但安装要求重启，CLI 返回非零并显示原因；**这不是 catalog 回滚，不能把失败码理解为未保存任务**。
+
+新增任务回填中强制退出及续建的更强测试已加入 `tools/e2e_contract.py`，与排空后的重启分开记录；其验收结果以对应 commit 的 CI 为准。即使这两种退出测试通过，也不能声称精确覆盖 HTTP 提交前后所有边界。当前基线新增下游仍会重新扫描 MySQL，不等于已完成共享本地源状态的 P6/P7。
+
+```bash
+# 仅对可删除 m2s_e2e_contract 的隔离服务执行：
+python tools/e2e_contract.py --isolated --load-mode merge_async --group-size 128
+python tools/e2e_contract.py --isolated --load-mode transaction --group-size 128
+```
+
+### P6 状态布局与固定水位原型
+
+`tools/state_layout_benchmark.py` 比较 SQLite FULL/WAL 的不可变 Arrow 批次+键引用，与 DuckDB 默认事务 WAL 的类型化最新状态。每种布局将状态、changelog 和源水位一起提交；检查同键多个镜像（包含打乱物理行顺序）、删除、NULL、Decimal、精确重放、冲突身份和非法源输入拒绝。两个布局均测试 commit 前/后 `os._exit`，恢复后没有重复提交且完整结果一致。固定 W 原型将 W 保存在持久数据库自身，从 W 副本重建并重放后缀，源继续推进也不会改变原 W；强制退出后同样验证。
+
+这仍是独立候选评测，未接入 daemon，不能标 P6 完成。固定 W 当前采用暂停写入的完整副本，不是在线 MVCC；没有实现日志 pin/GC、有限保留、多表一致初始化、任务 outbox、50M 有界扫描或字符串主键排序规则。候选 schema 为整数复合键的合成数据。禁止把这个原型当作生产状态迁移工具。
+
+[高熵宽行原始结果](reports/state-layout-20261001.json)：10,000 初始行、100 个事务、每事务 50 个变化及一个重复键最终镜像、2 KiB 合成高熵字符串、各 3 个独立进程样本。报告包含更新/扫描 CPU 与 wall、提交延迟、固定 W 副本耗时/空间、完整进程 RSS 和耐久文件空间；文件空间不等于实际 I/O 写放大，RSS 包含 fixtures 和 oracle。更新快与扫描快的布局不同，目前不据此选定生产引擎。需要补真实 churn/多任务扫描、保留和 compaction 成本后决策。
+
+```bash
+python tools/state_layout_benchmark.py --rows 1000 --transactions 10 --changes 20 --repeats 2 --faults
+python tools/state_layout_benchmark.py --rows 10000 --transactions 100 --changes 50 --width 2048 --entropy high --repeats 3 --faults
+```
