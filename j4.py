@@ -7136,6 +7136,7 @@ def capture_binlog_native(cfg, prepared, runtime):
     stream = None
     decoder = None
     failures = 0
+    decoder_failures = 0
     crash_counts = {}
     row_events = {
         BINLOG_WRITE_ROWS_EVENT_V1,BINLOG_UPDATE_ROWS_EVENT_V1,BINLOG_DELETE_ROWS_EVENT_V1,
@@ -7158,7 +7159,9 @@ def capture_binlog_native(cfg, prepared, runtime):
                 source_prepared = active_plan["source_prepared"]
                 by_sink = active_plan["by_table"]
                 by_source = active_plan["by_source"]
+                runtime["reader_state"] = "connecting"
                 stream = replication_open_stream(cfg,start,durable_gtid)
+                runtime["reader_state"] = "connected"
                 use_checksum = stream["use_checksum"]
                 decoder = native_start(cfg,source_prepared)
                 runtime["stream"] = stream
@@ -7308,6 +7311,8 @@ def capture_binlog_native(cfg, prepared, runtime):
                             in_transaction = False
                             current_gtid = None
                             failures = 0
+                            decoder_failures = 0
+                            runtime["reader_retries"] = 0
                             crash_counts.clear()
                             if runtime.get("pending_plan") is not None:
                                 activated = activate_pending_plan(
@@ -7323,17 +7328,21 @@ def capture_binlog_native(cfg, prepared, runtime):
                             with state_transaction(con):
                                 cursor_advance(con,position)
                             failures = 0
+                            decoder_failures = 0
+                            runtime["reader_retries"] = 0
                             crash_counts.clear()
 
                         journal_disk_guard(cfg)
             except (pymysql.err.OperationalError,pymysql.err.InterfaceError,NativeTransportError) as exc:
                 if stop.is_set():
                     break
-                if isinstance(exc,(pymysql.err.OperationalError,pymysql.err.InterfaceError)) and \
-                   exc.args and exc.args[0] in (1044,1045,1142,1236):
+                mysql_transport = isinstance(exc,(pymysql.err.OperationalError,pymysql.err.InterfaceError))
+                if mysql_transport and not retryable_mysql_error(exc):
                     raise RuntimeError(
                         f"binlog access/history unavailable: {exc}; automatic reset is forbidden") from exc
                 failures += 1
+                if not mysql_transport:
+                    decoder_failures += 1
                 durable = meta_get(con,"read_position")
                 child_rc = decoder.poll() if decoder is not None else None
                 if isinstance(exc,NativeTransportError) and child_rc is not None:
@@ -7344,16 +7353,23 @@ def capture_binlog_native(cfg, prepared, runtime):
                             "native decoder crash loop at durable cursor "
                             f"{durable[0]}:{durable[1]} event_type={event_type} "
                             f"child_rc={child_rc} repeats={crash_counts[key]}") from exc
-                if failures > cfg["retry_max"]:
+                if decoder_failures > cfg["retry_max"] and not mysql_transport:
                     raise RuntimeError(
                         "native transport retry budget exhausted at durable cursor "
                         f"{durable[0]}:{durable[1]} event_type={event_type} "
                         f"child_rc={child_rc} failures={failures}: {exc}") from exc
+                runtime["reader_state"] = "recovering"
+                runtime["reader_retries"] = failures
+                # A temporary MySQL outage can exceed the normal retry window.
+                # Retain durable state and keep a bounded, cancellable wait;
+                # malformed events/decoder loops still fail closed above.
+                waiting = mysql_transport and failures > cfg["retry_max"]
                 log(
                     "BINLOG native recover "
                     f"cursor={durable[0]}:{durable[1]} event_type={event_type} "
-                    f"child_rc={child_rc} attempt={failures}/{cfg['retry_max']} reason={exc}")
-                stop.wait(min(10,0.5*2**min(failures,5)))
+                    f"child_rc={child_rc} attempt={failures} retry_window={cfg['retry_max']} "
+                    f"waiting_for_source={int(waiting)} reason={exc}")
+                stop.wait(30 if waiting else min(10,0.5*2**min(failures,5)))
             except (NativeDecoderError,NativeProtocolError) as exc:
                 durable = meta_get(con,"read_position")
                 child_rc = decoder.poll() if decoder is not None else None
@@ -8011,6 +8027,8 @@ def run_cdc(
                     f"stream_silence_seconds={time.time()-runtime['source_seen']:.1f} "
                     f"data_silence_seconds={time.time()-runtime['source_data_seen']:.1f} "
                     f"heartbeats={runtime['heartbeat_count']} cdc_transactions={runtime['cdc_transactions']} "
+                    f"reader_state={runtime.get('reader_state','unknown')} "
+                    f"reader_retries={runtime.get('reader_retries',0)} "
                     f"active_plan={runtime_active_version(runtime)} "
                     f"pending_plan={(runtime.get('pending_plan') or {}).get('version',0)}"
                     f"{writer_state}")
@@ -8026,6 +8044,8 @@ def run_cdc(
                     stream_silence_seconds=time.time()-runtime["source_seen"],
                     data_silence_seconds=time.time()-runtime["source_data_seen"],
                     heartbeats=runtime["heartbeat_count"],cdc_transactions=runtime["cdc_transactions"],
+                    reader_state=runtime.get("reader_state","unknown"),
+                    reader_retries=int(runtime.get("reader_retries",0)),
                     active_plan_version=runtime_active_version(runtime),
                     pending_plan_version=int((runtime.get("pending_plan") or {}).get("version",0)),
                     draining_plan_versions=draining_versions,

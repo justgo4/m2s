@@ -50,7 +50,7 @@ def trace(binary, directory, case, group_size, gtid):
 
     def open_stream(config, position, durable_gtid):
         opened.append((position, durable_gtid))
-        if len(opened) <= case % 3:
+        if len(opened) <= (12 if case % 17 == 0 else case % 3):
             raise j4.pymysql.err.OperationalError(2003, 'synthetic connect failure')
         return dict(log_file=position[0], log_pos=position[1], use_checksum=False, index=0)
 

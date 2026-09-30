@@ -131,6 +131,24 @@ def wait_started(proc, directory):
     raise RuntimeError('actual daemon did not initialize durable state')
 
 
+def create_target(cfg):
+    ddl = ('CREATE TABLE IF NOT EXISTS ' + DATABASE + '.events('
+           'id BIGINT NOT NULL,part INT NOT NULL,v BIGINT,note VARCHAR(256),amount DECIMAL(19,4)) '
+           'PRIMARY KEY(id,part) DISTRIBUTED BY HASH(id) BUCKETS 4 PROPERTIES("replication_num"="1")')
+    deadline = time.monotonic() + 90
+    while True:
+        try:
+            execute(cfg, ddl)
+            return
+        except j4.pymysql.err.ProgrammingError as exc:
+            # Alive may precede the first disk-capacity heartbeat. Only retry
+            # this exact isolated boot condition; persistent full disk fails.
+            if ('backends without enough disk space' not in str(exc)
+                    or time.monotonic() >= deadline):
+                raise
+            time.sleep(1)
+
+
 def normalize(rows):
     return [tuple(str(value) if isinstance(value, Decimal) else value for value in row) for row in rows]
 
@@ -156,6 +174,21 @@ def wait_equal(proc, directory, source, cfg):
             last = (len(expected), len(actual))
         time.sleep(.3)
     raise AssertionError(f'pipeline did not reach exact per-key result; counts={last} state={state(directory)}')
+
+
+def disconnect_reader(source):
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        with source.cursor() as cur:
+            cur.execute('SHOW PROCESSLIST')
+            names = [item[0].lower() for item in cur.description]
+            connections = cur.fetchall()
+            for row in connections:
+                if str(row[names.index('command')]).lower().startswith('binlog dump'):
+                    cur.execute('KILL CONNECTION ' + str(int(row[names.index('id')])))
+                    return 1
+        time.sleep(.1)
+    raise AssertionError('no actual replication connection available for disconnect injection')
 
 
 def change(source, sequence):
@@ -215,8 +248,7 @@ def main():
     cfg['sr']['database'] = DATABASE
     execute(cfg, 'DROP DATABASE IF EXISTS ' + DATABASE)
     execute(cfg, 'CREATE DATABASE ' + DATABASE)
-    execute(cfg, 'CREATE TABLE ' + DATABASE + '.events(id BIGINT NOT NULL,part INT NOT NULL,v BIGINT,note VARCHAR(256),amount DECIMAL(19,4)) '
-            'PRIMARY KEY(id,part) DISTRIBUTED BY HASH(id) BUCKETS 4 PROPERTIES("replication_num"="1")')
+    create_target(cfg)
     source = j4.pymysql.connect(**opts)
     proc, handle = None, None
     try:
@@ -235,8 +267,10 @@ def main():
             began = wait_started(proc, directory)
             if began['done']:
                 raise AssertionError('fixture completed before concurrent backfill test started')
-            commits, samples = {}, {}
+            commits, samples, disconnects = {}, {}, 0
             for seq in range(args.transactions):
+                if seq == args.transactions // 2:
+                    disconnects += disconnect_reader(source)
                 commits[seq] = change(source, seq)
                 if seq % 5 == 0:
                     sample_visible(proc, cfg, commits, samples, directory)
@@ -263,9 +297,9 @@ def main():
                           source_version=mysql_version, starrocks_version=version,
                           gtid_mode=gtid_mode, protocol=args.load_mode, event_group_events=args.group_size,
                           initial_rows=args.rows, transactions=args.transactions,
-                          marker_samples=len(samples), visible_during_backfill=sum(item['during_backfill'] for item in samples.values()),
+                          marker_samples=len(samples), actual_replication_disconnects=disconnects, visible_during_backfill=sum(item['during_backfill'] for item in samples.values()),
                           observation='client_commit_start_to_first_successful_target_poll_upper_bound_includes_commit_roundtrip',
-                          observation_poll_interval_seconds=.2,
+                          observation_poll_schedule="every_5_transactions_during_writes_then_0.2s_sleep_plus_query_time",
                           latency_seconds=dict(p50=percentile(latencies,.5),p95=percentile(latencies,.95),p99=percentile(latencies,.99),max=max(latencies)),
                           before_restart_rows=before_count, after_restart_rows=after_count,
                           crash_boundary='drained_checkpoint_not_uncertain_http_request',
