@@ -1800,7 +1800,7 @@ def _batch_activation_error(result):
         result.get("config_activation"),
     ]
     for activation in activations:
-        if isinstance(activation,dict) and activation.get("status") == "restart_required":
+        if isinstance(activation,dict) and activation.get("status") in ("restart_required","rebuild_required"):
             return str(
                 activation.get("reason")
                 or "catalog committed but offline installation failed")

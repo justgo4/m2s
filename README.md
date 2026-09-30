@@ -281,3 +281,6 @@ RocksDB 的该 checkpoint 约 21.00 MB SST 仍与源共享硬链接，因此 W �
 python -m pip install -r requirements.txt -r requirements-state-benchmark.txt
 python tools/state_layout_benchmark.py --rows 1000 --transactions 10 --changes 20 --repeats 2 --rocks --faults
 ```
+
+
+部署诊断补充：`restart_required` 和 `rebuild_required` 均使 SQL 文件 CLI 返回非零；daemon 输出 `PLAN NOT ACTIVATED`，status metrics 与最终 summary 的 `catalog_activation` 保留版本、状态和原因。正常切换到新计划后变为 `active`。这用于区分“目录已保存”和“数据任务已运行”，不自动丢弃旧状态或触发目标表重建。验证覆盖远程文件部署返回码及阻止激活时的诊断状态。

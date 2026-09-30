@@ -406,6 +406,7 @@ def final_run_summary(runtime, cfg, prepared, con, reason):
             oldest_queue_seconds=max(0,now-pending[2]) if pending[2] is not None else 0,
             durable_position=f"{read[0]}:{read[1]}",field_overflow_rows=overflows,
             merge_uncertain_rows=uncertain,errors=list(runtime.get("errors",[])),
+            catalog_activation=dict(runtime.get("catalog_activation",{})),
         ),
     )
     metrics_path,summary_path = report_paths(cfg)
@@ -5082,10 +5083,22 @@ def ensure_hot_add_targets(cfg, candidate, added_sinks):
                     f"primary_key={pk_columns(mapping)}")
 
 
+def catalog_activation_record(runtime, validation):
+    record = {name:validation[name] for name in
+              ('status','version','reason','added_sinks','history_mode') if name in validation}
+    with runtime['plan_lock']:
+        runtime['catalog_activation'] = record
+    if record.get('status') in ('restart_required','rebuild_required'):
+        log(f"PLAN NOT ACTIVATED version={record.get('version',0)} "
+            f"active={runtime_active_version(runtime)} status={record['status']} "
+            f"reason={record.get('reason','')}")
+    return validation
+
+
 def install_hot_catalog_plan(cfg, runtime, publish_result, validation):
     status = str(validation.get("status",""))
     if status in ("active","restart_required","rebuild_required"):
-        return validation
+        return catalog_activation_record(runtime,validation)
 
     plan_hash = str(publish_result.get("plan_hash",""))
     with runtime["plan_lock"]:
@@ -5097,7 +5110,7 @@ def install_hot_catalog_plan(cfg, runtime, publish_result, validation):
         validation = validate_hot_catalog_plan(cfg,runtime,publish_result)
         status = str(validation.get("status",""))
         if status in ("active","restart_required","rebuild_required"):
-            return validation
+            return catalog_activation_record(runtime,validation)
         with runtime["plan_lock"]:
             cached = runtime.setdefault("validated_catalog_plans",{}).pop(
                 plan_hash,None)
@@ -5131,7 +5144,7 @@ def install_hot_catalog_plan(cfg, runtime, publish_result, validation):
             f"PLAN PENDING version={version} active={runtime_active_version(runtime)} "
             f"history_mode={validation.get('history_mode','forward')} "
             f"added_sinks={added_sinks} reason={validation.get('reason','')}")
-    return validation
+    return catalog_activation_record(runtime,validation)
 
 
 def catalog_publish_callback(cfg, runtime, publish_result, phase):
@@ -5153,8 +5166,14 @@ def catalog_publish_callback(cfg, runtime, publish_result, phase):
         validation = publish_result.get("validation")
         if validation is None:
             validation = validate_hot_catalog_plan(cfg,runtime,publish_result)
-        return install_hot_catalog_plan(
-            cfg,runtime,publish_result,validation)
+        try:
+            return install_hot_catalog_plan(
+                cfg,runtime,publish_result,validation)
+        except Exception as exc:
+            catalog_activation_record(runtime,dict(
+                status="restart_required",version=int(publish_result["version"]),
+                reason="published plan installation failed: "+str(exc)))
+            raise
     raise ValueError(f"unknown catalog publish phase: {phase}")
 
 
@@ -5278,6 +5297,7 @@ def activate_pending_plan(con, decoder, cfg, runtime, position):
     native_reset(decoder,cfg,candidate["source_prepared"])
     for key in added:
         runtime_add_sink(candidate["by_table"][key],cfg,runtime)
+    catalog_activation_record(runtime,dict(status="active",version=version))
     wake_loaders(runtime)
     log(
         f"PLAN ACTIVE version={version} cutover={position[0]}:{position[1]} "
@@ -7879,6 +7899,7 @@ def run_cdc(
                            for m in worker_mappings},
                        lane_locks={},plan_lock=threading.RLock(),
                        active_plan_version=int(cfg.get("catalog_version",0)),
+                       catalog_activation=dict(status="active",version=int(cfg.get("catalog_version",0))),
                        plans=recovered_plans,
                        pending_plan=None,deferred_plan=None,
                        validated_catalog_plans={},
@@ -8047,6 +8068,7 @@ def run_cdc(
                     reader_state=runtime.get("reader_state","unknown"),
                     reader_retries=int(runtime.get("reader_retries",0)),
                     active_plan_version=runtime_active_version(runtime),
+                    catalog_activation=dict(runtime.get("catalog_activation",{})),
                     pending_plan_version=int((runtime.get("pending_plan") or {}).get("version",0)),
                     draining_plan_versions=draining_versions,
                     deferred_plan_version=int((runtime.get("deferred_plan") or {}).get("version",0)),

@@ -6,6 +6,7 @@ from unittest.mock import patch
 from pathlib import Path
 import sys
 import tempfile
+import threading
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import cdc_catalog
@@ -50,7 +51,7 @@ def main():
         Path(socket).touch()
         script = Path(directory) / 'deploy.sql'
         script.write_text('HELP;')
-        for status, expected in [('restart_required', 1), ('hot_pending', 0)]:
+        for status, expected in [('restart_required', 1), ('rebuild_required', 1), ('hot_pending', 0)]:
             response = dict(ok=True, result=dict(publish=dict(activation=dict(
                 status=status, reason='synthetic install result'))))
             with patch.object(cdc_catalog, 'client_script', return_value=response), \
@@ -64,7 +65,16 @@ def main():
             plan = cdc_catalog.load_plan(env['CDC_CATALOG_FILE'])
             assert len(plan['mappings']) == 1
             assert plan['mappings'][0]['sr_table'] == 'events'
-    print('CATALOG CONFIG PASS explicit empty passwords and missing-value distinction', flush=True)
+    import j4
+    runtime = dict(plan_lock=threading.RLock(), active_plan_version=1)
+    with redirect_stdout(io.StringIO()):
+        for status in ('restart_required', 'rebuild_required'):
+            validation = dict(status=status, version=2, reason='synthetic activation constraint')
+            assert j4.install_hot_catalog_plan({}, runtime, {}, validation) == validation
+            assert runtime['catalog_activation'] == validation
+        j4.catalog_activation_record(runtime, dict(status='active', version=1))
+    assert runtime['catalog_activation'] == dict(status='active', version=1)
+    print('CATALOG CONFIG PASS credentials, remote deployment errors and activation diagnostics', flush=True)
 
 
 if __name__ == '__main__':
