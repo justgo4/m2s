@@ -39,6 +39,14 @@ def main():
         assert cdc_catalog.connection_configured(path)
         saved = cdc_catalog.connection_settings(path)
         assert saved == result
+    from e2e_contract import setup_catalog, source_options
+    from starrocks_contract import configuration
+    for mode in ('merge_async', 'transaction'):
+        with tempfile.TemporaryDirectory(prefix='m2s-e2e-config-test-') as directory:
+            env = setup_catalog(Path(directory), configuration(), source_options(), mode, 128)
+            plan = cdc_catalog.load_plan(env['CDC_CATALOG_FILE'])
+            assert len(plan['mappings']) == 1
+            assert plan['mappings'][0]['sr_table'] == 'events'
     print('CATALOG CONFIG PASS explicit empty passwords and missing-value distinction', flush=True)
 
 
