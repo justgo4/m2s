@@ -1,0 +1,421 @@
+{
+  "format_version": 1,
+  "kind": "candidate_state_layout_AB_not_production",
+  "rows": 10000,
+  "transactions": 100,
+  "changes_per_transaction": 50,
+  "width": 2048,
+  "entropy": "high",
+  "repeats": 3,
+  "samples": {
+    "sqlite_arrow_index": [
+      {
+        "method": "sqlite_arrow_index",
+        "initial": {
+          "wall_seconds": 0.07180636699990828,
+          "cpu_seconds": 0.07558030100000002
+        },
+        "changes": {
+          "wall_seconds": 0.08141728200007492,
+          "cpu_seconds": 0.07637317099999996,
+          "changes_per_second": 61405.06630599693
+        },
+        "scan": {
+          "wall_seconds": 0.06978130900006363,
+          "cpu_seconds": 0.07285879499999992
+        },
+        "close_checkpoint_seconds": 0.014240629999903831,
+        "process_peak_rss_bytes": 494448640,
+        "file_bytes": 27852800,
+        "retained_workspace_file_bytes": 76754944,
+        "fixed_w_shared_sst_bytes": 0,
+        "exact_result": true,
+        "rows": 9020,
+        "transactions_applied_this_process": 100,
+        "state_changelog_checkpoint_atomic": true,
+        "conflicting_replay_rejected": true,
+        "fixed_w_checkpoint_replay_exact": true,
+        "fixed_w": 3,
+        "shuffled_arrow_row_order_exact": true,
+        "invalid_input_cursor_unchanged": true,
+        "fixed_w_checkpoint_bytes": 21049344,
+        "fixed_w_checkpoint_seconds": 0.015088993000063056,
+        "checkpoint_scope": "paused_writer_full_copy_prototype_not_online_MVCC",
+        "changes_wall_includes_checkpoint": true,
+        "latency_seconds": {
+          "p50": 0.0005122850000134349,
+          "p95": 0.0008453979999103467,
+          "p99": 0.0028515609999431035
+        }
+      },
+      {
+        "method": "sqlite_arrow_index",
+        "initial": {
+          "wall_seconds": 0.06630358600000363,
+          "cpu_seconds": 0.06794846600000004
+        },
+        "changes": {
+          "wall_seconds": 0.0772866370000429,
+          "cpu_seconds": 0.08674105800000009,
+          "changes_per_second": 64685.42707066357
+        },
+        "scan": {
+          "wall_seconds": 0.06364714999995158,
+          "cpu_seconds": 0.069772516
+        },
+        "close_checkpoint_seconds": 0.014480962999869007,
+        "process_peak_rss_bytes": 499998720,
+        "file_bytes": 27852800,
+        "retained_workspace_file_bytes": 76754944,
+        "fixed_w_shared_sst_bytes": 0,
+        "exact_result": true,
+        "rows": 9020,
+        "transactions_applied_this_process": 100,
+        "state_changelog_checkpoint_atomic": true,
+        "conflicting_replay_rejected": true,
+        "fixed_w_checkpoint_replay_exact": true,
+        "fixed_w": 3,
+        "shuffled_arrow_row_order_exact": true,
+        "invalid_input_cursor_unchanged": true,
+        "fixed_w_checkpoint_bytes": 21049344,
+        "fixed_w_checkpoint_seconds": 0.013025764000076379,
+        "checkpoint_scope": "paused_writer_full_copy_prototype_not_online_MVCC",
+        "changes_wall_includes_checkpoint": true,
+        "latency_seconds": {
+          "p50": 0.0005305520001002151,
+          "p95": 0.001155847000063659,
+          "p99": 0.001625778000061473
+        }
+      },
+      {
+        "method": "sqlite_arrow_index",
+        "initial": {
+          "wall_seconds": 0.06564435900008903,
+          "cpu_seconds": 0.06860008100000003
+        },
+        "changes": {
+          "wall_seconds": 0.07092859299996235,
+          "cpu_seconds": 0.07836987400000006,
+          "changes_per_second": 70485.54034945316
+        },
+        "scan": {
+          "wall_seconds": 0.0616661799999747,
+          "cpu_seconds": 0.06943115499999997
+        },
+        "close_checkpoint_seconds": 0.013395573000025252,
+        "process_peak_rss_bytes": 495439872,
+        "file_bytes": 27852800,
+        "retained_workspace_file_bytes": 76754944,
+        "fixed_w_shared_sst_bytes": 0,
+        "exact_result": true,
+        "rows": 9020,
+        "transactions_applied_this_process": 100,
+        "state_changelog_checkpoint_atomic": true,
+        "conflicting_replay_rejected": true,
+        "fixed_w_checkpoint_replay_exact": true,
+        "fixed_w": 3,
+        "shuffled_arrow_row_order_exact": true,
+        "invalid_input_cursor_unchanged": true,
+        "fixed_w_checkpoint_bytes": 21049344,
+        "fixed_w_checkpoint_seconds": 0.012946714000008797,
+        "checkpoint_scope": "paused_writer_full_copy_prototype_not_online_MVCC",
+        "changes_wall_includes_checkpoint": true,
+        "latency_seconds": {
+          "p50": 0.0004979830000593211,
+          "p95": 0.0007644649999747344,
+          "p99": 0.002203511000061553
+        }
+      }
+    ],
+    "duckdb_typed": [
+      {
+        "method": "duckdb_typed",
+        "initial": {
+          "wall_seconds": 0.17690104999996947,
+          "cpu_seconds": 0.18288090499999998
+        },
+        "changes": {
+          "wall_seconds": 1.2047713780000322,
+          "cpu_seconds": 1.234355218,
+          "changes_per_second": 4150.114798400197
+        },
+        "scan": {
+          "wall_seconds": 0.012768223999955808,
+          "cpu_seconds": 0.012772074999999994
+        },
+        "close_checkpoint_seconds": 0.09499535999998443,
+        "process_peak_rss_bytes": 578019328,
+        "file_bytes": 98840576,
+        "retained_workspace_file_bytes": 283414528,
+        "fixed_w_shared_sst_bytes": 0,
+        "exact_result": true,
+        "rows": 9020,
+        "transactions_applied_this_process": 100,
+        "state_changelog_checkpoint_atomic": true,
+        "conflicting_replay_rejected": true,
+        "fixed_w_checkpoint_replay_exact": true,
+        "fixed_w": 3,
+        "shuffled_arrow_row_order_exact": true,
+        "invalid_input_cursor_unchanged": true,
+        "fixed_w_checkpoint_bytes": 85471232,
+        "fixed_w_checkpoint_seconds": 0.12568152300013935,
+        "checkpoint_scope": "paused_writer_full_copy_prototype_not_online_MVCC",
+        "changes_wall_includes_checkpoint": true,
+        "latency_seconds": {
+          "p50": 0.008710559000064677,
+          "p95": 0.017607059000056324,
+          "p99": 0.022237050000057934
+        }
+      },
+      {
+        "method": "duckdb_typed",
+        "initial": {
+          "wall_seconds": 0.14420251899991854,
+          "cpu_seconds": 0.14742032999999988
+        },
+        "changes": {
+          "wall_seconds": 0.952890921000062,
+          "cpu_seconds": 0.9759642430000002,
+          "changes_per_second": 5247.123623901077
+        },
+        "scan": {
+          "wall_seconds": 0.012367348999987371,
+          "cpu_seconds": 0.012370387999999899
+        },
+        "close_checkpoint_seconds": 0.08296893299984731,
+        "process_peak_rss_bytes": 569057280,
+        "file_bytes": 98840576,
+        "retained_workspace_file_bytes": 284463104,
+        "fixed_w_shared_sst_bytes": 0,
+        "exact_result": true,
+        "rows": 9020,
+        "transactions_applied_this_process": 100,
+        "state_changelog_checkpoint_atomic": true,
+        "conflicting_replay_rejected": true,
+        "fixed_w_checkpoint_replay_exact": true,
+        "fixed_w": 3,
+        "shuffled_arrow_row_order_exact": true,
+        "invalid_input_cursor_unchanged": true,
+        "fixed_w_checkpoint_bytes": 86519808,
+        "fixed_w_checkpoint_seconds": 0.07351842399998532,
+        "checkpoint_scope": "paused_writer_full_copy_prototype_not_online_MVCC",
+        "changes_wall_includes_checkpoint": true,
+        "latency_seconds": {
+          "p50": 0.0076701570001205255,
+          "p95": 0.011059331000069506,
+          "p99": 0.019851153999979942
+        }
+      },
+      {
+        "method": "duckdb_typed",
+        "initial": {
+          "wall_seconds": 0.1376908980000735,
+          "cpu_seconds": 0.14463338599999997
+        },
+        "changes": {
+          "wall_seconds": 0.9700624810000136,
+          "cpu_seconds": 0.9791326489999999,
+          "changes_per_second": 5154.249322717577
+        },
+        "scan": {
+          "wall_seconds": 0.014744160999953237,
+          "cpu_seconds": 0.014748548000000028
+        },
+        "close_checkpoint_seconds": 0.08729386499999237,
+        "process_peak_rss_bytes": 571191296,
+        "file_bytes": 98840576,
+        "retained_workspace_file_bytes": 284463104,
+        "fixed_w_shared_sst_bytes": 0,
+        "exact_result": true,
+        "rows": 9020,
+        "transactions_applied_this_process": 100,
+        "state_changelog_checkpoint_atomic": true,
+        "conflicting_replay_rejected": true,
+        "fixed_w_checkpoint_replay_exact": true,
+        "fixed_w": 3,
+        "shuffled_arrow_row_order_exact": true,
+        "invalid_input_cursor_unchanged": true,
+        "fixed_w_checkpoint_bytes": 86519808,
+        "fixed_w_checkpoint_seconds": 0.07810921899999812,
+        "checkpoint_scope": "paused_writer_full_copy_prototype_not_online_MVCC",
+        "changes_wall_includes_checkpoint": true,
+        "latency_seconds": {
+          "p50": 0.007674312000062855,
+          "p95": 0.013721705000079965,
+          "p99": 0.018604407000111678
+        }
+      }
+    ],
+    "rocks_arrow_index": [
+      {
+        "method": "rocks_arrow_index",
+        "initial": {
+          "wall_seconds": 0.0786173939998207,
+          "cpu_seconds": 0.08477391699999992
+        },
+        "changes": {
+          "wall_seconds": 0.08101424699998461,
+          "cpu_seconds": 0.08849864000000007,
+          "changes_per_second": 61710.99408525238
+        },
+        "scan": {
+          "wall_seconds": 0.0635291060000327,
+          "cpu_seconds": 0.06812585700000007
+        },
+        "close_checkpoint_seconds": 0.004479283000137002,
+        "process_peak_rss_bytes": 546902016,
+        "file_bytes": 27861006,
+        "retained_workspace_file_bytes": 76750235,
+        "fixed_w_shared_sst_bytes": 20995355,
+        "exact_result": true,
+        "rows": 9020,
+        "transactions_applied_this_process": 100,
+        "state_changelog_checkpoint_atomic": true,
+        "conflicting_replay_rejected": true,
+        "fixed_w_checkpoint_replay_exact": true,
+        "fixed_w": 3,
+        "shuffled_arrow_row_order_exact": true,
+        "invalid_input_cursor_unchanged": true,
+        "fixed_w_checkpoint_bytes": 21034092,
+        "fixed_w_checkpoint_seconds": 0.027776245000040944,
+        "checkpoint_scope": "engine_checkpoint_with_paused_application_writer",
+        "changes_wall_includes_checkpoint": true,
+        "latency_seconds": {
+          "p50": 0.0004762099999879865,
+          "p95": 0.0007525979999627452,
+          "p99": 0.0012601050000284886
+        }
+      },
+      {
+        "method": "rocks_arrow_index",
+        "initial": {
+          "wall_seconds": 0.07748628400008784,
+          "cpu_seconds": 0.08657676400000014
+        },
+        "changes": {
+          "wall_seconds": 0.09664950199999112,
+          "cpu_seconds": 0.09640540099999995,
+          "changes_per_second": 51728.24265622909
+        },
+        "scan": {
+          "wall_seconds": 0.05886860499981594,
+          "cpu_seconds": 0.06336955600000005
+        },
+        "close_checkpoint_seconds": 0.004698614000062662,
+        "process_peak_rss_bytes": 531173376,
+        "file_bytes": 27861007,
+        "retained_workspace_file_bytes": 76750236,
+        "fixed_w_shared_sst_bytes": 20995355,
+        "exact_result": true,
+        "rows": 9020,
+        "transactions_applied_this_process": 100,
+        "state_changelog_checkpoint_atomic": true,
+        "conflicting_replay_rejected": true,
+        "fixed_w_checkpoint_replay_exact": true,
+        "fixed_w": 3,
+        "shuffled_arrow_row_order_exact": true,
+        "invalid_input_cursor_unchanged": true,
+        "fixed_w_checkpoint_bytes": 21034092,
+        "fixed_w_checkpoint_seconds": 0.029249153000137085,
+        "checkpoint_scope": "engine_checkpoint_with_paused_application_writer",
+        "changes_wall_includes_checkpoint": true,
+        "latency_seconds": {
+          "p50": 0.000512323999828368,
+          "p95": 0.0016708870000456955,
+          "p99": 0.003304986999864923
+        }
+      },
+      {
+        "method": "rocks_arrow_index",
+        "initial": {
+          "wall_seconds": 0.09198781100008091,
+          "cpu_seconds": 0.09727562300000003
+        },
+        "changes": {
+          "wall_seconds": 0.0768043509999643,
+          "cpu_seconds": 0.08334594899999992,
+          "changes_per_second": 65092.38053860254
+        },
+        "scan": {
+          "wall_seconds": 0.059527280999873255,
+          "cpu_seconds": 0.06430320599999995
+        },
+        "close_checkpoint_seconds": 0.004062711999949897,
+        "process_peak_rss_bytes": 525418496,
+        "file_bytes": 27861007,
+        "retained_workspace_file_bytes": 76750236,
+        "fixed_w_shared_sst_bytes": 20995355,
+        "exact_result": true,
+        "rows": 9020,
+        "transactions_applied_this_process": 100,
+        "state_changelog_checkpoint_atomic": true,
+        "conflicting_replay_rejected": true,
+        "fixed_w_checkpoint_replay_exact": true,
+        "fixed_w": 3,
+        "shuffled_arrow_row_order_exact": true,
+        "invalid_input_cursor_unchanged": true,
+        "fixed_w_checkpoint_bytes": 21034092,
+        "fixed_w_checkpoint_seconds": 0.026867974999959188,
+        "checkpoint_scope": "engine_checkpoint_with_paused_application_writer",
+        "changes_wall_includes_checkpoint": true,
+        "latency_seconds": {
+          "p50": 0.0004746680001517234,
+          "p95": 0.0006276289998368156,
+          "p99": 0.0008730999998078914
+        }
+      }
+    ]
+  },
+  "faults": [
+    {
+      "method": "sqlite_arrow_index",
+      "boundary": "before_commit",
+      "exact_result": true,
+      "duplicate_commits": 0
+    },
+    {
+      "method": "sqlite_arrow_index",
+      "boundary": "after_commit",
+      "exact_result": true,
+      "duplicate_commits": 0
+    },
+    {
+      "method": "duckdb_typed",
+      "boundary": "before_commit",
+      "exact_result": true,
+      "duplicate_commits": 0
+    },
+    {
+      "method": "duckdb_typed",
+      "boundary": "after_commit",
+      "exact_result": true,
+      "duplicate_commits": 0
+    },
+    {
+      "method": "rocks_arrow_index",
+      "boundary": "before_commit",
+      "exact_result": true,
+      "duplicate_commits": 0
+    },
+    {
+      "method": "rocks_arrow_index",
+      "boundary": "after_commit",
+      "exact_result": true,
+      "duplicate_commits": 0
+    }
+  ],
+  "durability": {
+    "sqlite": "FULL_WAL",
+    "duckdb": "default_transactional_WAL",
+    "rocks": "WriteBatch_sync_WAL"
+  },
+  "scope": "includes_codec_index_state_changelog_commit_scan; no_socket_no_sink_no_GC_no_50M",
+  "file_bytes_scope": "space_occupancy_after_close_not_IO_write_amplification",
+  "peak_rss_scope": "whole_process_including_fixtures_and_oracle",
+  "versions": {
+    "python": "3.12.14",
+    "duckdb": "1.5.5",
+    "sqlite": "3.53.1",
+    "arrow": "25.0.1"
+  }
+}

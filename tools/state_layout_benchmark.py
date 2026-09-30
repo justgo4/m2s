@@ -17,6 +17,7 @@ import resource
 import shutil
 import sqlite3
 import statistics
+import struct
 import subprocess
 import sys
 import tempfile
@@ -71,6 +72,24 @@ def decode(data):
 
 
 def open_engine(method, directory):
+    if method == 'rocks_arrow_index':
+        from rocksdict import BlockBasedOptions, Cache, Options, Rdict, WriteOptions
+        options = Options(raw_mode=True)
+        options.create_if_missing(True)
+        options.set_write_buffer_size(8*1024**2)
+        options.set_max_write_buffer_number(2)
+        options.set_max_background_jobs(2)
+        block = BlockBasedOptions()
+        block.set_block_cache(Cache(16*1024**2))
+        options.set_block_based_table_factory(block)
+        con = Rdict(str(directory/'rocks'), options)
+        writes = WriteOptions()
+        writes.sync = True
+        writes.disable_wal = False
+        con.set_write_options(writes)
+        if con.get(b'C') is None:
+            con[b'C'] = b'-1'
+        return con
     if method=='sqlite_arrow_index':
         con = sqlite3.connect(str(directory/'state.sqlite3'),isolation_level=None)
         con.execute('PRAGMA journal_mode=WAL')
@@ -95,6 +114,50 @@ def open_engine(method, directory):
     return con
 
 
+def checkpoint_seq(con, method):
+    if method == 'rocks_arrow_index':
+        return int(con[b'C'])
+    return con.execute('SELECT seq FROM checkpoint WHERE id=1').fetchone()[0]
+
+
+def commit_count(con, method):
+    if method == 'rocks_arrow_index':
+        count = 0
+        for key in con.keys(from_key=b'I'):
+            if not key.startswith(b'I'):
+                break
+            count += 1
+        return count
+    return con.execute('SELECT COUNT(*) FROM commits').fetchone()[0]
+
+
+def apply_rocks(con, batch, sequence, data, digest, crash):
+    from rocksdict import WriteBatch
+    identity = b'I'+struct.pack('>Q', sequence)
+    existing = con.get(identity)
+    if existing is not None:
+        if existing != digest.encode():
+            raise ValueError('conflicting replay identity')
+        return False
+    if sequence != int(con[b'C'])+1:
+        raise ValueError('source transaction gap')
+    write = WriteBatch(raw_mode=True)
+    write.put(b'L'+struct.pack('>Q', sequence), data)
+    write.put(identity, digest.encode())
+    ids, parts, ops, orders = [batch[name].to_pylist() for name in ('id','part','_sync_op','_sync_order')]
+    for index in sorted(range(batch.num_rows), key=orders.__getitem__):
+        # Sign-flipped big-endian IDs preserve signed numeric key ordering.
+        key = b'K'+struct.pack('>QI', ids[index]+2**63, parts[index])
+        write.put(key, struct.pack('>QIB', sequence, index, ops[index]))
+    write.put(b'C', str(sequence).encode())
+    if crash == 'before_commit':
+        os._exit(86)
+    con.write(write)  # sync WAL WriteBatch: latest references/log/watermark together.
+    if crash == 'after_commit':
+        os._exit(87)
+    return True
+
+
 def apply(con, method, batch, sequence, crash=None):
     data = payload(batch)
     digest = hashlib.sha256(data).hexdigest()
@@ -105,6 +168,8 @@ def apply(con, method, batch, sequence, crash=None):
         raise ValueError('unsupported row operation')
     if j4.pc.count_distinct(batch['_sync_order']).as_py() != batch.num_rows:
         raise ValueError('ambiguous source order')
+    if method == 'rocks_arrow_index':
+        return apply_rocks(con, batch, sequence, data, digest, crash)
     con.execute('BEGIN TRANSACTION')
     registered = False
     try:
@@ -154,11 +219,20 @@ def scan(con, method):
     if method=='duckdb_typed':
         return con.execute('SELECT id,part,v,note,amount FROM source_state ORDER BY id,part').to_arrow_table().cast(schema)
     references = {}
-    for sequence,index in con.execute('SELECT batch_seq,row_index FROM source_index WHERE deleted=0 ORDER BY batch_seq,row_index'):
-        references.setdefault(sequence,[]).append(index)
+    if method == 'rocks_arrow_index':
+        for key, value in con.items(from_key=b'K'):
+            if not key.startswith(b'K'):
+                break
+            sequence, index, deleted = struct.unpack('>QIB', value)
+            if not deleted:
+                references.setdefault(sequence, []).append(index)
+    else:
+        for sequence,index in con.execute('SELECT batch_seq,row_index FROM source_index WHERE deleted=0 ORDER BY batch_seq,row_index'):
+            references.setdefault(sequence,[]).append(index)
     tables = []
     for sequence,indexes in references.items():
-        data = con.execute('SELECT payload FROM commits WHERE seq=?',[sequence]).fetchone()[0]
+        data = (con[b'L'+struct.pack('>Q', sequence)] if method == 'rocks_arrow_index' else
+                con.execute('SELECT payload FROM commits WHERE seq=?',[sequence]).fetchone()[0])
         tables.append(decode(data).select(COLUMNS).take(j4.pa.array(indexes,type=j4.pa.int64())))
     return (j4.pa.concat_tables(tables) if tables else j4.pa.Table.from_batches([],schema)).sort_by([('id','ascending'),('part','ascending')])
 
@@ -189,7 +263,10 @@ def fixed_checkpoint(con, method, directory):
     if staging.exists():
         shutil.rmtree(staging)
     staging.mkdir()
-    if method == 'sqlite_arrow_index':
+    if method == 'rocks_arrow_index':
+        from rocksdict import Checkpoint
+        Checkpoint(con).create_checkpoint(str(staging/'rocks'))
+    elif method == 'sqlite_arrow_index':
         copied = sqlite3.connect(str(staging / 'state.sqlite3'))
         try:
             con.backup(copied)
@@ -198,14 +275,18 @@ def fixed_checkpoint(con, method, directory):
     else:
         con.execute('CHECKPOINT')
         shutil.copyfile(directory / 'state.duckdb', staging / 'state.duckdb')
-    for path in staging.iterdir():
+    for path in staging.rglob('*'):
+        if not path.is_file():
+            continue
         with path.open('rb') as handle:
             os.fsync(handle.fileno())
-    descriptor = os.open(staging, os.O_RDONLY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+    for path in sorted([staging]+[item for item in staging.rglob('*') if item.is_dir()],
+                       key=lambda value:len(value.parts), reverse=True):
+        descriptor = os.open(path, os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
     os.rename(staging, target)
     descriptor = os.open(directory, os.O_RDONLY)
     try:
@@ -224,7 +305,7 @@ def verify_fixed_checkpoint(args, batches):
     shutil.copytree(base, build)
     con = open_engine(args.worker, build)
     try:
-        watermark = con.execute('SELECT seq FROM checkpoint WHERE id=1').fetchone()[0]
+        watermark = checkpoint_seq(con, args.worker)
         if watermark != 3 or not scan(con, args.worker).equals(oracle(batches[:4])):
             raise AssertionError('fixed W changed or was not bound to copied source state')
         for sequence, batch in enumerate(batches[4:], 4):
@@ -236,11 +317,11 @@ def verify_fixed_checkpoint(args, batches):
     # Reopen the untouched W after reconstruction and source advancement.
     con = open_engine(args.worker, base)
     try:
-        if con.execute('SELECT seq FROM checkpoint WHERE id=1').fetchone()[0] != 3:
+        if checkpoint_seq(con, args.worker) != 3:
             raise AssertionError('task replay mutated the shared fixed W checkpoint')
     finally:
         con.close()
-    return sum(path.stat().st_size for path in base.iterdir() if path.is_file())
+    return sum(path.stat().st_size for path in base.rglob('*') if path.is_file())
 
 
 def worker(args):
@@ -273,9 +354,9 @@ def worker(args):
     expected = oracle(batches)
     if not actual.equals(expected):
         raise AssertionError('typed latest state differs from independent replay oracle')
-    if con.execute('SELECT COUNT(*) FROM commits').fetchone()[0]!=args.transactions+1:
+    if commit_count(con, args.worker)!=args.transactions+1:
         raise AssertionError('duplicate or missing durable changelog entries')
-    if con.execute('SELECT seq FROM checkpoint WHERE id=1').fetchone()[0]!=args.transactions:
+    if checkpoint_seq(con, args.worker)!=args.transactions:
         raise AssertionError('checkpoint did not advance with exact state')
     # Exact replay succeeds; a different payload under the same identity fails
     # and must leave all state/checkpoint/changelog unchanged.
@@ -306,7 +387,7 @@ def worker(args):
         pass
     else:
         raise AssertionError('source transaction gap accepted')
-    if con.execute('SELECT seq FROM checkpoint WHERE id=1').fetchone()[0] != args.transactions:
+    if checkpoint_seq(con, args.worker) != args.transactions:
         raise AssertionError('invalid source input advanced durable cursor')
     checkpoint_bytes = verify_fixed_checkpoint(args, batches)
     close_started = time.perf_counter()
@@ -314,14 +395,19 @@ def worker(args):
     report = dict(method=args.worker,initial=initial,changes=changes,scan=scan_time,
                   close_checkpoint_seconds=time.perf_counter()-close_started,
                   process_peak_rss_bytes=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss*1024,
-                  file_bytes=sum(p.stat().st_size for p in directory.iterdir() if p.is_file()),
+                  file_bytes=sum(p.stat().st_size for p in directory.rglob('*') if p.is_file()
+                                 and p.relative_to(directory).parts[0] not in ('fixed-w','task-build')),
+                  retained_workspace_file_bytes=sum(p.stat().st_size for p in directory.rglob('*') if p.is_file()),
+                  fixed_w_shared_sst_bytes=sum(p.stat().st_size for p in (directory/'fixed-w').rglob('*.sst')
+                                              if p.stat().st_nlink>1),
                   exact_result=True,rows=actual.num_rows,transactions_applied_this_process=int(applied),
                   state_changelog_checkpoint_atomic=True,conflicting_replay_rejected=True,
                   fixed_w_checkpoint_replay_exact=True, fixed_w=3,
                   shuffled_arrow_row_order_exact=True, invalid_input_cursor_unchanged=True,
                   fixed_w_checkpoint_bytes=checkpoint_bytes,
                   fixed_w_checkpoint_seconds=checkpoint_seconds,
-                  checkpoint_scope='paused_writer_full_copy_prototype_not_online_MVCC',
+                  checkpoint_scope=('engine_checkpoint_with_paused_application_writer' if args.worker == 'rocks_arrow_index'
+                                    else 'paused_writer_full_copy_prototype_not_online_MVCC'),
                   changes_wall_includes_checkpoint=True,
                   latency_seconds={name:percentile(timing,p) for name,p in [('p50',.5),('p95',.95),('p99',.99)]})
     args.output.parent.mkdir(parents=True,exist_ok=True)
@@ -353,7 +439,8 @@ def main():
     parser.add_argument('--entropy',choices=['low','high'],default='low')
     parser.add_argument('--repeats',type=int,default=5)
     parser.add_argument('--faults',action='store_true')
-    parser.add_argument('--worker',choices=['sqlite_arrow_index','duckdb_typed'])
+    parser.add_argument('--rocks',action='store_true',help='add optional rocksdict==0.3.29 candidate')
+    parser.add_argument('--worker',choices=['sqlite_arrow_index','duckdb_typed','rocks_arrow_index'])
     parser.add_argument('--directory',type=Path)
     parser.add_argument('--recover',action='store_true')
     parser.add_argument('--crash',choices=['before_commit','after_commit'])
@@ -368,6 +455,8 @@ def main():
             parser.error('--worker requires --directory')
         return worker(args)
     samples = {method:[] for method in ('sqlite_arrow_index','duckdb_typed')}
+    if args.rocks:
+        samples['rocks_arrow_index'] = []
     faults = []
     rng = random.Random(42)
     with tempfile.TemporaryDirectory(prefix='m2s-state-layout-') as temp:
@@ -400,7 +489,8 @@ def main():
     report = dict(format_version=1,kind='candidate_state_layout_AB_not_production',rows=args.rows,
                   transactions=args.transactions,changes_per_transaction=args.changes,width=args.width,entropy=args.entropy,
                   repeats=args.repeats,samples=samples,faults=faults,
-                  durability={'sqlite':'FULL_WAL','duckdb':'default_transactional_WAL'},
+                  durability={'sqlite':'FULL_WAL','duckdb':'default_transactional_WAL',
+                              'rocks':'WriteBatch_sync_WAL' if args.rocks else 'not_run'},
                   scope='includes_codec_index_state_changelog_commit_scan; no_socket_no_sink_no_GC_no_50M',
                   file_bytes_scope='space_occupancy_after_close_not_IO_write_amplification',
                   peak_rss_scope='whole_process_including_fixtures_and_oracle',

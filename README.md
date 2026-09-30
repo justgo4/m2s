@@ -228,7 +228,7 @@ A/B 每个样本独立 Python 进程，输出 Python/C/总 CPU、wall、RSS、ro
 
 修复与诊断：虚拟地址空间限制为线程栈/Arrow 映射留出空间，RSS 仍由原有资源预算监测，不能把 RLIMIT_AS 当作即时物理内存硬限。暂时源连接故障超过重试窗口后进入可取消的低频等待，仍从 durable cursor 重建；decoder 故障计数独立，持续同一非法输入或权限/日志缺失仍会明确停止。SQL 文件部署若已经提交 catalog、但安装要求重启，CLI 返回非零并显示原因；**这不是 catalog 回滚，不能把失败码理解为未保存任务**。
 
-新增任务回填中强制退出及续建的更强测试已加入 `tools/e2e_contract.py`，与排空后的重启分开记录；其验收结果以对应 commit 的 CI 为准。即使这两种退出测试通过，也不能声称精确覆盖 HTTP 提交前后所有边界。当前基线新增下游仍会重新扫描 MySQL，不等于已完成共享本地源状态的 P6/P7。
+新增任务回填中强制退出及续建的更强测试已加入 `tools/e2e_contract.py`，与排空后的重启分开记录；[四组 CI 36787945824](https://github.com/justgo4/m2s/actions/runs/36787945824) 均已通过。即使这两种退出测试通过，也不能声称精确覆盖 HTTP 提交前后所有边界。当前基线新增下游仍会重新扫描 MySQL，不等于已完成共享本地源状态的 P6/P7。
 
 ```bash
 # 仅对可删除 m2s_e2e_contract 的隔离服务执行：
@@ -256,4 +256,28 @@ python tools/state_layout_benchmark.py --rows 10000 --transactions 100 --changes
 # 先准备同一个隔离合成 fixture，再执行只读 benchmark：
 python tools/binlog_parity.py --live --cases 1000
 python tools/snapshot_benchmark.py --isolated --repeats 5 --batch-rows 512
+```
+
+
+### 补充 RocksDB 候选与实际 snapshot 结果
+
+[实际源读取 CI 36788920182](https://github.com/justgo4/m2s/actions/runs/36788920182) 已通过：2,166 行、21 列固定合成 fixture，Python/native 各 5 次新进程扫描；wall 中位数 0.04344 / 0.01793 秒，Arrow schema、全部业务值、NULL 和 snapshot op/order 无差异。此结果仅支持继续测量 native snapshot，不作为默认路径改动或系统加速比证明；完整样本见该 workflow 的 mysql-contract artifact。对应基础 Python 3.12/3.14 CI 亦通过。
+
+P6 候选现在可通过 `--rocks` 加测 `rocksdict==0.3.29` 的 raw bytes 布局：不可变 Arrow 批次、最新键引用、changelog 身份和 W 使用一次启用 sync WAL 的 WriteBatch 提交。使用实际 RocksDB Checkpoint，并验证重启后的固定 W 和后缀重放；内存 memtable/cache 配置明确，未关闭耐久性。仅作为状态布局实验，不是新增生产运行时，也未替换 SQLite 权威状态。
+
+[三布局同机宽行样本](reports/state-rocks-20261001.json) 的 3 次中位数：
+
+| 布局 | 100 事务更新总 wall（秒，含固定 W 创建） | 最终扫描 wall（秒） | 固定 W 创建（秒） | W 文件逻辑空间（MB） |
+|---|---|---|---|---|
+| SQLite Arrow+键索引 | 0.0773 | 0.0636 | 0.0130 | 21.05 |
+| DuckDB 类型化状态 | 0.9701 | 0.0128 | 0.0781 | 86.52 |
+| RocksDB Arrow+键索引 | 0.0810 | 0.0595 | 0.0278 | 21.03 |
+
+RocksDB 的该 checkpoint 约 21.00 MB SST 仍与源共享硬链接，因此 W 的逻辑文件大小不能直接当作额外占用。后续源 compaction、日志 pin/GC 和任务寿命仍会带来保留成本。三个布局都通过提交前/后进程退出、固定 W 重建、冲突重放和非法输入测试；小 fixture 上各有取舍，当前仍不宣布状态引擎最终选型。存储数据仍是整数复合键合成子集；业务类型、schema epoch 和真实全量初始化合同尚未接入。
+
+候选依赖单独放在 `requirements-state-benchmark.txt`，不进入生产默认 requirements。新增独立 Python 3.12/3.14 状态 CI，输出仅合成 JSON，不上传 DB/WAL/目录或源数据。
+
+```bash
+python -m pip install -r requirements.txt -r requirements-state-benchmark.txt
+python tools/state_layout_benchmark.py --rows 1000 --transactions 10 --changes 20 --repeats 2 --rocks --faults
 ```

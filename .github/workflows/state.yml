@@ -1,0 +1,55 @@
+name: Candidate source-state durability and layouts
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - tools/state_layout_benchmark.py
+      - requirements-state-benchmark.txt
+      - requirements.txt
+      - j4.py
+      - .github/workflows/state.yml
+  pull_request:
+    paths:
+      - tools/state_layout_benchmark.py
+      - requirements-state-benchmark.txt
+      - requirements.txt
+      - j4.py
+      - .github/workflows/state.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: state-layout-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  candidate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.12', '3.14']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install -r requirements.txt -r requirements-state-benchmark.txt
+      - run: python tools/privacy_check.py
+      - name: Sync-WAL atomic commits, process crashes, fixed W and suffix replay
+        run: python tools/state_layout_benchmark.py --rows 1000 --transactions 10 --changes 20 --repeats 2 --rocks --faults --output benchmark-results/state-contract.json
+      - name: High entropy wide values in independent randomized worker processes
+        run: python tools/state_layout_benchmark.py --rows 10000 --transactions 100 --changes 50 --width 2048 --entropy high --repeats 3 --rocks --faults --output benchmark-results/state-wide.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: state-layout-python-${{ matrix.python }}
+          path: |
+            benchmark-results/state-contract.json
+            benchmark-results/state-wide.json
+          if-no-files-found: error
