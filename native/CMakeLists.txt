@@ -20,6 +20,11 @@ FetchContent_MakeAvailable(nanoarrow)
 add_executable(mysql_arrow_reader mysql_arrow_reader.c)
 target_link_libraries(mysql_arrow_reader PRIVATE nanoarrow_static nanoarrow_ipc_static)
 target_compile_options(mysql_arrow_reader PRIVATE -O3 -Wall -Wextra -Werror)
+option(M2S_SANITIZERS "Instrument decoder ownership and integer/buffer safety" OFF)
+if(M2S_SANITIZERS)
+  target_compile_options(mysql_arrow_reader PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer -g)
+  target_link_options(mysql_arrow_reader PRIVATE -fsanitize=address,undefined)
+endif()
 
 add_library(j4_native SHARED j4_native.c)
 target_compile_options(j4_native PRIVATE

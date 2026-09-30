@@ -81,8 +81,8 @@ python j4.py cli
 | 阶段 | 接下来做什么 | 完成必须达到的标准 | 当前状态 |
 | --- | --- | --- | --- |
 | P0 公开基线 | 导入可执行主程序、必要模块和 C 源码；重建示例/文档；独立 CI | 无业务配置、数据、源仓库地址或源提交历史；源码构建、ABI bundle/本地库和完整离线回归通过 | 本次建立，结果见 Actions |
-| P1 正确性合同 | 明确源事务、主键、NULL、时区、撤回、过滤变化、schema 变化和状态版本 | 同一 raw event 由参考解码器与原生解码器双跑，比较 Arrow schema/null/value/op/order；覆盖整数边界、DECIMAL、UTF-8/emoji、二进制、日期时间、复合键、更新主键、多行/多事件事务；不支持类型显式拒绝 | 计划 |
-| P2 故障与输出协议 | 注入建连失败、断网、decoder kill、短写、缺失/忽略 TABLE_MAP、帧损坏、进程强杀、磁盘满、输出超时及历史清理 | 至少 1,000 个可重放故障案例，恢复后逐键结果等于 oracle；checkpoint 不越过持久化状态；GTID/文件位置双模式；未知输出事务不被静默丢弃或无保护重放；4.1.1 真实验证两种协议和双机制兼容性 | 计划 |
+| P1 正确性合同 | 明确源事务、主键、NULL、时区、撤回、过滤变化、schema 变化和状态版本 | 同一 raw event 由参考解码器与原生解码器双跑，比较 Arrow schema/null/value/op/order；覆盖整数边界、DECIMAL、UTF-8/emoji、二进制、日期时间、复合键、更新主键、多行/多事件事务；不支持类型显式拒绝 | 进行中：已加同字节差分与真实 MySQL CI，完整语义 gate 未完成 |
+| P2 故障与输出协议 | 注入建连失败、断网、decoder kill、短写、缺失/忽略 TABLE_MAP、帧损坏、进程强杀、磁盘满、输出超时及历史清理 | 至少 1,000 个可重放故障案例，恢复后逐键结果等于 oracle；checkpoint 不越过持久化状态；GTID/文件位置双模式；未知输出事务不被静默丢弃或无保护重放；4.1.1 真实验证两种协议和双机制兼容性 | 进行中：已加 1,000 个原生协议故障用例，完整恢复和真实 SR gate 未完成 |
 | P3 测量平台 | 建 decoder、local pipeline、snapshot、end-to-end 四层基准和热点 profile | 每层记录 wall/CPU、RSS、rows/s、MB/s、IPC、分配、磁盘写入和输出放大；端到端计时从 MySQL COMMIT 到查询可见；公开环境、种子、版本和原始 JSON；保持相同耐久性 | 计划 |
 | P4 原生接入与批处理 | 将复制协议和必要 snapshot 读取下沉，复用 C 解码；事件/事务组批，移除业务数据经 Python 与子进程一发一等 | Python 不再创建源业务行；事务/巨型事务/重连语义通过 P1/P2；相比基线在 source-bound 负载吞吐不下降且总 CPU/row 下降至少 20%，否则不设为默认 | 计划 |
 | P5 原生布局和融合 | 零额外格式交换、选择向量、稳定分区、表达式/编码融合、自适应批大小 | 避免不必要 combine/take/IPC 往返；公布实际复制和分配字节；窄/宽/稀疏批均测；错误、NULL、溢出语义不变；至少一个已识别热点 CPU/row 下降 20% | 计划 |
@@ -137,3 +137,18 @@ Actions 固定到已核实的公开发布 commit，权限仅 `contents: read`，
 - [StarRocks Stream Load](https://docs.starrocks.io/docs/loading/StreamLoad/) 与 [事务接口](https://docs.starrocks.io/docs/loading/Stream_Load_transaction_interface/)：当前官方资料，固定 4.1.1 实测优先于滚动更新的 Latest 文档。
 
 每个后续里程碑都更新这里的状态和公开结果链接。提交了一份计划不等于完成计划；代码通过离线测试不等于生产认证。
+
+## 实施记录
+
+2026-09-30：新增独立 Python ROW/FULL 解码 oracle；同一 TABLE_MAP/row event 与 C decoder 对比 Arrow schema、值、NULL、操作和顺序，并交叉检查 native snapshot。合成用例覆盖 21 列、整数 signed/unsigned 边界、DECIMAL(p,p)、UTF-8/emoji、二进制、DATE/DATETIME(6)、复合键和更新主键。新增隔离 MySQL 8.4.6 的 1,000 事务差分 workflow，并将重放后的结果与真实 MySQL 最终 SELECT 比较。
+
+本地 1,000 个事件（3,332 个行镜像）和 267 个 snapshot 行差分通过；另有 1,000 个协议故障用例通过。修复 DECIMAL(p,p) snapshot 前导零误计 precision，以及截断 CONFIG 清理路径可能解引用未分配列的问题；拒绝非法类型、decimal/fsp 元数据和缺失 nullable bitmap。ASan/UBSan 与真实 MySQL 验证由 Actions 执行。此结果不是全套 P1/P2 完成，也不是生产性能证明。
+
+```bash
+python tools/binlog_parity.py --cases 1000 --faults
+# 仅对可删除 synthetic 数据库的隔离 MySQL：
+python tools/binlog_parity.py --live --cases 1000
+cmake -S native -B build/sanitized -DM2S_SANITIZERS=ON
+cmake --build build/sanitized --parallel 2
+python tools/binlog_parity.py --binary build/sanitized/mysql_arrow_reader --cases 1000 --faults
+```

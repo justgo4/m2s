@@ -270,7 +270,9 @@ static void decoder_reset(struct Decoder* d) {
     for (uint16_t i = 0; i < d->ntables; i++) {
         free(d->tables[i].db);
         free(d->tables[i].table);
-        for (uint16_t j = 0; j < d->tables[i].ncol; j++) free(d->tables[i].col[j].name);
+        if (d->tables[i].col) {
+            for (uint16_t j = 0; j < d->tables[i].ncol; j++) free(d->tables[i].col[j].name);
+        }
         free(d->tables[i].col);
     }
     for (uint16_t i = 0; i < d->nmaps; i++) free_map(&d->maps[i]);
@@ -459,6 +461,9 @@ static int append_decimal_text(
     size_t frac_start = dot == n ? n : dot + 1;
     size_t frac_len = n - frac_start;
     if (frac_len > cfg->scale) return EINVAL;
+    /* DECIMAL(p,p) has no integral digits: the textual leading 0 is not
+       part of the precision. Discard all leading integral zeros. */
+    while (in < integral_end && p[in] == '0') in++;
     size_t digit_count = integral_end - in + cfg->scale;
     if (digit_count > cfg->precision || out_pos + digit_count >= sizeof(digits))
         return ERANGE;
@@ -469,6 +474,7 @@ static int append_decimal_text(
         out_pos += frac_len;
     }
     while (frac_len++ < cfg->scale) digits[out_pos++] = '0';
+    if (digit_count == 0) digits[out_pos++] = '0';
 
     struct ArrowDecimal dec;
     ArrowDecimalInit(&dec,128,cfg->precision,cfg->scale);
@@ -618,7 +624,7 @@ static int parse_table_map(struct Decoder* d, const uint8_t* event, size_t size)
     if (cur_take(&c, 1, &p)) { free(db); free(table); return EINVAL; }
 
     uint64_t ncol64;
-    if (cur_lenenc(&c, &ncol64) || ncol64 > MAX_COLUMNS) { free(db); free(table); return EINVAL; }
+    if (cur_lenenc(&c, &ncol64) || !ncol64 || ncol64 > MAX_COLUMNS) { free(db); free(table); return EINVAL; }
     uint16_t ncol = (uint16_t)ncol64;
     const uint8_t* types;
     if (cur_take(&c, ncol, &types)) { free(db); free(table); return EINVAL; }
@@ -626,6 +632,8 @@ static int parse_table_map(struct Decoder* d, const uint8_t* event, size_t size)
     if (cur_lenenc(&c, &meta_len) || meta_len > c.size - c.pos) { free(db); free(table); return EINVAL; }
     struct Cursor mc = {c.data + c.pos, (size_t)meta_len, 0};
     c.pos += (size_t)meta_len;
+    /* The mandatory nullable bitmap follows metadata, even for ignored tables. */
+    if (c.size - c.pos < (size_t)(ncol + 7) / 8) { free(db); free(table); return EINVAL; }
 
     struct TableConfig* cfg = find_config(d, db, table);
     free(db); free(table);
@@ -665,6 +673,7 @@ static int parse_table_map(struct Decoder* d, const uint8_t* event, size_t size)
             case MYSQL_TYPE_DATETIME2:
             case MYSQL_TYPE_TIME2:
                 if (cur_u8(&mc, &m->fsp)) return EINVAL;
+                if (m->fsp > 6) return EINVAL;
                 break;
             case MYSQL_TYPE_VAR_STRING:
             case MYSQL_TYPE_STRING:
@@ -683,6 +692,10 @@ static int parse_table_map(struct Decoder* d, const uint8_t* event, size_t size)
                 break;
             case MYSQL_TYPE_NEWDECIMAL:
                 if (cur_u8(&mc, &m->precision) || cur_u8(&mc, &m->scale)) return EINVAL;
+                if (!m->precision || m->precision > 38 || m->scale > m->precision ||
+                    cfg->col[i].kind != AK_DECIMAL128 ||
+                    cfg->col[i].precision != m->precision || cfg->col[i].scale != m->scale)
+                    return EINVAL;
                 break;
             case MYSQL_TYPE_BIT:
                 if (cur_u8(&mc, &a) || cur_u8(&mc, &b)) return EINVAL;
@@ -692,10 +705,11 @@ static int parse_table_map(struct Decoder* d, const uint8_t* event, size_t size)
                 break;
         }
     }
-    return 0;
+    return mc.pos == mc.size ? 0 : EINVAL;
 }
 
 static int append_decimal(struct ArrowArray* out, struct Cursor* c, uint8_t precision, uint8_t scale) {
+    if (!precision || precision > 38 || scale > precision) return EINVAL;
     static const int compressed_bytes[10] = {0,1,1,2,2,3,3,4,4,4};
     int integral = precision - scale;
     int uncomp_i = integral / 9, uncomp_f = scale / 9;
@@ -1049,21 +1063,29 @@ static int parse_config(struct Decoder* d, const uint8_t* payload, size_t size) 
         uint16_t n;
         const uint8_t* p;
         if (cur_u16(&c, &n) || cur_take(&c, n, &p)) return EINVAL;
+        if (!n || memchr(p, 0, n)) return EINVAL;
         cfg->db = dup_bytes(p, n);
         if (!cfg->db) return ENOMEM;
         if (cur_u16(&c, &n) || cur_take(&c, n, &p)) return EINVAL;
+        if (!n || memchr(p, 0, n)) return EINVAL;
         cfg->table = dup_bytes(p, n);
         if (!cfg->table) return ENOMEM;
-        if (cur_u16(&c, &cfg->ncol) || cfg->ncol > MAX_COLUMNS) return EINVAL;
+        if (cur_u16(&c, &cfg->ncol) || !cfg->ncol || cfg->ncol > MAX_COLUMNS) return EINVAL;
         cfg->col = (struct ColumnConfig*)calloc(cfg->ncol, sizeof(struct ColumnConfig));
         if (!cfg->col) return ENOMEM;
         for (uint16_t i = 0; i < cfg->ncol; i++) {
             if (cur_u16(&c, &n) || cur_take(&c, n, &p)) return EINVAL;
+            if (!n || memchr(p, 0, n)) return EINVAL;
             cfg->col[i].name = dup_bytes(p, n);
             if (!cfg->col[i].name) return ENOMEM;
             if (cur_u8(&c, &cfg->col[i].kind) || cur_u8(&c, &cfg->col[i].is_unsigned) ||
                 cur_u8(&c, &cfg->col[i].precision) || cur_u8(&c, &cfg->col[i].scale))
                 return EINVAL;
+            if (cfg->col[i].kind < AK_I8 || cfg->col[i].kind > AK_DECIMAL128 ||
+                cfg->col[i].is_unsigned > 1) return EINVAL;
+            if (cfg->col[i].kind == AK_DECIMAL128 &&
+                (!cfg->col[i].precision || cfg->col[i].precision > 38 ||
+                 cfg->col[i].scale > cfg->col[i].precision)) return EINVAL;
         }
     }
     return c.pos == c.size ? 0 : EINVAL;

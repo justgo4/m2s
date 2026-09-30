@@ -72,5 +72,7 @@ jobs:
         run: |
           python native/native_abi_selftest.py
           python j4.py selftest
+      - name: Same-byte row and snapshot differential tests and 1000 native faults
+        run: python tools/binlog_parity.py --cases 1000 --faults --output benchmark-results/native-contract.json
       - name: Synthetic benchmark smoke
         run: python tools/partition_benchmark.py --rows 10000 --repeats 3 --commit '${{ github.sha }}'
