@@ -407,6 +407,8 @@ def final_run_summary(runtime, cfg, prepared, con, reason):
             durable_position=f"{read[0]}:{read[1]}",field_overflow_rows=overflows,
             merge_uncertain_rows=uncertain,errors=list(runtime.get("errors",[])),
             catalog_activation=dict(runtime.get("catalog_activation",{})),
+            quarantined_tables=dict(runtime.get("quarantined_tables",{})),
+            health="degraded" if runtime.get("quarantined_tables") else "normal",
         ),
     )
     metrics_path,summary_path = report_paths(cfg)
@@ -5156,12 +5158,12 @@ def catalog_publish_callback(cfg, runtime, publish_result, phase):
         validation["restart_required"] = True
         return validation
     if phase == "install_config":
-        return dict(
+        return catalog_activation_record(runtime,dict(
             status="restart_required",
             version=int(publish_result.get("version",0)),
             reason=(
                 "persistent runtime configuration changed; restart the daemon "
-                "to rebuild live connections/resources from the committed catalog"))
+                "to rebuild live connections/resources from the committed catalog")))
     if phase == "install":
         validation = publish_result.get("validation")
         if validation is None:
@@ -5398,6 +5400,40 @@ def unresolved_merge_uncertain(con):
         SELECT delivery_id,part,table_name,lane,label,payload_sha256,reason,created
         FROM merge_uncertain ORDER BY created,delivery_id,part
     """).fetchall()
+
+
+def merge_table_quarantined(runtime, table):
+    if not runtime.get('quarantined_tables'):
+        return False
+    with runtime['control_lock']:
+        return table in runtime.get('quarantined_tables',{})
+
+
+def quarantine_merge_table(con, table, runtime, reason):
+    rows = con.execute(
+        'SELECT delivery_id,part FROM merge_uncertain WHERE table_name=? ORDER BY created',
+        (table,)).fetchall()
+    if not rows:
+        return False
+    detail = dict(reason=str(reason)[:2000],parts=len(rows),
+                  delivery_id=rows[0][0],part=rows[0][1],replay_disabled=True)
+    with runtime['control_lock']:
+        quarantined = runtime.setdefault('quarantined_tables',{})
+        first = table not in quarantined
+        quarantined[table] = detail
+    if first:
+        log(f"MERGE QUARANTINED table={table} parts={len(rows)} "
+            f"replay=0 journal_retained=1 unrelated_targets_continue=1 reason={detail['reason']}")
+    return True
+
+
+def quarantine_pending_merges(con, runtime):
+    # Run after legacy sink identity migration: block the actual sink identities,
+    # including draining old plans. Never delete or silently acknowledge markers.
+    tables = con.execute('SELECT DISTINCT table_name FROM merge_uncertain').fetchall()
+    for table, in tables:
+        quarantine_merge_table(con,table,runtime,'unresolved request restored from durable state')
+    return len(tables)
 
 
 def curl_error_before_request(exc):
@@ -6163,6 +6199,8 @@ def merge_candidate_lanes(con, table):
 
 def process_merge_lane(con, engine_cache, handle, table, lane, cfg, runtime):
     stop = runtime["stop"]
+    if merge_table_quarantined(runtime,table):
+        return False
     if version_recovery_active(runtime,table):
         return False
 
@@ -6215,7 +6253,7 @@ def process_merge_lane(con, engine_cache, handle, table, lane, cfg, runtime):
         extra_locks.append(lock)
 
     try:
-        if version_recovery_active(runtime,table):
+        if merge_table_quarantined(runtime,table) or version_recovery_active(runtime,table):
             return False
         started = time.monotonic()
         try:
@@ -6355,6 +6393,12 @@ def merge_delivery_worker(mapping, worker_id, cfg, runtime):
                 wake.wait(0.1)
                 wake.clear()
                 continue
+            if merge_table_quarantined(runtime,table):
+                if engines:
+                    close_plan_engines(engines)
+                wake.wait(1)
+                wake.clear()
+                continue
             if worker_id >= writer_target(runtime,table):
                 if engines:
                     close_plan_engines(engines)
@@ -6376,10 +6420,14 @@ def merge_delivery_worker(mapping, worker_id, cfg, runtime):
                 if lock is None or not lock.acquire(blocking=False):
                     continue
                 try:
-                    if process_merge_lane(
-                            con,engines,handle,table,lane,cfg,runtime):
-                        worked = True
-                        break
+                    try:
+                        if process_merge_lane(
+                                con,engines,handle,table,lane,cfg,runtime):
+                            worked = True
+                            break
+                    except (RuntimeError,pycurl.error,pymysql.err.OperationalError) as exc:
+                        if not quarantine_merge_table(con,table,runtime,exc):
+                            raise
                 finally:
                     lock.release()
             if not worked:
@@ -6635,6 +6683,10 @@ def table_delivery_worker(mapping, cfg, runtime):
     next_send = time.monotonic()
     try:
         while not stop.is_set():
+            if merge_table_quarantined(runtime,table):
+                wake.wait(1)
+                wake.clear()
+                continue
             existing = con.execute("SELECT id FROM deliveries WHERE table_name=? LIMIT 1",(table,)).fetchone()
             pending = con.execute("SELECT MIN(created) FROM active_jobs WHERE table_name=?",(table,)).fetchone()[0]
             if pending is None and not existing:
@@ -7568,6 +7620,9 @@ def snapshot_worker(mapping, cfg, runtime):
             """,(table,)).fetchone()
             if state[5]:
                 return
+            if merge_table_quarantined(runtime,table):
+                stop.wait(1)
+                continue
             if runtime.get("resource_pause_snapshot",False) or \
                version_recovery_active(runtime,table) or \
                time.time() < runtime["pressure_until"].get(table,0) or \
@@ -7742,17 +7797,6 @@ def run_cdc(
     os.makedirs(state_dir,exist_ok=True)
     with process_lock(cfg["state"]):
         con = init_state(cfg["state"])
-        uncertain = unresolved_merge_uncertain(con)
-        if uncertain:
-            sample = "; ".join(
-                f"{row[2]} delivery={row[0]} part={row[1]} lane={row[3]} reason={row[6]}"
-                for row in uncertain[:3])
-            con.close()
-            raise RuntimeError(
-                f"unresolved Merge Commit request identity exists ({len(uncertain)} part(s)); "
-                "automatic restart is refused because replay could let an old request overwrite newer "
-                f"Primary Key data. Preserve the state/target and reconcile or rebuild explicitly. {sample}"
-            )
         stored_fingerprint = meta_get(con,"fingerprint")
         fresh_state = stored_fingerprint is None
         if stored_fingerprint is None:
@@ -7893,7 +7937,7 @@ def run_cdc(
                            1,min(
                                cfg["writer_max"],
                                cfg["resource"]["cpu_target"]//max(1,len(worker_mappings)))),
-                       resource_pause_snapshot=False,resource_sample=None,
+                       resource_pause_snapshot=False,resource_sample=None,quarantined_tables={},
                        snapshot_transform_bytes_cap={
                            mapping_key(m):int(cfg["batch_bytes"])
                            for m in worker_mappings},
@@ -7907,6 +7951,7 @@ def run_cdc(
                        worker_keys={mapping_key(m) for m in worker_mappings},
                        worker_threads=[],thread_lock=threading.Lock(),
                        snapshot_executor=None)
+        quarantine_pending_merges(con,runtime)
         runtime["plan_loader"] = lambda version: prepare_runtime_catalog_plan(
             cfg,cdc_catalog.load_plan_version(cfg["catalog"],version))
         runtime["metrics"] = init_run_metrics(worker_mappings)
@@ -8069,6 +8114,8 @@ def run_cdc(
                     reader_retries=int(runtime.get("reader_retries",0)),
                     active_plan_version=runtime_active_version(runtime),
                     catalog_activation=dict(runtime.get("catalog_activation",{})),
+                    quarantined_tables=dict(runtime.get("quarantined_tables",{})),
+                    health="degraded" if runtime.get("quarantined_tables") else "normal",
                     pending_plan_version=int((runtime.get("pending_plan") or {}).get("version",0)),
                     draining_plan_versions=draining_versions,
                     deferred_plan_version=int((runtime.get("deferred_plan") or {}).get("version",0)),

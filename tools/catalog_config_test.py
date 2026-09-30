@@ -72,6 +72,8 @@ def main():
             validation = dict(status=status, version=2, reason='synthetic activation constraint')
             assert j4.install_hot_catalog_plan({}, runtime, {}, validation) == validation
             assert runtime['catalog_activation'] == validation
+        result = j4.catalog_publish_callback({}, runtime, dict(version=1), 'install_config')
+        assert result['status'] == runtime['catalog_activation']['status'] == 'restart_required'
         j4.catalog_activation_record(runtime, dict(status='active', version=1))
     assert runtime['catalog_activation'] == dict(status='active', version=1)
     print('CATALOG CONFIG PASS credentials, remote deployment errors and activation diagnostics', flush=True)

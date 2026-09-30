@@ -284,3 +284,12 @@ python tools/state_layout_benchmark.py --rows 1000 --transactions 10 --changes 2
 
 
 部署诊断补充：`restart_required` 和 `rebuild_required` 均使 SQL 文件 CLI 返回非零；daemon 输出 `PLAN NOT ACTIVATED`，status metrics 与最终 summary 的 `catalog_activation` 保留版本、状态和原因。正常切换到新计划后变为 `active`。这用于区分“目录已保存”和“数据任务已运行”，不自动丢弃旧状态或触发目标表重建。验证覆盖远程文件部署返回码及阻止激活时的诊断状态。
+
+
+### 未知 Merge Commit 请求的目标隔离
+
+已将没有 durable TxnId 的未知请求从“整条管线拒绝重启”改为目标隔离：保留 `merge_uncertain` 与原 payload，冻结受影响目标的所有 lane 和后续回填读取；其他目标可以在原有积压/磁盘预算内继续处理。writer 捕获未知结果时也进入隔离，普通没有未知标记的错误仍按原规则处理。legacy sink identity 迁移完成后才从标记恢复隔离集合，避免用旧源表名隔离错目标。known TxnId 仍由原有状态/历史查询路径确认。
+
+status 和 summary 显示 `health=degraded`、`quarantined_tables` 及原因。这不表示未知请求已经解决，不重新发送旧 payload，也不自动删除标记或宣称该目标继续满足新鲜度目标。如果隔离目标长期不处理，有限 journal 填满仍会对源施加背压；不是无限持续服务保证。自动有证据对账/隔离 generation 重建仍是后续 P2/P6/P7 工作，当前不能标完整故障恢复完成。
+
+`tools/merge_quarantine_test.py` 用实际 SQLite 标记和实际 writer 循环模拟响应丢失，验证原 payload/未知标记跨重启保留、坏目标只尝试一次、独立目标 worker 继续执行，以及普通错误不会被错误地隔离。它不含真实网络，远程不确定 HTTP 边界的证明仍待补充。

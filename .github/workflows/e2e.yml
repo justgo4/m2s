@@ -8,6 +8,7 @@ on:
       - 'cdc_catalog.py'
       - 'native/**'
       - 'tools/e2e_contract.py'
+      - 'tools/merge_quarantine_network_test.py'
       - 'tools/starrocks_contract.py'
       - '.github/workflows/e2e.yml'
   pull_request:
@@ -16,6 +17,7 @@ on:
       - 'cdc_catalog.py'
       - 'native/**'
       - 'tools/e2e_contract.py'
+      - 'tools/merge_quarantine_network_test.py'
       - '.github/workflows/e2e.yml'
   workflow_dispatch:
 
@@ -79,10 +81,15 @@ jobs:
           PY
       - name: Concurrent backfill and changes, exact SQL oracle, hard kill and durable resume
         run: python tools/e2e_contract.py --isolated --load-mode "$TEST_PROTOCOL" --group-size 128
+      - name: Drop a real accepted Merge Commit response, isolate only that target and restart
+        if: matrix.protocol == 'merge_async'
+        run: python tools/merge_quarantine_network_test.py --isolated
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: e2e-${{ matrix.protocol }}-gtid-${{ matrix.gtid }}
-          path: benchmark-results/e2e-contract.json
+          path: |
+            benchmark-results/e2e-contract.json
+            benchmark-results/merge-quarantine.json
           if-no-files-found: error
           retention-days: 14
       - name: Remove disposable services

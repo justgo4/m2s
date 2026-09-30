@@ -56,6 +56,7 @@ jobs:
           python j4.py --help
           python tools/catalog_config_test.py
           python tools/resource_startup_test.py
+          python tools/merge_quarantine_test.py
       - name: Verify bundled native ABI and offline recovery
         run: |
           python native/native_abi_selftest.py
