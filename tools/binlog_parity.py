@@ -178,6 +178,9 @@ def live(binary, cases, seed):
         blob BLOB, `binary` BINARY(8), day DATE, stamp DATETIME(6),
         amount DECIMAL(19,4), fraction DECIMAL(9,9), year YEAR, bits BIT(9),
         PRIMARY KEY(id,part)"""
+    import re
+    columns = re.sub(r"(?m)(^|,)\s*(`?[a-z][a-z0-9_]*`?)\s+(?=[A-Z])",
+                     lambda m: m[1] + " `" + m[2].strip("`") + "` ", columns)
     with con.cursor() as cur:
         cur.execute("DROP DATABASE IF EXISTS synthetic")
         cur.execute("CREATE DATABASE synthetic CHARACTER SET utf8mb4")
