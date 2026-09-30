@@ -1,0 +1,599 @@
+{
+  "format_version": 1,
+  "kind": "same_fixture_decoder_or_local_AB",
+  "layer": "local",
+  "events": 512,
+  "rows_per_event": 8,
+  "events_per_transaction": 64,
+  "width": 0,
+  "seed": 42,
+  "repeats": 5,
+  "samples": {
+    "python": [
+      {
+        "method": "python",
+        "layer": "local",
+        "wall_seconds": 0.3287625399989338,
+        "python_cpu_seconds": 0.3933247849999999,
+        "native_cpu_seconds": 0.0,
+        "total_cpu_seconds": 0.3933247849999999,
+        "rows": 4096,
+        "rows_per_second": 12458.840353323963,
+        "input_event_bytes": 356958,
+        "decoded_arrow_bytes": 436726,
+        "ipc_input_bytes": 0,
+        "ipc_output_bytes": 0,
+        "sqlite_bytes": 1103976,
+        "durable_transactions": 8,
+        "durability": "sqlite_FULL_WAL",
+        "python_peak_rss_bytes": 186093568,
+        "native_peak_rss_bytes": 0,
+        "transaction_latency_seconds": {
+          "p50": 0.03187714799969399,
+          "p95": 0.04199705200153403,
+          "p99": 0.04199705200153403
+        },
+        "checksum": 8386560
+      },
+      {
+        "method": "python",
+        "layer": "local",
+        "wall_seconds": 0.3939564419997623,
+        "python_cpu_seconds": 0.47536276899999996,
+        "native_cpu_seconds": 0.0,
+        "total_cpu_seconds": 0.47536276899999996,
+        "rows": 4096,
+        "rows_per_second": 10397.08851874155,
+        "input_event_bytes": 356958,
+        "decoded_arrow_bytes": 436726,
+        "ipc_input_bytes": 0,
+        "ipc_output_bytes": 0,
+        "sqlite_bytes": 1103976,
+        "durable_transactions": 8,
+        "durability": "sqlite_FULL_WAL",
+        "python_peak_rss_bytes": 184385536,
+        "native_peak_rss_bytes": 0,
+        "transaction_latency_seconds": {
+          "p50": 0.04388809399824822,
+          "p95": 0.05610698999953456,
+          "p99": 0.05610698999953456
+        },
+        "checksum": 8386560
+      },
+      {
+        "method": "python",
+        "layer": "local",
+        "wall_seconds": 0.31597569699988526,
+        "python_cpu_seconds": 0.384034161,
+        "native_cpu_seconds": 0.0,
+        "total_cpu_seconds": 0.384034161,
+        "rows": 4096,
+        "rows_per_second": 12963.022279531477,
+        "input_event_bytes": 356958,
+        "decoded_arrow_bytes": 436726,
+        "ipc_input_bytes": 0,
+        "ipc_output_bytes": 0,
+        "sqlite_bytes": 1103976,
+        "durable_transactions": 8,
+        "durability": "sqlite_FULL_WAL",
+        "python_peak_rss_bytes": 183468032,
+        "native_peak_rss_bytes": 0,
+        "transaction_latency_seconds": {
+          "p50": 0.033081425999625935,
+          "p95": 0.04543853600080183,
+          "p99": 0.04543853600080183
+        },
+        "checksum": 8386560
+      },
+      {
+        "method": "python",
+        "layer": "local",
+        "wall_seconds": 0.32662386799893284,
+        "python_cpu_seconds": 0.3689763799999999,
+        "native_cpu_seconds": 0.0,
+        "total_cpu_seconds": 0.3689763799999999,
+        "rows": 4096,
+        "rows_per_second": 12540.418509811361,
+        "input_event_bytes": 356958,
+        "decoded_arrow_bytes": 436726,
+        "ipc_input_bytes": 0,
+        "ipc_output_bytes": 0,
+        "sqlite_bytes": 1103976,
+        "durable_transactions": 8,
+        "durability": "sqlite_FULL_WAL",
+        "python_peak_rss_bytes": 184238080,
+        "native_peak_rss_bytes": 0,
+        "transaction_latency_seconds": {
+          "p50": 0.03909754599953885,
+          "p95": 0.04904752500078757,
+          "p99": 0.04904752500078757
+        },
+        "checksum": 8386560
+      },
+      {
+        "method": "python",
+        "layer": "local",
+        "wall_seconds": 0.2865717099994072,
+        "python_cpu_seconds": 0.347283287,
+        "native_cpu_seconds": 0.0,
+        "total_cpu_seconds": 0.347283287,
+        "rows": 4096,
+        "rows_per_second": 14293.106601515108,
+        "input_event_bytes": 356958,
+        "decoded_arrow_bytes": 436726,
+        "ipc_input_bytes": 0,
+        "ipc_output_bytes": 0,
+        "sqlite_bytes": 1103976,
+        "durable_transactions": 8,
+        "durability": "sqlite_FULL_WAL",
+        "python_peak_rss_bytes": 183455744,
+        "native_peak_rss_bytes": 0,
+        "transaction_latency_seconds": {
+          "p50": 0.027838891999635962,
+          "p95": 0.040693131000807625,
+          "p99": 0.040693131000807625
+        },
+        "checksum": 8386560
+      }
+    ],
+    "native_event": [
+      {
+        "method": "native_event",
+        "layer": "local",
+        "wall_seconds": 0.32981714900051884,
+        "python_cpu_seconds": 0.37495673500000004,
+        "native_cpu_seconds": 0.020373,
+        "total_cpu_seconds": 0.395329735,
+        "rows": 4096,
+        "rows_per_second": 12419.002506123648,
+        "input_event_bytes": 356958,
+        "decoded_arrow_bytes": 436726,
+        "ipc_input_bytes": 359523,
+        "ipc_output_bytes": 866080,
+        "sqlite_bytes": 1103976,
+        "durable_transactions": 8,
+        "durability": "sqlite_FULL_WAL",
+        "python_peak_rss_bytes": 183832576,
+        "native_peak_rss_bytes": null,
+        "transaction_latency_seconds": {
+          "p50": 0.032258387000183575,
+          "p95": 0.052715564001118764,
+          "p99": 0.052715564001118764
+        },
+        "checksum": 8386560
+      },
+      {
+        "method": "native_event",
+        "layer": "local",
+        "wall_seconds": 0.25609725899994373,
+        "python_cpu_seconds": 0.3057960900000001,
+        "native_cpu_seconds": 0.018091,
+        "total_cpu_seconds": 0.3238870900000001,
+        "rows": 4096,
+        "rows_per_second": 15993.923621029071,
+        "input_event_bytes": 356958,
+        "decoded_arrow_bytes": 436726,
+        "ipc_input_bytes": 359523,
+        "ipc_output_bytes": 866080,
+        "sqlite_bytes": 1103976,
+        "durable_transactions": 8,
+        "durability": "sqlite_FULL_WAL",
+        "python_peak_rss_bytes": 183209984,
+        "native_peak_rss_bytes": null,
+        "transaction_latency_seconds": {
+          "p50": 0.030009480000444455,
+          "p95": 0.035561773998779245,
+          "p99": 0.035561773998779245
+        },
+        "checksum": 8386560
+      },
+      {
+        "method": "native_event",
+        "layer": "local",
+        "wall_seconds": 0.35147976000007475,
+        "python_cpu_seconds": 0.39909702000000014,
+        "native_cpu_seconds": 0.021790999999999998,
+        "total_cpu_seconds": 0.42088802000000014,
+        "rows": 4096,
+        "rows_per_second": 11653.58710839887,
+        "input_event_bytes": 356958,
+        "decoded_arrow_bytes": 436726,
+        "ipc_input_bytes": 359523,
+        "ipc_output_bytes": 866080,
+        "sqlite_bytes": 1103976,
+        "durable_transactions": 8,
+        "durability": "sqlite_FULL_WAL",
+        "python_peak_rss_bytes": 186818560,
+        "native_peak_rss_bytes": null,
+        "transaction_latency_seconds": {
+          "p50": 0.041356059000463574,
+          "p95": 0.0587444359989604,
+          "p99": 0.0587444359989604
+        },
+        "checksum": 8386560
+      },
+      {
+        "method": "native_event",
+        "layer": "local",
+        "wall_seconds": 0.26414357800058497,
+        "python_cpu_seconds": 0.306214078,
+        "native_cpu_seconds": 0.014284999999999999,
+        "total_cpu_seconds": 0.320499078,
+        "rows": 4096,
+        "rows_per_second": 15506.718092502439,
+        "input_event_bytes": 356958,
+        "decoded_arrow_bytes": 436726,
+        "ipc_input_bytes": 359523,
+        "ipc_output_bytes": 866080,
+        "sqlite_bytes": 1103976,
+        "durable_transactions": 8,
+        "durability": "sqlite_FULL_WAL",
+        "python_peak_rss_bytes": 185856000,
+        "native_peak_rss_bytes": null,
+        "transaction_latency_seconds": {
+          "p50": 0.02874047099976451,
+          "p95": 0.040811922001012135,
+          "p99": 0.040811922001012135
+        },
+        "checksum": 8386560
+      },
+      {
+        "method": "native_event",
+        "layer": "local",
+        "wall_seconds": 0.20649804300046526,
+        "python_cpu_seconds": 0.24840927000000002,
+        "native_cpu_seconds": 0.0165,
+        "total_cpu_seconds": 0.26490927000000003,
+        "rows": 4096,
+        "rows_per_second": 19835.539070899435,
+        "input_event_bytes": 356958,
+        "decoded_arrow_bytes": 436726,
+        "ipc_input_bytes": 359523,
+        "ipc_output_bytes": 866080,
+        "sqlite_bytes": 1103976,
+        "durable_transactions": 8,
+        "durability": "sqlite_FULL_WAL",
+        "python_peak_rss_bytes": 182153216,
+        "native_peak_rss_bytes": null,
+        "transaction_latency_seconds": {
+          "p50": 0.02477650200125936,
+          "p95": 0.03372252000008302,
+          "p99": 0.03372252000008302
+        },
+        "checksum": 8386560
+      }
+    ],
+    "native_group": [
+      {
+        "method": "native_group",
+        "layer": "local",
+        "wall_seconds": 0.14148861000103352,
+        "python_cpu_seconds": 0.15672953099999987,
+        "native_cpu_seconds": 0.004931,
+        "total_cpu_seconds": 0.16166053099999986,
+        "rows": 4096,
+        "rows_per_second": 28949.32673358004,
+        "input_event_bytes": 356958,
+        "decoded_arrow_bytes": 436890,
+        "ipc_input_bytes": 359083,
+        "ipc_output_bytes": 443544,
+        "sqlite_bytes": 1103976,
+        "durable_transactions": 8,
+        "durability": "sqlite_FULL_WAL",
+        "python_peak_rss_bytes": 180576256,
+        "native_peak_rss_bytes": null,
+        "transaction_latency_seconds": {
+          "p50": 0.014564077000613906,
+          "p95": 0.02273918299943034,
+          "p99": 0.02273918299943034
+        },
+        "checksum": 8386560
+      },
+      {
+        "method": "native_group",
+        "layer": "local",
+        "wall_seconds": 0.15094609900006617,
+        "python_cpu_seconds": 0.15336260899999998,
+        "native_cpu_seconds": 0.005631,
+        "total_cpu_seconds": 0.15899360899999998,
+        "rows": 4096,
+        "rows_per_second": 27135.5141148643,
+        "input_event_bytes": 356958,
+        "decoded_arrow_bytes": 436890,
+        "ipc_input_bytes": 359083,
+        "ipc_output_bytes": 443544,
+        "sqlite_bytes": 1103976,
+        "durable_transactions": 8,
+        "durability": "sqlite_FULL_WAL",
+        "python_peak_rss_bytes": 176910336,
+        "native_peak_rss_bytes": null,
+        "transaction_latency_seconds": {
+          "p50": 0.01609027800077456,
+          "p95": 0.02277185699858819,
+          "p99": 0.02277185699858819
+        },
+        "checksum": 8386560
+      },
+      {
+        "method": "native_group",
+        "layer": "local",
+        "wall_seconds": 0.15936772500026564,
+        "python_cpu_seconds": 0.15950030700000006,
+        "native_cpu_seconds": 0.007514,
+        "total_cpu_seconds": 0.16701430700000006,
+        "rows": 4096,
+        "rows_per_second": 25701.565357685646,
+        "input_event_bytes": 356958,
+        "decoded_arrow_bytes": 436890,
+        "ipc_input_bytes": 359083,
+        "ipc_output_bytes": 443544,
+        "sqlite_bytes": 1103976,
+        "durable_transactions": 8,
+        "durability": "sqlite_FULL_WAL",
+        "python_peak_rss_bytes": 176656384,
+        "native_peak_rss_bytes": null,
+        "transaction_latency_seconds": {
+          "p50": 0.015622495999195962,
+          "p95": 0.019789339999988442,
+          "p99": 0.019789339999988442
+        },
+        "checksum": 8386560
+      },
+      {
+        "method": "native_group",
+        "layer": "local",
+        "wall_seconds": 0.09841188500104181,
+        "python_cpu_seconds": 0.1034622070000002,
+        "native_cpu_seconds": 0.004314999999999999,
+        "total_cpu_seconds": 0.1077772070000002,
+        "rows": 4096,
+        "rows_per_second": 41620.989171751346,
+        "input_event_bytes": 356958,
+        "decoded_arrow_bytes": 436890,
+        "ipc_input_bytes": 359083,
+        "ipc_output_bytes": 443544,
+        "sqlite_bytes": 1103976,
+        "durable_transactions": 8,
+        "durability": "sqlite_FULL_WAL",
+        "python_peak_rss_bytes": 175050752,
+        "native_peak_rss_bytes": null,
+        "transaction_latency_seconds": {
+          "p50": 0.009907876999932341,
+          "p95": 0.011071562999859452,
+          "p99": 0.011071562999859452
+        },
+        "checksum": 8386560
+      },
+      {
+        "method": "native_group",
+        "layer": "local",
+        "wall_seconds": 0.19350294600008056,
+        "python_cpu_seconds": 0.20007930800000007,
+        "native_cpu_seconds": 0.005299,
+        "total_cpu_seconds": 0.20537830800000006,
+        "rows": 4096,
+        "rows_per_second": 21167.636383160258,
+        "input_event_bytes": 356958,
+        "decoded_arrow_bytes": 436890,
+        "ipc_input_bytes": 359083,
+        "ipc_output_bytes": 443544,
+        "sqlite_bytes": 1103976,
+        "durable_transactions": 8,
+        "durability": "sqlite_FULL_WAL",
+        "python_peak_rss_bytes": 176668672,
+        "native_peak_rss_bytes": null,
+        "transaction_latency_seconds": {
+          "p50": 0.019139563000862836,
+          "p95": 0.03538123899852508,
+          "p99": 0.03538123899852508
+        },
+        "checksum": 8386560
+      }
+    ]
+  },
+  "summary": {
+    "python": {
+      "wall_seconds": {
+        "median": 0.32662386799893284,
+        "min": 0.2865717099994072,
+        "max": 0.3939564419997623,
+        "known_samples": 5
+      },
+      "python_cpu_seconds": {
+        "median": 0.384034161,
+        "min": 0.347283287,
+        "max": 0.47536276899999996,
+        "known_samples": 5
+      },
+      "native_cpu_seconds": {
+        "median": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "known_samples": 5
+      },
+      "total_cpu_seconds": {
+        "median": 0.384034161,
+        "min": 0.347283287,
+        "max": 0.47536276899999996,
+        "known_samples": 5
+      },
+      "rows_per_second": {
+        "median": 12540.418509811361,
+        "min": 10397.08851874155,
+        "max": 14293.106601515108,
+        "known_samples": 5
+      },
+      "ipc_input_bytes": {
+        "median": 0,
+        "min": 0,
+        "max": 0,
+        "known_samples": 5
+      },
+      "ipc_output_bytes": {
+        "median": 0,
+        "min": 0,
+        "max": 0,
+        "known_samples": 5
+      },
+      "sqlite_bytes": {
+        "median": 1103976,
+        "min": 1103976,
+        "max": 1103976,
+        "known_samples": 5
+      },
+      "python_peak_rss_bytes": {
+        "median": 184238080,
+        "min": 183455744,
+        "max": 186093568,
+        "known_samples": 5
+      },
+      "native_peak_rss_bytes": {
+        "median": 0,
+        "min": 0,
+        "max": 0,
+        "known_samples": 5
+      }
+    },
+    "native_event": {
+      "wall_seconds": {
+        "median": 0.26414357800058497,
+        "min": 0.20649804300046526,
+        "max": 0.35147976000007475,
+        "known_samples": 5
+      },
+      "python_cpu_seconds": {
+        "median": 0.306214078,
+        "min": 0.24840927000000002,
+        "max": 0.39909702000000014,
+        "known_samples": 5
+      },
+      "native_cpu_seconds": {
+        "median": 0.018091,
+        "min": 0.014284999999999999,
+        "max": 0.021790999999999998,
+        "known_samples": 5
+      },
+      "total_cpu_seconds": {
+        "median": 0.3238870900000001,
+        "min": 0.26490927000000003,
+        "max": 0.42088802000000014,
+        "known_samples": 5
+      },
+      "rows_per_second": {
+        "median": 15506.718092502439,
+        "min": 11653.58710839887,
+        "max": 19835.539070899435,
+        "known_samples": 5
+      },
+      "ipc_input_bytes": {
+        "median": 359523,
+        "min": 359523,
+        "max": 359523,
+        "known_samples": 5
+      },
+      "ipc_output_bytes": {
+        "median": 866080,
+        "min": 866080,
+        "max": 866080,
+        "known_samples": 5
+      },
+      "sqlite_bytes": {
+        "median": 1103976,
+        "min": 1103976,
+        "max": 1103976,
+        "known_samples": 5
+      },
+      "python_peak_rss_bytes": {
+        "median": 183832576,
+        "min": 182153216,
+        "max": 186818560,
+        "known_samples": 5
+      },
+      "native_peak_rss_bytes": {
+        "median": null,
+        "min": null,
+        "max": null,
+        "known_samples": 0
+      }
+    },
+    "native_group": {
+      "wall_seconds": {
+        "median": 0.15094609900006617,
+        "min": 0.09841188500104181,
+        "max": 0.19350294600008056,
+        "known_samples": 5
+      },
+      "python_cpu_seconds": {
+        "median": 0.15672953099999987,
+        "min": 0.1034622070000002,
+        "max": 0.20007930800000007,
+        "known_samples": 5
+      },
+      "native_cpu_seconds": {
+        "median": 0.005299,
+        "min": 0.004314999999999999,
+        "max": 0.007514,
+        "known_samples": 5
+      },
+      "total_cpu_seconds": {
+        "median": 0.16166053099999986,
+        "min": 0.1077772070000002,
+        "max": 0.20537830800000006,
+        "known_samples": 5
+      },
+      "rows_per_second": {
+        "median": 27135.5141148643,
+        "min": 21167.636383160258,
+        "max": 41620.989171751346,
+        "known_samples": 5
+      },
+      "ipc_input_bytes": {
+        "median": 359083,
+        "min": 359083,
+        "max": 359083,
+        "known_samples": 5
+      },
+      "ipc_output_bytes": {
+        "median": 443544,
+        "min": 443544,
+        "max": 443544,
+        "known_samples": 5
+      },
+      "sqlite_bytes": {
+        "median": 1103976,
+        "min": 1103976,
+        "max": 1103976,
+        "known_samples": 5
+      },
+      "python_peak_rss_bytes": {
+        "median": 176668672,
+        "min": 175050752,
+        "max": 180576256,
+        "known_samples": 5
+      },
+      "native_peak_rss_bytes": {
+        "median": null,
+        "min": null,
+        "max": null,
+        "known_samples": 0
+      }
+    }
+  },
+  "native_cpu_scope": "includes_child_startup_shutdown",
+  "correctness": "same_fixture_counts_checksum_and_prior_full_differential_gate",
+  "environment": {
+    "python": "3.12.14",
+    "arrow": "25.0.1",
+    "duckdb": "1.5.5",
+    "architecture": "x86_64",
+    "cpu_count": 9
+  },
+  "provenance": {
+    "source_commit": "e7d69685a3acc76e357c414d32a06c014d8302b0",
+    "fixture": "synthetic_only",
+    "host": "shared_ephemeral_workspace",
+    "timing_noise": "not_a_fixed_machine_gate",
+    "source_socket": false,
+    "sink": false
+  }
+}

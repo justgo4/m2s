@@ -82,9 +82,9 @@ python j4.py cli
 | --- | --- | --- | --- |
 | P0 公开基线 | 导入可执行主程序、必要模块和 C 源码；重建示例/文档；独立 CI | 无业务配置、数据、源仓库地址或源提交历史；源码构建、ABI bundle/本地库和完整离线回归通过 | 本次建立，结果见 Actions |
 | P1 正确性合同 | 明确源事务、主键、NULL、时区、撤回、过滤变化、schema 变化和状态版本 | 同一 raw event 由参考解码器与原生解码器双跑，比较 Arrow schema/null/value/op/order；覆盖整数边界、DECIMAL、UTF-8/emoji、二进制、日期时间、复合键、更新主键、多行/多事件事务；不支持类型显式拒绝 | 进行中：已加同字节差分与真实 MySQL CI，完整语义 gate 未完成 |
-| P2 故障与输出协议 | 注入建连失败、断网、decoder kill、短写、缺失/忽略 TABLE_MAP、帧损坏、进程强杀、磁盘满、输出超时及历史清理 | 至少 1,000 个可重放故障案例，恢复后逐键结果等于 oracle；checkpoint 不越过持久化状态；GTID/文件位置双模式；未知输出事务不被静默丢弃或无保护重放；4.1.1 真实验证两种协议和双机制兼容性 | 进行中：已加 1,000 个原生协议故障用例，完整恢复和真实 SR gate 未完成 |
-| P3 测量平台 | 建 decoder、local pipeline、snapshot、end-to-end 四层基准和热点 profile | 每层记录 wall/CPU、RSS、rows/s、MB/s、IPC、分配、磁盘写入和输出放大；端到端计时从 MySQL COMMIT 到查询可见；公开环境、种子、版本和原始 JSON；保持相同耐久性 | 计划 |
-| P4 原生接入与批处理 | 将复制协议和必要 snapshot 读取下沉，复用 C 解码；事件/事务组批，移除业务数据经 Python 与子进程一发一等 | Python 不再创建源业务行；事务/巨型事务/重连语义通过 P1/P2；相比基线在 source-bound 负载吞吐不下降且总 CPU/row 下降至少 20%，否则不设为默认 | 计划 |
+| P2 故障与输出协议 | 注入建连失败、断网、decoder kill、短写、缺失/忽略 TABLE_MAP、帧损坏、进程强杀、磁盘满、输出超时及历史清理 | 至少 1,000 个可重放故障案例，恢复后逐键结果等于 oracle；checkpoint 不越过持久化状态；GTID/文件位置双模式；未知输出事务不被静默丢弃或无保护重放；4.1.1 真实验证两种协议和双机制兼容性 | 部分完成：1,000 个协议故障及 1,000 次 capture 恢复通过；真实 SR 协议验证通过；磁盘满和完整端到端恢复未完成 |
+| P3 测量平台 | 建 decoder、local pipeline、snapshot、end-to-end 四层基准和热点 profile | 每层记录 wall/CPU、RSS、rows/s、MB/s、IPC、分配、磁盘写入和输出放大；端到端计时从 MySQL COMMIT 到查询可见；公开环境、种子、版本和原始 JSON；保持相同耐久性 | 部分完成：decoder/local A/B 已实现；snapshot/end-to-end 待实现 |
+| P4 原生接入与批处理 | 将复制协议和必要 snapshot 读取下沉，复用 C 解码；事件/事务组批，移除业务数据经 Python 与子进程一发一等 | Python 不再创建源业务行；事务/巨型事务/重连语义通过 P1/P2；相比基线在 source-bound 负载吞吐不下降且总 CPU/row 下降至少 20%，否则不设为默认 | 部分完成：有界事务内事件组批已实现；C socket 和完整 source-bound 验收待完成 |
 | P5 原生布局和融合 | 零额外格式交换、选择向量、稳定分区、表达式/编码融合、自适应批大小 | 避免不必要 combine/take/IPC 往返；公布实际复制和分配字节；窄/宽/稀疏批均测；错误、NULL、溢出语义不变；至少一个已识别热点 CPU/row 下降 20% | 计划 |
 | P6 共享源状态 | 全库/订阅源的持久化最新状态、共享主键索引、事务 changelog、保留策略；基准 RocksDB 与适合扫描的布局 | 同一源只捕获一次；源状态与位置原子提交；任意未来任务可用列不能因当前投影而被丢弃；内存预算下溢写、恢复、schema 演进通过；明确并发跨表 snapshot 的一致性边界 | 计划 |
 | P7 动态新增下游 | 固定水位 W、历史构建、保留 W 后变化、追赶、切换；取消、失败和重启可恢复 | 回填期间既有任务持续运行；新增任务结果等于水位一致的 oracle；交错更新/删除/主键改变不丢不倒序；10 次部署和故障混合测试；恢复不依赖内存中的 RocksDB snapshot 句柄 | 计划 |
@@ -178,3 +178,7 @@ A/B 每个样本独立 Python 进程，输出 Python/C/总 CPU、wall、RSS、ro
 本地 tiny 解码器样本中组批减少 IPC 输出约 88%；本地 4,096 行、8 个 durable 源事务样本中，逐事件/组批 wall 中位数为 0.264/0.151 秒，总 CPU 为 0.324/0.162 秒（各 5 次）。这些仅是小规模合成测量，不能推导真实 MySQL→StarRocks 加速比，也不能证明超过其他系统。
 
 仍未通过的验收：C 直接管理 MySQL socket 的 P4 路径、P6 共享源状态、P7 动态部署水位恢复、P8 JOIN/聚合撤回、完整 snapshot/end-to-end A/B、默认参数下 50M+50 rows/s 的 72 小时长跑，以及七个系统的同机对标。当前版本不能据此称为“物理极限”或生产候选；阶段状态保留为部分完成或计划。
+
+宽行反例：同机 2,048 行、每行 4 KiB BLOB、4 个 SQLite FULL/WAL 源事务（各 5 次）中，逐事件/组批 wall 中位数 0.191/0.190 秒，总 CPU 0.224/0.211 秒，区间重叠且 Python 参考路径 wall 0.177 秒。此样本没有显著组批 wall 收益，也不能证明 native 总是更快。默认保持逐事件模式；优化选择需要负载和固定机器实测。
+
+本地完整样本：[tiny decoder](reports/local-decoder-tiny.json)、[narrow durable local](reports/local-durable-narrow.json)、[wide durable local](reports/local-durable-wide.json)。六个 CI A/B job 已全部通过：[run 36743206446](https://github.com/justgo4/m2s/actions/runs/36743206446)，Actions artifact 提供 runner 样本；每个 workload 只在自身同一 runner 内比较方法，不跨 runner 排名。
