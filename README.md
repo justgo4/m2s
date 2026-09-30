@@ -248,3 +248,12 @@ python tools/e2e_contract.py --isolated --load-mode transaction --group-size 128
 python tools/state_layout_benchmark.py --rows 1000 --transactions 10 --changes 20 --repeats 2 --faults
 python tools/state_layout_benchmark.py --rows 10000 --transactions 100 --changes 50 --width 2048 --entropy high --repeats 3 --faults
 ```
+
+
+补充 P3 实际源读取测量：`tools/snapshot_benchmark.py` 在隔离 MySQL 的现有 21 列合成 fixture 上，分别运行生产 `fetch_snapshot` 的 Python tuple→Arrow 与 native packet→Arrow 路径，各 5 个新进程样本、随机先后顺序；每个样本检查 Arrow 类型/NULL/全部值和分块 op/order。记录 Python/C CPU、scan wall、读取行数、RSS 与 Python 进程 I/O 计数。source/server CPU、网络及 IPC 字节尚未记录，报告明确列为未测；不把 warm-cache 小 fixture 结果外推到 50M 或下游吞吐。该项已接入隔离 MySQL CI，验收以最新 workflow 结果为准。
+
+```bash
+# 先准备同一个隔离合成 fixture，再执行只读 benchmark：
+python tools/binlog_parity.py --live --cases 1000
+python tools/snapshot_benchmark.py --isolated --repeats 5 --batch-rows 512
+```

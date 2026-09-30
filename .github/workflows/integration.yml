@@ -56,11 +56,15 @@ jobs:
           PY
       - name: Actual raw binlog Python/native differential, 1000 transactions
         run: python tools/binlog_parity.py --live --cases 1000 --output benchmark-results/live-mysql-contract.json
+      - name: Actual production snapshot Python/native A/B on isolated fixture
+        run: python tools/snapshot_benchmark.py --isolated --repeats 5 --batch-rows 512
       - name: Publish synthetic counts and environment only
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: mysql-contract
-          path: benchmark-results/live-mysql-contract.json
+          path: |
+            benchmark-results/live-mysql-contract.json
+            benchmark-results/snapshot.json
           if-no-files-found: error
       - name: Remove isolated database
         if: always()
