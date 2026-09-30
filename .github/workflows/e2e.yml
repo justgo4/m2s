@@ -1,0 +1,88 @@
+name: Actual daemon MySQL to StarRocks contract
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'j4.py'
+      - 'cdc_catalog.py'
+      - 'native/**'
+      - 'tools/e2e_contract.py'
+      - 'tools/starrocks_contract.py'
+      - '.github/workflows/e2e.yml'
+  pull_request:
+    paths:
+      - 'j4.py'
+      - 'cdc_catalog.py'
+      - 'native/**'
+      - 'tools/e2e_contract.py'
+      - '.github/workflows/e2e.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        protocol: [merge_async, transaction]
+        gtid: ['ON', 'OFF']
+    env:
+      TEST_PROTOCOL: ${{ matrix.protocol }}
+      TEST_GTID: ${{ matrix.gtid }}
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.14'
+          cache: pip
+      - run: python tools/privacy_check.py
+      - run: python -m pip install -r requirements.txt
+      - run: python tools/catalog_config_test.py
+      - name: Build actual decoder and ABI
+        run: |
+          cmake -S native -B build/native -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/native --parallel 2
+      - name: Isolated database services
+        run: |
+          docker run --detach --name m2s-e2e-mysql -p 127.0.0.1:3306:3306 \
+            -e MYSQL_ALLOW_EMPTY_PASSWORD=yes mysql:8.4.6 \
+            --server-id=1 --log-bin=mysql-bin --gtid-mode="$TEST_GTID" \
+            --enforce-gtid-consistency=ON --binlog-format=ROW --binlog-row-image=FULL
+          docker run --detach --network host --name m2s-e2e-starrocks starrocks/allin1-ubuntu:4.1.1
+          python - <<'PY'
+          import time, pymysql
+          for attempt in range(180):
+              try:
+                  con = pymysql.connect(host='127.0.0.1',user='root',connect_timeout=2)
+                  con.close()
+                  break
+              except pymysql.MySQLError:
+                  time.sleep(1)
+          else:
+              raise RuntimeError('isolated MySQL not ready')
+          PY
+      - name: Concurrent backfill and changes, exact SQL oracle, hard kill and durable resume
+        run: python tools/e2e_contract.py --isolated --load-mode "$TEST_PROTOCOL" --group-size 128
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: e2e-${{ matrix.protocol }}-gtid-${{ matrix.gtid }}
+          path: benchmark-results/e2e-contract.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Remove disposable services
+        if: always()
+        run: |
+          docker rm --force m2s-e2e-mysql || true
+          docker rm --force m2s-e2e-starrocks || true

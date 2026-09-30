@@ -241,7 +241,9 @@ def _connection_variable_value(name, value):
 
 def connection_settings_values(values, require=True):
     values = values or {}
-    missing = [name for name in CONNECTION_VARIABLES if not values.get(name)]
+    missing = [name for name in CONNECTION_VARIABLES
+               if name not in values or values[name] is None
+               or (not values[name] and name not in SECRET_VARIABLES)]
     if missing:
         if not require:
             return None
