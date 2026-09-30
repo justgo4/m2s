@@ -166,3 +166,15 @@ python tools/decoder_benchmark.py --layer local --events 1000 --rows-per-event 8
 A/B 每个样本独立 Python 进程，输出 Python/C/总 CPU、wall、RSS、rows/s、IPC 字节、SQLite 文件总字节、事务批 P50/P95/P99。fixtures 构造、初始化不计 wall；C CPU 计入子进程完整生命周期。此测试不含 MySQL socket/StarRocks，不把批延迟解释为端到端延迟；RSS 无读取权限时为 unknown。local 模式保持 SQLite FULL/WAL 与相同源事务边界。
 
 `tools/starrocks_contract.py` 与 Actions 的隔离 StarRocks 4.1.1 probe 验证：2PC 在 commit 前不可见、merge async 实际共享 TxnId 并最终 VISIBLE；组合 header 需同时通过功能与无效参数负对照，不能把 HTTP success 当作双机制叠加成功。只上传合成计数和结论，不连接生产服务。
+
+### 已验证结果（2026-09-30）
+
+提交 `e7d69685a3acc76e357c414d32a06c014d8302b0` 的 [集成与 sanitizer CI](https://github.com/justgo4/m2s/actions/runs/36738492453) 和 [Python 3.12/3.14 基线 CI](https://github.com/justgo4/m2s/actions/runs/36738492665) 全部通过。真实 MySQL 测试覆盖 1,000 个事务、3,834 个行镜像，逐事件及组批解码均与同一原始事件的 Python oracle 比较，最终状态也与 MySQL SELECT 比较。每个基线版本的 1,000 次 capture 恢复测试均没有重复提交。
+
+隔离 StarRocks `4.1.1-14b7e3f` 使用镜像默认服务配置：8 个 async Merge Commit 请求实际共享 1 个事务并全部可见；2PC 只有显式 commit 后可见。事务接口接受无效 Merge Commit 参数，而普通 Stream Load 拒绝相同无效参数，说明事务接口忽略这些参数。结论是本次测试没有证明双机制叠加，运行时继续保留两条独立协议路径。
+
+新增 `Native decoder and durable pipeline A/B` workflow：decoder/local 两层 × tiny/dense/wide 三种合成负载，每种方法独立进程、随机执行顺序、5 次重复，先运行差分和故障 gate，再发布 JSON 样本。GitHub runner 性能波动较大，只用于发现回退，不作为固定机器性能验收。当前 local 包含 DuckDB 路由和 SQLite FULL/WAL，但尚未包含未来共享状态引擎。
+
+本地 tiny 解码器样本中组批减少 IPC 输出约 88%；本地 4,096 行、8 个 durable 源事务样本中，逐事件/组批 wall 中位数为 0.264/0.151 秒，总 CPU 为 0.324/0.162 秒（各 5 次）。这些仅是小规模合成测量，不能推导真实 MySQL→StarRocks 加速比，也不能证明超过其他系统。
+
+仍未通过的验收：C 直接管理 MySQL socket 的 P4 路径、P6 共享源状态、P7 动态部署水位恢复、P8 JOIN/聚合撤回、完整 snapshot/end-to-end A/B、默认参数下 50M+50 rows/s 的 72 小时长跑，以及七个系统的同机对标。当前版本不能据此称为“物理极限”或生产候选；阶段状态保留为部分完成或计划。
