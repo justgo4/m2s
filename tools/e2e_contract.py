@@ -153,15 +153,18 @@ def normalize(rows):
     return [tuple(str(value) if isinstance(value, Decimal) else value for value in row) for row in rows]
 
 
-def final_result(source, cfg):
+def final_result(source, cfg, extra=False):
     with source.cursor() as cur:
-        cur.execute('SELECT id,part,v*2,trim(note),amount FROM ' + DATABASE + '.events WHERE active=1 ORDER BY id,part')
+        query = ('SELECT id,part,v,note,amount FROM ' + DATABASE + '.events WHERE active=1 AND v>=0 ORDER BY id,part'
+                 if extra else 'SELECT id,part,v*2,trim(note),amount FROM ' + DATABASE + '.events WHERE active=1 ORDER BY id,part')
+        cur.execute(query)
         expected = normalize(cur.fetchall())
-    actual, _ = execute(cfg, 'SELECT id,part,v,note,amount FROM ' + DATABASE + '.events ORDER BY id,part')
+    table = 'events_extra' if extra else 'events'
+    actual, _ = execute(cfg, 'SELECT id,part,v,note,amount FROM ' + DATABASE + '.' + table + ' ORDER BY id,part')
     return expected, normalize(actual)
 
 
-def wait_equal(proc, directory, source, cfg):
+def wait_equal(proc, directory, source, cfg, extra=False):
     deadline = time.monotonic() + 240
     last = None
     while time.monotonic() < deadline:
@@ -169,7 +172,11 @@ def wait_equal(proc, directory, source, cfg):
         current = state(directory)
         if current and current['done'] and not current['pending'] and not current['deliveries']:
             expected, actual = final_result(source, cfg)
-            if actual == expected:
+            new_equal = True
+            if extra:
+                new_expected, new_actual = final_result(source, cfg, extra=True)
+                new_equal = new_expected == new_actual
+            if actual == expected and new_equal:
                 return len(actual), current
             last = (len(expected), len(actual))
         time.sleep(.3)
@@ -198,7 +205,7 @@ def change(source, sequence):
     try:
         with source.cursor() as cur:
             cur.execute('UPDATE ' + DATABASE + '.events SET v=%s,active=%s,note=%s,amount=%s WHERE id=%s AND part=0',
-                        (sequence, int(sequence % 3 != 0), None if sequence % 5 == 0 else '  changed🙂  ',
+                        (-sequence - 1 if sequence % 4 == 0 else sequence, int(sequence % 3 != 0), None if sequence % 5 == 0 else '  changed🙂  ',
                          None if sequence % 7 == 0 else Decimal('-0.0001'), key))
             cur.execute('DELETE FROM ' + DATABASE + '.events WHERE id=%s AND part=0', (256 + key,))
             cur.execute('INSERT INTO ' + DATABASE + '.events VALUES(%s,0,%s,%s,%s,1) ON DUPLICATE KEY UPDATE v=VALUES(v)',
@@ -214,14 +221,15 @@ def change(source, sequence):
     return commit_started
 
 
-def sample_visible(proc, cfg, commits, samples, directory):
+def sample_visible(proc, cfg, commits, samples, directory, extra=False):
     live_process(proc)
-    rows, _ = execute(cfg, 'SELECT id,v FROM ' + DATABASE + '.events WHERE id>=1000000')
+    table = 'events_extra' if extra else 'events'
+    rows, _ = execute(cfg, 'SELECT id,v FROM ' + DATABASE + '.' + table + ' WHERE id>=1000000')
     observed = time.perf_counter()
     for key, value in rows:
         sequence = int(key) - 1000000
         if sequence in commits and sequence not in samples:
-            if value != sequence * 2:
+            if value != sequence * (1 if extra else 2):
                 raise AssertionError('marker transformation differs')
             samples[sequence] = dict(seconds=observed - commits[sequence],
                                      during_backfill=not bool((state(directory) or {}).get('done')))
@@ -281,15 +289,39 @@ def main():
                 time.sleep(.2)
             if len(samples) != len(commits) or not any(row['during_backfill'] for row in samples.values()):
                 raise AssertionError('did not observe every new marker, including during backfill')
-            before_count, before_state = wait_equal(proc, directory, source, cfg)
+            wait_equal(proc, directory, source, cfg)
+            deployment = directory / 'deploy-extra.sql'
+            deployment.write_text('CREATE TABLE starrocks.events_extra AS '
+                                  'SELECT id,part,v,note,amount FROM mysql.events WHERE active=1 AND v>=0;\n')
+            installed = subprocess.run([sys.executable, str(ROOT / 'j4.py'), 'sql', str(deployment)],
+                                       env=env, capture_output=True, timeout=120)
+            if installed.returncode:
+                raise RuntimeError('actual synthetic SQL deployment failed; status=' + str(installed.returncode)
+                                   + ' diagnostic=' + installed.stdout.decode(errors='replace')[-3000:])
+            # The new task is live before history is complete; existing output
+            # must continue. Output schemas/filters deliberately differ.
+            dynamic_commits, existing_samples, dynamic_samples = {}, {}, {}
+            for seq in range(args.transactions, args.transactions + 20):
+                dynamic_commits[seq] = change(source, seq)
+                time.sleep(.08)
+            deadline = time.monotonic() + 90
+            while (len(existing_samples) < 20 or len(dynamic_samples) < 20) and time.monotonic() < deadline:
+                sample_visible(proc, cfg, dynamic_commits, existing_samples, directory)
+                sample_visible(proc, cfg, dynamic_commits, dynamic_samples, directory, extra=True)
+                time.sleep(.2)
+            if not any(row['during_backfill'] for row in dynamic_samples.values()):
+                raise AssertionError('new task emitted no fresh markers while history was incomplete')
+            if len(existing_samples) != 20 or len(dynamic_samples) != 20:
+                raise AssertionError('hot-added task or existing task stopped delivering CDC')
+            before_count, before_state = wait_equal(proc, directory, source, cfg, extra=True)
             # Crash after a fully drained checkpoint. Separate from the uncertain-request test.
             stop(proc, handle, kill=True)
             proc, handle = None, None
-            for seq in range(args.transactions, args.transactions + 20):
+            for seq in range(args.transactions + 20, args.transactions + 40):
                 change(source, seq)
             proc, handle = start(directory, env, 2)
             wait_started(proc, directory)
-            after_count, after_state = wait_equal(proc, directory, source, cfg)
+            after_count, after_state = wait_equal(proc, directory, source, cfg, extra=True)
             stop(proc, handle)
             proc, handle = None, None
             latencies = [item['seconds'] for item in samples.values()]
@@ -302,15 +334,22 @@ def main():
                           observation_poll_schedule="every_5_transactions_during_writes_then_0.2s_sleep_plus_query_time",
                           latency_seconds=dict(p50=percentile(latencies,.5),p95=percentile(latencies,.95),p99=percentile(latencies,.99),max=max(latencies)),
                           before_restart_rows=before_count, after_restart_rows=after_count,
+                          dynamic_sql_deployment=True, dynamic_sql_markers=20,
+                          dynamic_markers_visible_during_backfill=sum(x['during_backfill'] for x in dynamic_samples.values()),
+                          existing_task_markers_during_deploy=len(existing_samples),
+                          dynamic_task_exact_final_result=True,
+                          dynamic_task_latency_seconds=dict(p95=percentile([x['seconds'] for x in dynamic_samples.values()],.95),
+                                                           p99=percentile([x['seconds'] for x in dynamic_samples.values()],.99)),
                           crash_boundary='drained_checkpoint_not_uncertain_http_request',
                           exact_final_result=True, durable_cursor_progressed=j4.position_ge(after_state['cursor'],before_state['cursor']),
                           server_configuration='image_defaults_except_test_table_replication_1',
-                          scope='short_functional_probe_not_50M_or_72h', samples=samples)
+                          scope='short_functional_probe_not_50M_or_72h', samples=samples,
+                          dynamic_samples=dynamic_samples, existing_samples=existing_samples)
             if after_state['cursor'] == before_state['cursor']:
                 raise AssertionError('restart did not capture new source transactions')
             args.output.parent.mkdir(parents=True, exist_ok=True)
             args.output.write_text(json.dumps(report, indent=2) + '\n')
-            print(json.dumps({key:value for key,value in report.items() if key!='samples'}), flush=True)
+            print(json.dumps({key:value for key,value in report.items() if key not in ('samples','dynamic_samples','existing_samples')}), flush=True)
     finally:
         if proc is not None:
             stop(proc, handle, kill=True)
