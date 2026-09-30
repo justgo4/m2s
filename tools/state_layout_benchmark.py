@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import random
 import resource
+import shutil
 import sqlite3
 import statistics
 import subprocess
@@ -87,7 +88,8 @@ def open_engine(method, directory):
 def apply(con, method, batch, sequence, crash=None):
     data = payload(batch)
     digest = hashlib.sha256(data).hexdigest()
-    if batch.schema!=SCHEMA or batch['id'].null_count or batch['part'].null_count:
+    if (batch.schema!=SCHEMA or batch['id'].null_count or batch['part'].null_count
+            or batch['_sync_op'].null_count or batch['_sync_order'].null_count):
         raise ValueError('source schema or key contract mismatch')
     if j4.pc.any(j4.pc.invert(j4.pc.is_in(batch['_sync_op'],value_set=j4.pa.array([0,1],type=j4.pa.int8())))).as_py():
         raise ValueError('unsupported row operation')
@@ -161,6 +163,73 @@ def oracle(batches):
     return j4.pa.Table.from_pylist([latest[key] for key in sorted(latest)],schema=schema)
 
 
+def fixed_checkpoint(con, method, directory):
+    """Paused-writer prototype: DB carries W, not a second unbound manifest.
+
+    Production online snapshot/retention is not implemented by this helper.
+    The final directory is published after close+fsync; orphan builds are ignored.
+    """
+    target = directory / 'fixed-w'
+    if target.exists():
+        return target
+    staging = directory / 'fixed-w-building'
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir()
+    if method == 'sqlite_arrow_index':
+        copied = sqlite3.connect(str(staging / 'state.sqlite3'))
+        try:
+            con.backup(copied)
+        finally:
+            copied.close()
+    else:
+        con.execute('CHECKPOINT')
+        shutil.copyfile(directory / 'state.duckdb', staging / 'state.duckdb')
+    for path in staging.iterdir():
+        with path.open('rb') as handle:
+            os.fsync(handle.fileno())
+    descriptor = os.open(staging, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    os.rename(staging, target)
+    descriptor = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    return target
+
+
+def verify_fixed_checkpoint(args, batches):
+    # Copy the immutable base into a separate task build. Never advance W itself.
+    base = args.directory / 'fixed-w'
+    build = args.directory / 'task-build'
+    if build.exists():
+        shutil.rmtree(build)
+    shutil.copytree(base, build)
+    con = open_engine(args.worker, build)
+    try:
+        watermark = con.execute('SELECT seq FROM checkpoint WHERE id=1').fetchone()[0]
+        if watermark != 3 or not scan(con, args.worker).equals(oracle(batches[:4])):
+            raise AssertionError('fixed W changed or was not bound to copied source state')
+        for sequence, batch in enumerate(batches[4:], 4):
+            apply(con, args.worker, batch, sequence)
+        if not scan(con, args.worker).equals(oracle(batches)):
+            raise AssertionError('fixed W plus suffix replay differs from source final state')
+    finally:
+        con.close()
+    # Reopen the untouched W after reconstruction and source advancement.
+    con = open_engine(args.worker, base)
+    try:
+        if con.execute('SELECT seq FROM checkpoint WHERE id=1').fetchone()[0] != 3:
+            raise AssertionError('task replay mutated the shared fixed W checkpoint')
+    finally:
+        con.close()
+    return sum(path.stat().st_size for path in base.iterdir() if path.is_file())
+
+
 def worker(args):
     batches = fixtures(args.rows,args.transactions,args.changes,args.width)
     directory = args.directory
@@ -179,6 +248,10 @@ def worker(args):
         crash = args.crash if sequence==min(5,args.transactions) and not args.recover else None
         applied += apply(con,args.worker,batch,sequence,crash)
         timing.append(time.perf_counter()-started)
+        if sequence == 3:
+            checkpoint_started = time.perf_counter()
+            fixed_checkpoint(con, args.worker, directory)
+            checkpoint_seconds = time.perf_counter() - checkpoint_started
     changes = dict(wall_seconds=time.perf_counter()-wall,cpu_seconds=time.process_time()-cpu,
                    changes_per_second=args.transactions*args.changes/(time.perf_counter()-wall))
     scan_started,scan_cpu = time.perf_counter(),time.process_time()
@@ -204,6 +277,7 @@ def worker(args):
         raise AssertionError('conflicting replay identity was accepted')
     if not scan(con,args.worker).equals(expected):
         raise AssertionError('replay rejection changed committed state')
+    checkpoint_bytes = verify_fixed_checkpoint(args, batches)
     close_started = time.perf_counter()
     con.close()
     report = dict(method=args.worker,initial=initial,changes=changes,scan=scan_time,
@@ -212,6 +286,11 @@ def worker(args):
                   file_bytes=sum(p.stat().st_size for p in directory.iterdir() if p.is_file()),
                   exact_result=True,rows=actual.num_rows,transactions_applied_this_process=int(applied),
                   state_changelog_checkpoint_atomic=True,conflicting_replay_rejected=True,
+                  fixed_w_checkpoint_replay_exact=True, fixed_w=3,
+                  fixed_w_checkpoint_bytes=checkpoint_bytes,
+                  fixed_w_checkpoint_seconds=checkpoint_seconds,
+                  checkpoint_scope='paused_writer_full_copy_prototype_not_online_MVCC',
+                  changes_wall_includes_checkpoint=True,
                   latency_seconds={name:percentile(timing,p) for name,p in [('p50',.5),('p95',.95),('p99',.99)]})
     args.output.parent.mkdir(parents=True,exist_ok=True)
     args.output.write_text(json.dumps(report,indent=2)+'\n')

@@ -311,10 +311,20 @@ def main():
                 dynamic_commits[seq] = change(source, seq)
                 time.sleep(.08)
             deadline = time.monotonic() + 90
-            while (len(existing_samples) < 20 or len(dynamic_samples) < 20) and time.monotonic() < deadline:
+            backfill_restart = None
+            while (len(existing_samples) < 20 or len(dynamic_samples) < 20 or backfill_restart is None) and time.monotonic() < deadline:
                 sample_visible(proc, cfg, dynamic_commits, existing_samples, directory)
                 sample_visible(proc, cfg, dynamic_commits, dynamic_samples, directory, extra=True)
+                current = state(directory)
+                if backfill_restart is None and dynamic_samples and current and not current['done']:
+                    backfill_restart = dict(pending_jobs=current['pending'], deliveries=current['deliveries'])
+                    stop(proc, handle, kill=True)
+                    proc, handle = None, None
+                    proc, handle = start(directory, env, 2)
+                    wait_started(proc, directory)
                 time.sleep(.2)
+            if backfill_restart is None:
+                raise AssertionError('did not inject a crash during hot-added task historical construction')
             if not any(row['during_backfill'] for row in dynamic_samples.values()):
                 raise AssertionError('new task emitted no fresh markers while history was incomplete')
             if len(existing_samples) != 20 or len(dynamic_samples) != 20:
@@ -325,7 +335,7 @@ def main():
             proc, handle = None, None
             for seq in range(args.transactions + 20, args.transactions + 40):
                 change(source, seq)
-            proc, handle = start(directory, env, 2)
+            proc, handle = start(directory, env, 3)
             wait_started(proc, directory)
             after_count, after_state = wait_equal(proc, directory, source, cfg, extra=True)
             stop(proc, handle)
@@ -346,7 +356,8 @@ def main():
                           dynamic_task_exact_final_result=True,
                           dynamic_task_latency_seconds=dict(p95=percentile([x['seconds'] for x in dynamic_samples.values()],.95),
                                                            p99=percentile([x['seconds'] for x in dynamic_samples.values()],.99)),
-                          crash_boundary='drained_checkpoint_not_uncertain_http_request',
+                          crash_boundary='active_new_task_backfill_then_drained_checkpoint; HTTP_boundary_not_controlled',
+                          dynamic_backfill_crash=backfill_restart,
                           exact_final_result=True, durable_cursor_progressed=j4.position_ge(after_state['cursor'],before_state['cursor']),
                           server_configuration='image_defaults_except_test_table_replication_1',
                           scope='short_functional_probe_not_50M_or_72h', samples=samples,
