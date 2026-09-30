@@ -1,4 +1,5 @@
 duckdb==1.5.5
+numpy==2.5.3
 pyarrow==25.0.1
 orjson==3.12.0
 pymysql==1.2.3
