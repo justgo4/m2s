@@ -74,5 +74,11 @@ jobs:
           python j4.py selftest
       - name: Same-byte row and snapshot differential tests and 1000 native faults
         run: python tools/binlog_parity.py --cases 1000 --faults --output benchmark-results/native-contract.json
+      - name: Native capture recovery from durable cursor, 1000 traces
+        run: python tools/native_recovery_test.py --cases 1000
+      - name: Decoder and durable local A/B smoke
+        run: |
+          python tools/decoder_benchmark.py --events 128 --rows-per-event 4 --repeats 3 --layer decoder
+          python tools/decoder_benchmark.py --events 128 --rows-per-event 4 --repeats 3 --layer local --output benchmark-results/local.json
       - name: Synthetic benchmark smoke
         run: python tools/partition_benchmark.py --rows 10000 --repeats 3 --commit '${{ github.sha }}'

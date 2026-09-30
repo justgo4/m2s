@@ -152,3 +152,17 @@ cmake -S native -B build/sanitized -DM2S_SANITIZERS=ON
 cmake --build build/sanitized --parallel 2
 python tools/binlog_parity.py --binary build/sanitized/mysql_arrow_reader --cases 1000 --faults
 ```
+
+组批候选：`CDC_NATIVE_EVENT_GROUP_EVENTS=128` 将同一源事务内的 TABLE_MAP/row events 合并发送，在 C 内按源表共享 Arrow builder；单批达到 8,192 行或累计 16 MiB Arrow 容量后输出，源事务的 SQLite commit 仍在最终 ACK 与 COMMIT/XID 后发生。Python 输入缓存最多 4 MiB（单个更大合法事件沿用原限制）；单个源事件的峰值仍需测量。默认为 `1`，保留逐事件 A/B 和旧 decoder 兼容性，不在完整性能 gate 前默认为新路径。
+
+真实 MySQL 最终 SELECT 对照发现并修复固定长度 BINARY 的 binlog 尾部零填充与 snapshot 不一致。新增两表交错组批差分与损坏 group 故障；新增实际 `capture_binlog_native` 恢复循环测试，注入首次建连失败、事务中断和子进程 kill，确认 GTID/文件位置都从 durable cursor 重放、CONFIG 重建、SQLite 仅提交一次。
+
+```bash
+python tools/native_recovery_test.py --cases 1000
+python tools/decoder_benchmark.py --layer decoder --events 1000 --rows-per-event 1 --repeats 5
+python tools/decoder_benchmark.py --layer local --events 1000 --rows-per-event 8 --repeats 5
+```
+
+A/B 每个样本独立 Python 进程，输出 Python/C/总 CPU、wall、RSS、rows/s、IPC 字节、SQLite 文件总字节、事务批 P50/P95/P99。fixtures 构造、初始化不计 wall；C CPU 计入子进程完整生命周期。此测试不含 MySQL socket/StarRocks，不把批延迟解释为端到端延迟；RSS 无读取权限时为 unknown。local 模式保持 SQLite FULL/WAL 与相同源事务边界。
+
+`tools/starrocks_contract.py` 与 Actions 的隔离 StarRocks 4.1.1 probe 验证：2PC 在 commit 前不可见、merge async 实际共享 TxnId 并最终 VISIBLE；组合 header 需同时通过功能与无效参数负对照，不能把 HTTP success 当作双机制叠加成功。只上传合成计数和结论，不连接生产服务。

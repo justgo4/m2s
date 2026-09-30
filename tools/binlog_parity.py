@@ -96,6 +96,59 @@ def synthetic(binary, cases, seed):
                 columns=len(SPECS), source="deterministic_mysql_wire_fixture")
 
 
+def grouped(binary, cases, seed, group_events=128):
+    rng = random.Random(seed)
+    prepared = [mapping(), mapping(table="events2")]
+    cfg = config(binary, prepared)
+    decoder = j4.native_start(cfg, prepared)
+    events, expected, total, groups = [], {}, 0, 0
+
+    def flush():
+        nonlocal total, groups
+        if not events:
+            return
+        outputs = {}
+        for db, table, batch in j4.native_decode_events(decoder, events, 10):
+            if db != "synthetic" or table not in expected:
+                raise AssertionError("unexpected grouped output table")
+            outputs.setdefault(table, []).append(batch)
+        if set(outputs) != set(expected):
+            raise AssertionError("group lost or fabricated a source table")
+        for table, batches in outputs.items():
+            left, right = j4.pa.concat_tables(expected[table]), j4.pa.concat_tables(batches)
+            for side in ("left", "right"):
+                batch = left if side == "left" else right
+                dense = j4.pa.array(range(batch.num_rows), type=j4.pa.int64())
+                batch = batch.set_column(batch.num_columns - 1, "_sync_order", dense)
+                if side == "left":
+                    left = batch
+                else:
+                    right = batch
+            equal(left, right, f"group={groups} table={table}")
+            total += right.num_rows
+        events.clear()
+        expected.clear()
+        groups += 1
+
+    try:
+        for case in range(cases):
+            which = case % 2
+            prepared_map = prepared[which]
+            tm = table_map(table_id=7 + which, table=prepared_map["src_table"])
+            kind = ("insert", "update", "delete")[case % 3]
+            rows = [random_row(rng, case * 8 + i) for i in range(2 if kind == "update" else 1 + case % 4)]
+            event = row_event(kind, rows, table_id=7 + which, v2=case % 2 == 0)
+            events.extend([tm, event])
+            expected.setdefault(prepared_map["src_table"], []).append(decode_rows(event, parse_map(tm), prepared_map))
+            if len(events) >= group_events:
+                flush()
+        flush()
+    finally:
+        j4.native_stop(decoder)
+    return dict(kind="grouped_same_event_differential", events=cases, groups=groups,
+                row_images=total, source_tables=2, correctness="equal", seed=seed)
+
+
 def frame(kind, payload):
     return struct.pack("<cI", kind, len(payload)) + payload
 
@@ -122,7 +175,8 @@ def faults(binary, cases, seed):
     categories = {}
     for case in range(cases):
         category = ("config_truncated", "input_truncated", "unknown_map", "oversize",
-                    "invalid_config_kind", "invalid_decimal", "unknown_frame", "missing_nullable")[case % 8]
+                    "invalid_config_kind", "invalid_decimal", "unknown_frame", "missing_nullable",
+                    "group_unknown_map", "group_truncated", "group_invalid_count")[case % 11]
         prefix = frame(b"C", payload)
         if category == "config_truncated":
             # This used to dereference a NULL column allocation during decoder_reset.
@@ -145,6 +199,12 @@ def faults(binary, cases, seed):
             at = bad.index(b"\x13\x04\x09\x09", 19)
             bad[at] = 0
             request = prefix + frame(b"E", bad)
+        elif category == "group_unknown_map":
+            request = prefix + frame(b"G", struct.pack("<II", 1, len(row)) + row)
+        elif category == "group_truncated":
+            request = prefix + frame(b"G", struct.pack("<II", 1, len(tm)) + tm[:-1])
+        elif category == "group_invalid_count":
+            request = prefix + frame(b"G", struct.pack("<I", 4097 + case))
         elif category == "missing_nullable":
             request = prefix + frame(b"E", tm[:-3])
         else:
@@ -206,7 +266,10 @@ def live(binary, cases, seed):
     cfg.update(mysql=dict(options, database="synthetic"), query_timeout=15, server_id=198611)
     prepared = mapping()
     decoder = j4.native_start(cfg, [prepared])
+    group_decoder = j4.native_start(cfg, [prepared])
     stream = j4.replication_open_stream(cfg, start, None)
+    group_events, transaction_expected = [], []
+    grouped_transactions = 0
     maps, events, rows, transactions, sink = {}, 0, 0, 0, {}
     try:
         while True:
@@ -217,10 +280,13 @@ def live(binary, cases, seed):
             if kind == 19:
                 info = parse_map(raw)
                 maps[info[0]] = info
+                group_events.append(raw)
                 j4.native_decode_event(decoder, raw, 15)
             elif kind in (23, 24, 25, 30, 31, 32):
                 info = maps[int.from_bytes(raw[19:25], "little")]
                 expected = decode_rows(raw, info, prepared)
+                group_events.append(raw)
+                transaction_expected.append(expected)
                 db, name, actual = j4.native_decode_event(decoder, raw, 15)
                 if (db, name) != ("synthetic", "events"):
                     raise AssertionError("unexpected table")
@@ -237,17 +303,33 @@ def live(binary, cases, seed):
                 rows += actual.num_rows
             elif kind == 16:
                 transactions += 1
+                if group_events:
+                    grouped = [item[2] for item in j4.native_decode_events(group_decoder, group_events, 15)]
+                    expected_group = j4.pa.concat_tables(transaction_expected)
+                    actual_group = j4.pa.concat_tables(grouped)
+                    for side in ("expected", "actual"):
+                        batch = expected_group if side == "expected" else actual_group
+                        batch = batch.set_column(batch.num_columns - 1, "_sync_order", j4.pa.array(range(batch.num_rows), type=j4.pa.int64()))
+                        if side == "expected":
+                            expected_group = batch
+                        else:
+                            actual_group = batch
+                    equal(expected_group, actual_group, f"live transaction group={transactions}")
+                    grouped_transactions += 1
+                    group_events.clear()
+                    transaction_expected.clear()
             if j4.position_ge(position, end):
                 break
     finally:
         j4.replication_close_stream(stream)
         j4.native_stop(decoder)
+        j4.native_stop(group_decoder)
     if transactions != cases or not events:
         raise AssertionError(f"live coverage incomplete transactions={transactions} expected={cases}")
     expected_rows = source_final.drop(["_sync_op", "_sync_order"])
     final = j4.pa.Table.from_pylist([sink[key] for key in sorted(sink)], schema=expected_rows.schema)
     equal(expected_rows, final, "replayed native output vs actual MySQL final SELECT")
-    return dict(kind="live_mysql_differential", transactions=transactions, events=events,
+    return dict(kind="live_mysql_differential", transactions=transactions, grouped_transactions=grouped_transactions, events=events,
                 row_images=rows, correctness="equal", seed=seed)
 
 
@@ -265,6 +347,8 @@ def main():
     started = time.perf_counter()
     results = [live(args.binary, args.cases, args.seed) if args.live
                else synthetic(args.binary, args.cases, args.seed)]
+    if not args.live:
+        results.append(grouped(args.binary, args.cases, args.seed))
     if args.faults:
         results.append(faults(args.binary, args.cases, args.seed))
     report = dict(format_version=1, tests=results, seconds=time.perf_counter() - started)

@@ -84,7 +84,7 @@ def mapping(specs=SPECS, table="events"):
         if kind == 246:
             column_type = f"decimal({dtype.precision},{dtype.scale})"
         signature.append((name, names[kind], column_type, "YES", None, None))
-    return dict(src_table=table, sr_table=table, pk=["id", "part"],
+    return dict(src_table=table, sr_table=table, primary_key=["id", "part"],
                 _schema=[(name, dtype) for name, _, _, dtype, _ in specs],
                 _schema_signature=signature)
 
@@ -213,6 +213,8 @@ def decode_value(c, kind, meta, dtype, unsigned):
         else:
             size = meta[0]
         raw = take(c, number(c, size))
+        if kind == 254 and (pa.types.is_binary(dtype) or pa.types.is_large_binary(dtype)):
+            raw = raw.ljust(maximum, b"\0")
         return raw.decode("utf-8") if pa.types.is_string(dtype) or pa.types.is_large_string(dtype) else raw
     if kind == 246:
         return decode_decimal(c, meta[0], meta[1])
@@ -284,6 +286,8 @@ def random_row(rng, index):
             row[name] = rng.choice(["", "中文🙂", "\x00\n\"\\", "x" * 300])
         elif kind in (252, 254):
             row[name] = rng.choice([b"", b"\x00\xff\n", rng.randbytes(8)])
+            if kind == 254:
+                row[name] = row[name].ljust(8, b"\0")
         elif kind == 10:
             row[name] = rng.choice([dt.date(1000, 1, 1), dt.date(9999, 12, 31), dt.date(2024, 2, 29)])
         elif kind == 18:

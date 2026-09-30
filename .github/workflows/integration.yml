@@ -85,3 +85,27 @@ jobs:
           cmake --build build/sanitized --parallel 2
           build/sanitized/mysql_arrow_reader --selftest
           python tools/binlog_parity.py --binary build/sanitized/mysql_arrow_reader --cases 1000 --faults
+
+  starrocks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.14'
+      - run: python -m pip install -r requirements.txt
+      - name: Start isolated StarRocks 4.1.1 without changing server parameters
+        run: docker run --detach --network host --name m2s-starrocks starrocks/allin1-ubuntu:4.1.1
+      - name: Prove 2PC and async merge independently; probe combined headers with negative control
+        run: python tools/starrocks_contract.py
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: starrocks-protocol-contract
+          path: benchmark-results/starrocks-contract.json
+          if-no-files-found: error
+      - name: Remove isolated StarRocks
+        if: always()
+        run: docker rm --force m2s-starrocks || true

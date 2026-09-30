@@ -16,6 +16,7 @@
 
 #define FRAME_CONFIG 'C'
 #define FRAME_EVENT 'E'
+#define FRAME_GROUP 'G'
 #define FRAME_SNAPSHOT 'S'
 #define FRAME_QUIT 'Q'
 #define FRAME_ACK 'A'
@@ -808,8 +809,17 @@ static int append_value(struct ArrowArray* out, const struct ColumnConfig* cfg,
             if (cur_take(c, (size_t)nlen, &p)) return EINVAL;
             uint64_t len = uint_le_n(p, nlen);
             if (cur_take(c, (size_t)len, &p)) return EINVAL;
-            if (cfg->kind == AK_BINARY)
+            if (cfg->kind == AK_BINARY) {
+                /* MySQL packs trailing zero padding out of fixed BINARY row
+                   images. Snapshot protocol exposes the full declared width. */
+                if (meta->type == MYSQL_TYPE_STRING) {
+                    if (meta->max_length > 255 || len > meta->max_length) return EINVAL;
+                    uint8_t padded[255] = {0};
+                    memcpy(padded, p, (size_t)len);
+                    return ArrowArrayAppendBytes(out, bytes_view(padded, meta->max_length));
+                }
                 return ArrowArrayAppendBytes(out, bytes_view(p, (int64_t)len));
+            }
             return ArrowArrayAppendString(out, string_view(p, (int64_t)len));
         }
         case MYSQL_TYPE_TINY_BLOB:
@@ -911,9 +921,9 @@ static int decode_image(struct TableMap* map, struct Cursor* c, const uint8_t* b
     return ArrowArrayFinishElement(array);
 }
 
-static int decode_rows(struct Decoder* d, const uint8_t* event, size_t size,
+static int decode_rows_into(struct Decoder* d, const uint8_t* event, size_t size,
                        struct ArrowSchema* schema, struct ArrowArray* array,
-                       struct TableConfig** out_cfg) {
+                       struct TableConfig** out_cfg, int append) {
     if (size < 19 + 10) return EINVAL;
     uint8_t event_type = event[4];
     if (event_type == PARTIAL_UPDATE_ROWS_EVENT) return ENOTSUP;
@@ -944,15 +954,18 @@ static int decode_rows(struct Decoder* d, const uint8_t* event, size_t size,
     int update = event_type == UPDATE_ROWS_EVENT_V1 || event_type == UPDATE_ROWS_EVENT_V2;
     if (update && cur_take(&c, bitmap_bytes, &bitmap2)) return EINVAL;
 
-    int rc = build_schema(map->config, schema);
-    if (rc) return rc;
+    int rc = 0;
     struct ArrowError error;
-    rc = ArrowArrayInitFromSchema(array, schema, &error);
-    if (rc) return rc;
-    rc = ArrowArrayStartAppending(array);
-    if (rc) return rc;
+    if (!array->release) {
+        rc = build_schema(map->config, schema);
+        if (rc) return rc;
+        rc = ArrowArrayInitFromSchema(array, schema, &error);
+        if (rc) return rc;
+        rc = ArrowArrayStartAppending(array);
+        if (rc) return rc;
+    }
 
-    int64_t order = 0;
+    int64_t order = array->length;
     while (c.pos < c.size) {
         int op1 = (event_type == DELETE_ROWS_EVENT_V1 || event_type == DELETE_ROWS_EVENT_V2) ? 1 : 0;
         if (update) op1 = 1;
@@ -963,10 +976,18 @@ static int decode_rows(struct Decoder* d, const uint8_t* event, size_t size,
             if (rc) return rc;
         }
     }
-    rc = ArrowArrayFinishBuildingDefault(array, &error);
-    if (rc) return rc;
+    if (!append) {
+        rc = ArrowArrayFinishBuildingDefault(array, &error);
+        if (rc) return rc;
+    }
     *out_cfg = map->config;
     return 0;
+}
+
+static int decode_rows(struct Decoder* d, const uint8_t* event, size_t size,
+                       struct ArrowSchema* schema, struct ArrowArray* array,
+                       struct TableConfig** out_cfg) {
+    return decode_rows_into(d, event, size, schema, array, out_cfg, 0);
 }
 
 static int ipc_buffer(struct ArrowSchema* schema, struct ArrowArray* array, struct ArrowBuffer* out) {
@@ -1043,6 +1064,75 @@ static int emit_batch(struct TableConfig* cfg, struct ArrowSchema* schema, struc
     free(payload);
     ArrowBufferReset(&out);
     return rc;
+}
+
+/* Bounded transaction-local group: each source table shares one Arrow builder.
+   Read the whole input frame before emitting output, avoiding duplex pipe deadlock.
+   All B frames are followed by exactly one ACK; errors invalidate the whole group. */
+static int decode_group(struct Decoder* d, const uint8_t* payload, size_t size) {
+    struct ArrowSchema* schemas = calloc(d->ntables, sizeof(struct ArrowSchema));
+    struct ArrowArray* arrays = calloc(d->ntables, sizeof(struct ArrowArray));
+    if (!schemas || !arrays) { free(schemas); free(arrays); return ENOMEM; }
+    struct Cursor c = {payload, size, 0};
+    uint32_t count;
+    int rc = cur_u32(&c, &count);
+    if (!rc && (!count || count > 4096)) rc = EINVAL;
+    for (uint32_t e = 0; !rc && e < count; e++) {
+        uint32_t len;
+        const uint8_t* event;
+        if (cur_u32(&c, &len) || len < 19 || cur_take(&c, len, &event)) { rc = EINVAL; break; }
+        if (event[4] == TABLE_MAP_EVENT) {
+            rc = parse_table_map(d, event, len);
+            continue;
+        }
+        if (event[4] != WRITE_ROWS_EVENT_V1 && event[4] != UPDATE_ROWS_EVENT_V1 &&
+            event[4] != DELETE_ROWS_EVENT_V1 && event[4] != WRITE_ROWS_EVENT_V2 &&
+            event[4] != UPDATE_ROWS_EVENT_V2 && event[4] != DELETE_ROWS_EVENT_V2) {
+            rc = ENOTSUP; break;
+        }
+        if (len < 29) { rc = EINVAL; break; }
+        struct TableMap* map = find_map(d, uint_le_n(event + 19, 6));
+        if (!map) { rc = DECODER_UNKNOWN_MAP; break; }
+        if (map->state == MAP_IGNORED) continue;
+        if (map->state != MAP_SUBSCRIBED || !map->config) { rc = EINVAL; break; }
+        size_t index = (size_t)(map->config - d->tables);
+        if (index >= d->ntables) { rc = EINVAL; break; }
+        struct TableConfig* cfg = NULL;
+        rc = decode_rows_into(d, event, len, &schemas[index], &arrays[index], &cfg, 1);
+        if (rc) break;
+        /* Bound accumulation across events by rows and allocated Arrow capacity.
+           A single source event is still decoded atomically, as in the E path. */
+        int64_t bytes = 0;
+        for (uint16_t t = 0; t < d->ntables; t++) {
+            if (!arrays[t].release) continue;
+            for (int64_t col = 0; col < arrays[t].n_children; col++) {
+                for (int64_t b = 0; b < arrays[t].children[col]->n_buffers; b++)
+                    bytes += ArrowArrayBuffer(arrays[t].children[col], b)->capacity_bytes;
+            }
+        }
+        if (arrays[index].length >= 8192 || bytes >= 16 * 1024 * 1024) {
+            struct ArrowError error;
+            for (uint16_t t = 0; !rc && t < d->ntables; t++) {
+                if (!arrays[t].release) continue;
+                rc = ArrowArrayFinishBuildingDefault(&arrays[t], &error);
+                if (!rc) rc = emit_batch(&d->tables[t], &schemas[t], &arrays[t]);
+                arrays[t].release(&arrays[t]);
+                schemas[t].release(&schemas[t]);
+            }
+        }
+    }
+    if (!rc && c.pos != c.size) rc = EINVAL;
+    struct ArrowError error;
+    for (uint16_t t = 0; t < d->ntables; t++) {
+        if (!rc && arrays[t].release) {
+            rc = ArrowArrayFinishBuildingDefault(&arrays[t], &error);
+            if (!rc) rc = emit_batch(&d->tables[t], &schemas[t], &arrays[t]);
+        }
+        if (arrays[t].release) arrays[t].release(&arrays[t]);
+        if (schemas[t].release) schemas[t].release(&schemas[t]);
+    }
+    free(arrays); free(schemas);
+    return rc ? rc : write_frame(FRAME_ACK, NULL, 0);
 }
 
 static char* dup_bytes(const uint8_t* p, size_t n) {
@@ -1165,6 +1255,8 @@ static int service(void) {
                     rc = write_frame(FRAME_ACK, NULL, 0);
                 }
             }
+        } else if (type == FRAME_GROUP) {
+            rc = decode_group(&d, payload, len);
         } else if (type == FRAME_SNAPSHOT) {
             struct ArrowSchema schema;
             struct ArrowArray array;

@@ -1179,6 +1179,7 @@ def read_config():
         snapshot_read_ahead_groups=env_int(
             "CDC_SNAPSHOT_READ_AHEAD_GROUPS",2,minimum=1,maximum=32),
         batch_rows=env_int("CDC_BATCH_ROWS", 50000, maximum=1000000),
+        native_event_group_events=env_int("CDC_NATIVE_EVENT_GROUP_EVENTS", 1, maximum=4096),
         batch_bytes=env_int("CDC_BATCH_BYTES", 16*1024*1024, maximum=64*1024*1024),
         batch_ms=env_int("CDC_BATCH_MS", 1000, minimum=0, maximum=3000),
         txn_rows=env_int("CDC_TXN_ROWS", 50000, maximum=1000000),
@@ -3005,7 +3006,8 @@ def native_reader_plan(cfg, prepared):
             raise RuntimeError(
                 f"native binlog reader is required but {mapping['src_table']} is unsupported: {why}")
     cfg["source_reader"] = "native_c_v1"
-    log(f"NATIVE BINLOG enabled decoder={path} transport=pymysql-wire->raw-event->ArrowIPC")
+    log(f"NATIVE BINLOG enabled decoder={path} transport=pymysql-wire->raw-event->ArrowIPC "
+        f"event_group_events={cfg.get('native_event_group_events',1)}")
     return True
 
 
@@ -6689,6 +6691,7 @@ def table_delivery_worker(mapping, cfg, runtime):
 
 NATIVE_FRAME_CONFIG = b"C"
 NATIVE_FRAME_EVENT = b"E"
+NATIVE_FRAME_GROUP = b"G"
 NATIVE_FRAME_SNAPSHOT = b"S"
 NATIVE_FRAME_QUIT = b"Q"
 NATIVE_FRAME_ACK = b"A"
@@ -6750,6 +6753,8 @@ def native_write_frame(proc, kind, payload=b"", timeout=30):
 
 
 def native_writev_frame(proc, kind, parts, payload_size, timeout=30):
+    if payload_size < 0 or sum(len(part) for part in parts) != payload_size:
+        raise NativeProtocolError("native vectored frame length does not match payload")
     if payload_size > NATIVE_MAX_FRAME_BYTES:
         raise NativeProtocolError(
             f"native frame exceeds {NATIVE_MAX_FRAME_BYTES} bytes: {payload_size}")
@@ -6930,6 +6935,27 @@ def native_decode_event(proc, event, timeout):
     if kind != NATIVE_FRAME_BATCH:
         raise NativeProtocolError(f"native binlog decoder returned invalid frame {kind!r}")
     return native_batch_payload(payload)
+
+
+def native_decode_events(proc, events, timeout):
+    """Consume the final ACK before committing any grouped source transaction."""
+    if not events or len(events) > 4096:
+        raise NativeProtocolError("native event group requires 1..4096 events")
+    parts = [struct.pack("<I",len(events))]
+    for event in events:
+        parts.extend((struct.pack("<I",len(event)),event))
+    native_writev_frame(proc,NATIVE_FRAME_GROUP,parts,sum(len(part) for part in parts),timeout)
+    while True:
+        kind,payload = native_read_frame(proc,timeout)
+        if kind == NATIVE_FRAME_ACK:
+            if payload:
+                raise NativeProtocolError("native group ACK contains an unexpected payload")
+            return
+        if kind == NATIVE_FRAME_ERROR:
+            raise NativeDecoderError("native group decoder: "+payload.decode("utf-8","replace"))
+        if kind != NATIVE_FRAME_BATCH:
+            raise NativeProtocolError(f"native group decoder returned invalid frame {kind!r}")
+        yield native_batch_payload(payload)
 
 
 def native_snapshot_decode(proc, cfg, mapping, packets, order_base):
@@ -7144,6 +7170,43 @@ def capture_binlog_native(cfg, prepared, runtime):
                     max_size=1024**2,dir=state_temp_dir(cfg)) as spool:
                     transaction_batches = transaction_batch_new()
                     spool_guard_state = dict(size=0,checked=0.0)
+                    pending_events = []
+                    pending_event_bytes = 0
+                    group_limit = max(1,min(4096,int(cfg.get("native_event_group_events",1))))
+                    group_bytes = min(4*1024*1024,int(cfg["batch_bytes"]))
+
+                    def stage_native_result(result):
+                        if result is None:
+                            return
+                        database,table,batch = result
+                        if database != cfg["mysql"]["database"] or table not in by_source:
+                            raise RuntimeError(f"native decoder emitted unexpected table {database}.{table}")
+                        fanout = by_source[table]
+                        expected = [name for name,_ in fanout[0]["_schema"]]+["_sync_op","_sync_order"]
+                        if batch.column_names != expected:
+                            raise RuntimeError(f"{table}: native Arrow schema differs from checked source schema")
+                        for mapping in fanout:
+                            transaction_batch_add(transaction_batches,mapping,batch,cfg,route_engine,spool)
+
+                    def flush_native_events():
+                        nonlocal pending_event_bytes
+                        if not pending_events:
+                            return
+                        for result in native_decode_events(decoder,pending_events,cfg["query_timeout"]):
+                            stage_native_result(result)
+                            transaction_spool_guard(spool,cfg,spool_guard_state)
+                        pending_events.clear()
+                        pending_event_bytes = 0
+
+                    def append_native_event(event):
+                        nonlocal pending_event_bytes
+                        if pending_events and pending_event_bytes+len(event)+4 > group_bytes:
+                            flush_native_events()
+                        pending_events.append(event)
+                        pending_event_bytes += len(event)+4
+                        if len(pending_events) >= group_limit or pending_event_bytes >= group_bytes:
+                            flush_native_events()
+
                     while not stop.is_set():
                         packet = replication_read_packet(stream)
                         if packet.is_eof_packet():
@@ -7169,28 +7232,19 @@ def capture_binlog_native(cfg, prepared, runtime):
                                     by_source = activated["by_source"]
 
                         if event_type == BINLOG_TABLE_MAP_EVENT:
-                            native_decode_event(decoder,event,cfg["query_timeout"])
+                            if group_limit == 1:
+                                native_decode_event(decoder,event,cfg["query_timeout"])
+                            else:
+                                append_native_event(event)
                         elif event_type in row_events:
                             if event_type == BINLOG_PARTIAL_UPDATE_ROWS_EVENT:
                                 raise RuntimeError("partial JSON updates are unsupported")
                             runtime["source_data_seen"] = time.time()
                             in_transaction = True
-                            result = native_decode_event(decoder,event,cfg["query_timeout"])
-                            if result is not None:
-                                database,table,batch = result
-                                if database != cfg["mysql"]["database"] or table not in by_source:
-                                    raise RuntimeError(
-                                        f"native decoder emitted unexpected table {database}.{table}")
-                                fanout = by_source[table]
-                                mapping = fanout[0]
-                                expected = [name for name,_ in mapping["_schema"]]+[
-                                    "_sync_op","_sync_order"]
-                                if batch.column_names != expected:
-                                    raise RuntimeError(
-                                        f"{table}: native Arrow schema columns differ from checked source schema")
-                                for mapping in fanout:
-                                    transaction_batch_add(
-                                        transaction_batches,mapping,batch,cfg,route_engine,spool)
+                            if group_limit == 1:
+                                stage_native_result(native_decode_event(decoder,event,cfg["query_timeout"]))
+                            else:
+                                append_native_event(event)
                             transaction_spool_guard(
                                 spool,cfg,spool_guard_state)
                             continue
@@ -7221,6 +7275,8 @@ def capture_binlog_native(cfg, prepared, runtime):
                             if keyword in ("SET","SAVEPOINT","RELEASE"):
                                 continue
                             if keyword == "ROLLBACK":
+                                pending_events.clear()
+                                pending_event_bytes = 0
                                 transaction_batch_clear(transaction_batches)
                                 spool.seek(0)
                                 spool.truncate()
@@ -7229,10 +7285,12 @@ def capture_binlog_native(cfg, prepared, runtime):
                             raise RuntimeError(f"unsupported binlog event type {event_type}")
 
                         if event_type == BINLOG_ROTATE_EVENT:
+                            flush_native_events()
                             native_reset(decoder,cfg,source_prepared)
 
                         if event_type == BINLOG_XID_EVENT or event_type == BINLOG_QUERY_EVENT:
                             if event_type == BINLOG_XID_EVENT or keyword == "COMMIT":
+                                flush_native_events()
                                 transaction_batch_flush_all(
                                     transaction_batches,cfg,route_engine,spool)
                                 transaction_spool_guard(
@@ -8388,3 +8446,4 @@ if __name__ == "__main__":
         log(f"FAILED: {error}")
         traceback.print_exc(file=sys.stdout)
         sys.exit(1)
+
