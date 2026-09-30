@@ -56,7 +56,8 @@ def setup_catalog(directory, cfg, source, mode, group):
                      CDC_SNAPSHOT_BUNDLE_MAX_LANES=4, CDC_COMMIT_INTERVAL_MS=1000,
                      CDC_BATCH_MS=200, CDC_QUERY_TIMEOUT=15, CDC_LOAD_TIMEOUT=60,
                      CDC_STATUS_SECONDS=5, CDC_IDLE_STATUS_SECONDS=10,
-                     CDC_COMPRESSION='', CDC_DETAIL_LOGS=True)
+                     CDC_COMPRESSION='', CDC_DETAIL_LOGS=True,
+                     CDC_RESOURCE_MEMORY_MB=2048, CDC_DUCKDB_MEMORY='64MB')
     catalog = directory / 'catalog.sqlite3'
     commands = [f'SET VARIABLE {key} = {sql_literal(value)}' for key, value in variables.items()]
     commands.append('CREATE TABLE starrocks.events AS ' + QUERY)
@@ -298,6 +299,11 @@ def main():
             if installed.returncode:
                 raise RuntimeError('actual synthetic SQL deployment failed; status=' + str(installed.returncode)
                                    + ' diagnostic=' + installed.stdout.decode(errors='replace')[-3000:])
+            response = json.loads(installed.stdout.decode())
+            activation = ((response.get('result') or {}).get('publish') or {}).get('activation') or {}
+            if activation.get('status') != 'hot_pending':
+                raise AssertionError('online synthetic SQL was not accepted for hot activation: ' +
+                                     json.dumps(activation, sort_keys=True))
             # The new task is live before history is complete; existing output
             # must continue. Output schemas/filters deliberately differ.
             dynamic_commits, existing_samples, dynamic_samples = {}, {}, {}

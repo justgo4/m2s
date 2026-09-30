@@ -1888,6 +1888,10 @@ def shell(
                         else dict(ok=True,result=result))
                 except Exception as exc:
                     response = dict(ok=False,error=str(exc))
+            if used and response.get("ok"):
+                activation_error = _batch_activation_error(response.get("result") or {})
+                if activation_error:
+                    response = dict(ok=False,error=activation_error,result=response.get("result"))
             _print_response(response)
             return 0 if response.get("ok") else 1
         finally:
