@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Configuration contract: explicit empty passwords differ from missing values."""
+from contextlib import redirect_stdout
+import io
+from unittest.mock import patch
 from pathlib import Path
 import sys
 import tempfile
@@ -39,6 +42,20 @@ def main():
         assert cdc_catalog.connection_configured(path)
         saved = cdc_catalog.connection_settings(path)
         assert saved == result
+    # Remote scripts must not report success when the durable catalog was
+    # committed but runtime installation needs a restart. No sockets/network.
+    with tempfile.TemporaryDirectory(prefix='m2s-remote-result-') as directory:
+        path = str(Path(directory) / 'catalog.sqlite3')
+        socket = str(Path(directory) / 'control.sock')
+        Path(socket).touch()
+        script = Path(directory) / 'deploy.sql'
+        script.write_text('HELP;')
+        for status, expected in [('restart_required', 1), ('hot_pending', 0)]:
+            response = dict(ok=True, result=dict(publish=dict(activation=dict(
+                status=status, reason='synthetic install result'))))
+            with patch.object(cdc_catalog, 'client_script', return_value=response), \
+                    patch.object(cdc_catalog, 'client', return_value={}), redirect_stdout(io.StringIO()):
+                assert cdc_catalog.shell(path, socket, file_path=str(script)) == expected
     from e2e_contract import setup_catalog, source_options
     from starrocks_contract import configuration
     for mode in ('merge_async', 'transaction'):

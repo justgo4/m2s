@@ -82,5 +82,7 @@ jobs:
         run: |
           python tools/decoder_benchmark.py --events 128 --rows-per-event 4 --repeats 3 --layer decoder
           python tools/decoder_benchmark.py --events 128 --rows-per-event 4 --repeats 3 --layer local --output benchmark-results/local.json
+      - name: Candidate state layouts and atomic commit crash recovery
+        run: python tools/state_layout_benchmark.py --rows 1000 --transactions 10 --changes 20 --repeats 2 --faults
       - name: Synthetic benchmark smoke
         run: python tools/partition_benchmark.py --rows 10000 --repeats 3 --commit '${{ github.sha }}'
