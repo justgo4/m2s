@@ -12,6 +12,7 @@ sys.path.insert(0,str(ROOT))
 
 import join_bootstrap
 import join_ir
+import join_log_consumer
 import join_state
 import source_state
 
@@ -197,12 +198,65 @@ def main():
         assert rows(con)==[
             ("alice",6),("bob",9)]
         assert source_state.base_applied_seq(con)==2
-        assert source_state.pin_watermark(pin_id=pin["pin_id"],con=con)==1
+        assert source_state.pin_watermark(
+            pin_id=pin["pin_id"],con=con)==1
+
+        consumer=join_bootstrap.activate_consumer(
+            con,"join-consumer",21,ir,"join-state",
+            pin["pin_id"],generation_id="join-generation-21")
+        assert consumer["watermark"]==1
+        try:
+            source_state.pin_watermark(
+                pin_id=pin["pin_id"],con=con)
+            raise AssertionError("JOIN bootstrap pin leaked after handoff")
+        except KeyError:
+            pass
+
+        def catchup_crash(seq):
+            assert seq==2
+            raise RuntimeError("synthetic JOIN catchup crash")
+
+        try:
+            join_log_consumer.process_next(
+                con,"join-consumer",ir,
+                fault_after_state=catchup_crash)
+            raise AssertionError("JOIN catchup crash injection did not fire")
+        except RuntimeError as exc:
+            assert "synthetic JOIN catchup crash" in str(exc)
+        assert join_state.state_info(
+            con,"join-state")["watermark"]==1
+        assert source_state.consumer_info(
+            con,"join-consumer")["watermark"]==1
+        assert rows(con)==[
+            ("alice",6),("bob",9)]
+
+        caught=join_log_consumer.process_next(
+            con,"join-consumer",ir)
+        assert caught["source_seq"]==2
+        assert caught["nchanges"]==2
+        assert len(caught["deltas"])==1
+        assert caught["deltas"][0]["op"]==0
+        assert caught["deltas"][0]["row"]==dict(
+            customer_name="alicia",amount=6)
+        assert rows(con)==[
+            ("alicia",6),("bob",9)]
+
+        assert add_commit(
+            con,None,None,140)==3
+        empty=join_log_consumer.process_next(
+            con,"join-consumer",ir)
+        assert empty["source_seq"]==3
+        assert empty["nchanges"]==0
+        assert empty["deltas"]==[]
+        assert join_state.state_info(
+            con,"join-state")["watermark"]==3
+        assert source_state.consumer_info(
+            con,"join-consumer")["watermark"]==3
         con.close()
 
     print(
         "join_bootstrap_test ok shared_fixed_w two_relation "
-        "crash_cursor_resume source_advanced_after_w",
+        "crash_cursor_resume atomic_consumer_handoff catchup_rollback",
         flush=True,
     )
 
