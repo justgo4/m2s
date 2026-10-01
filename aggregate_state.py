@@ -65,6 +65,10 @@ def install(con):
         con.execute(
             "ALTER TABLE aggregate_states "
             "ADD COLUMN bootstrap_cursor BLOB")
+    if "input_semantic_id" not in columns:
+        con.execute(
+            "ALTER TABLE aggregate_states "
+            "ADD COLUMN input_semantic_id TEXT NOT NULL DEFAULT ''")
 
 
 def _text(value, name):
@@ -184,7 +188,7 @@ def create_state(con, state_id, spec, watermark=0):
 def state_info(con, state_id):
     row = con.execute("""
         SELECT spec_hash,spec_json,watermark,last_digest,created,updated,
-               bootstrap_complete,bootstrap_cursor
+               bootstrap_complete,bootstrap_cursor,input_semantic_id
         FROM aggregate_states WHERE state_id=?
     """,(str(state_id),)).fetchone()
     if not row:
@@ -200,6 +204,7 @@ def state_info(con, state_id):
         created=float(row[4]),updated=float(row[5]),
         bootstrap_complete=bool(row[6]),
         bootstrap_cursor=None if row[7] is None else bytes(row[7]),
+        input_semantic_id=str(row[8] or ""),
     )
 
 
@@ -217,6 +222,29 @@ def ensure_state(con, state_id, spec, watermark=0):
         raise RuntimeError(
             "aggregate state bootstrap is incomplete")
     return current
+
+
+def bind_input_semantics(con,state_id,input_semantic_id):
+    state_id=_text(state_id,"state_id")
+    input_semantic_id=_text(input_semantic_id,"input_semantic_id")
+    with transaction(con):
+        row=con.execute("""
+            SELECT input_semantic_id
+            FROM aggregate_states WHERE state_id=?
+        """,(state_id,)).fetchone()
+        if not row:
+            raise KeyError("aggregate state does not exist")
+        current=str(row[0] or "")
+        if current and current!=input_semantic_id:
+            raise RuntimeError(
+                "aggregate state upstream semantic identity changed")
+        if not current:
+            con.execute("""
+                UPDATE aggregate_states
+                SET input_semantic_id=?,updated=?
+                WHERE state_id=?
+            """,(input_semantic_id,time.time(),state_id))
+    return state_info(con,state_id)
 
 
 def begin_bootstrap(con, state_id, spec, fixed_w):

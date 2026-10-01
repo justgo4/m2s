@@ -40,8 +40,10 @@ def ensure_build(con,state_id,ir,pin_id):
     ):
         raise RuntimeError(
             "aggregate fixed-W predates complete source relation")
-    return aggregate_state.begin_bootstrap(
+    state=aggregate_state.begin_bootstrap(
         con,state_id,aggregate_ir.state_spec(ir),fixed_w)
+    return aggregate_state.bind_input_semantics(
+        con,state_id,aggregate_ir.semantic_id(ir))
 
 
 def _transform_snapshot(table,ir,engine=None):
@@ -82,6 +84,9 @@ def process_next_chunk(
     ):
         raise RuntimeError(
             "aggregate bootstrap IR differs from durable state")
+    if current["input_semantic_id"]!=aggregate_ir.semantic_id(ir):
+        raise RuntimeError(
+            "aggregate bootstrap upstream semantics changed across restart")
     if current["bootstrap_complete"]:
         return dict(
             state_id=state_id,fixed_w=fixed_w,done=True,nrows=0,

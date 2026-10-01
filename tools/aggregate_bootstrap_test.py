@@ -129,6 +129,7 @@ def main():
             con,"agg-state",ir,pin["pin_id"])
         assert build["watermark"]==2
         assert not build["bootstrap_complete"]
+        assert build["input_semantic_id"]==aggregate_ir.semantic_id(ir)
 
         def crash():
             raise RuntimeError("synthetic bootstrap crash")

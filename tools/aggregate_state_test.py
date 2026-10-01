@@ -48,8 +48,20 @@ def main():
     with tempfile.TemporaryDirectory(prefix="m2s-aggregate-") as td:
         path = os.path.join(td,"aggregate.sqlite3")
         con = open_db(path)
-        assert aggregate_state.create_state(
-            con,"agg",spec,watermark=10)["watermark"] == 10
+        created=aggregate_state.create_state(
+            con,"agg",spec,watermark=10)
+        assert created["watermark"] == 10
+        assert created["input_semantic_id"] == ""
+        bound=aggregate_state.bind_input_semantics(
+            con,"agg","semantic-a")
+        assert bound["input_semantic_id"] == "semantic-a"
+        assert aggregate_state.bind_input_semantics(
+            con,"agg","semantic-a")["input_semantic_id"] == "semantic-a"
+        expect_error(
+            lambda: aggregate_state.bind_input_semantics(
+                con,"agg","semantic-b"),
+            RuntimeError,
+        )
 
         assert aggregate_state.apply_transaction(con,"agg",11,[
             dict(category="a",amount=Decimal("10.00"),_sync_op=0),

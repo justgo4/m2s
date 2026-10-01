@@ -177,6 +177,26 @@ def main():
             raise AssertionError("aggregate semantic drift was accepted")
         except RuntimeError:
             pass
+
+        # Same aggregate state shape but different upstream filter must also
+        # fail, even with a fresh consumer id. State content is bound to the
+        # full aggregate IR, not merely GROUP BY/aggregate operator shape.
+        same_shape_different_input=aggregate_ir.compile_sql(
+            "db.orders",SCHEMA_SIG,
+            'SELECT "category",COUNT(*) AS "n",'
+            'COUNT("amount") AS "nn",SUM("amount") AS "total",'
+            'AVG("amount") AS "mean" '
+            'FROM arrow_batch WHERE "active"=1 GROUP BY "category"',
+            source_filter='"amount" IS NULL OR "amount">0',
+        )
+        try:
+            aggregate_log_consumer.ensure_consumer(
+                con,"agg-task-new","db.orders",10,
+                same_shape_different_input,"agg-state",3)
+            raise AssertionError(
+                "aggregate state accepted different upstream semantics")
+        except RuntimeError:
+            pass
         con.close()
 
     print(
