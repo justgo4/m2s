@@ -26,7 +26,7 @@ sys.path.insert(0,str(ROOT))
 
 import aggregate_ir
 import aggregate_outbox
-import aggregate_runtime
+import aggregate_task_runner
 import aggregate_state
 import aggregate_target_mapping
 import aggregate_task_catalog
@@ -331,13 +331,17 @@ def run_contract(output,load_mode):
         path=Path(td)/"state.sqlite3"
         cfg=config(path,load_mode)
         create_target(cfg)
-        mapping=bind_mapping(cfg)
         ir=plan()
 
         con=open_state(path)
         descriptor=register_descriptor(con,ir)
         if descriptor["status"]!="candidate":
             raise AssertionError("new aggregate task is not candidate")
+        loaded=aggregate_task_runner.load_task(
+            con,TASK_ID,cfg)
+        mapping=loaded["mapping"]
+        if loaded["task"]["descriptor_hash"]!=descriptor["descriptor_hash"]:
+            raise AssertionError("aggregate runner loaded a different descriptor")
 
         source_state.register_relation(
             con,SOURCE_RELATION,"source-contract",
@@ -355,9 +359,8 @@ def run_contract(output,load_mode):
         ],100)!=1:
             raise AssertionError("unexpected first source sequence")
 
-        first=aggregate_runtime.step(
-            con,SINK_KEY,PLAN_VERSION,CONSUMER_ID,ir,
-            STATE_ID,mapping,cfg,bootstrap_limit=1)
+        first=aggregate_task_runner.step(
+            con,TASK_ID,cfg,mapping=mapping,bootstrap_limit=1)
         if first["phase"]!="bootstrap":
             raise AssertionError("aggregate fixed-W bootstrap did not start")
         fixed_w=int(first["generation"]["fixed_w"])
@@ -367,8 +370,10 @@ def run_contract(output,load_mode):
 
         # The source advances after W while bootstrap resumes from durable cursor.
         con=open_state(path)
-        persisted=aggregate_task_catalog.task_info(
-            con,TASK_ID)
+        loaded=aggregate_task_runner.load_task(
+            con,TASK_ID,cfg)
+        persisted=loaded["task"]
+        mapping=loaded["mapping"]
         if persisted["descriptor_hash"]!=descriptor["descriptor_hash"]:
             raise AssertionError("aggregate descriptor changed across restart")
         if add_commit(con,[
@@ -378,9 +383,8 @@ def run_contract(output,load_mode):
 
         status=None
         for _ in range(40):
-            status=aggregate_runtime.step(
-                con,SINK_KEY,PLAN_VERSION,CONSUMER_ID,ir,
-                STATE_ID,mapping,cfg,bootstrap_limit=1)
+            status=aggregate_task_runner.step(
+                con,TASK_ID,cfg,mapping=mapping,bootstrap_limit=1)
             consumer=status["consumer"]
             if (
                 consumer is not None
@@ -401,20 +405,23 @@ def run_contract(output,load_mode):
 
         # Crash/restart boundary: jobs exist durably, no target acknowledgement yet.
         con=open_state(path)
+        loaded=aggregate_task_runner.load_task(
+            con,TASK_ID,cfg)
+        mapping=loaded["mapping"]
         if int(task_generation_fixed_w(con))!=fixed_w:
             raise AssertionError("aggregate generation reacquired a new W")
         first_deliveries=drain_target(
             con,mapping,cfg)
         if first_deliveries<1:
             raise AssertionError("aggregate target produced no real delivery")
-        status=aggregate_runtime.step(
-            con,SINK_KEY,PLAN_VERSION,CONSUMER_ID,ir,
-            STATE_ID,mapping,cfg)
+        status=aggregate_task_runner.step(
+            con,TASK_ID,cfg,mapping=mapping)
         if status["generation"]["status"]!="ready":
             raise AssertionError(
                 "aggregate generation did not become ready after VISIBLE")
-        aggregate_task_catalog.set_status(
-            con,TASK_ID,"active")
+        if status["task"]["status"]!="active":
+            raise AssertionError(
+                "aggregate task was not activated after VISIBLE")
         visible_after_bootstrap=int(status["visible_frontier"])
         if visible_after_bootstrap<2:
             raise AssertionError("aggregate target frontier did not cover seq 2")
@@ -430,9 +437,8 @@ def run_contract(output,load_mode):
         ],140)!=3:
             raise AssertionError("unexpected third source sequence")
         for _ in range(10):
-            status=aggregate_runtime.step(
-                con,SINK_KEY,PLAN_VERSION,CONSUMER_ID,ir,
-                STATE_ID,mapping,cfg)
+            status=aggregate_task_runner.step(
+                con,TASK_ID,cfg,mapping=mapping)
             if int(status["consumer"]["watermark"])==3:
                 break
         if int(status["consumer"]["watermark"])!=3:
@@ -441,17 +447,18 @@ def run_contract(output,load_mode):
 
         # A second restart proves staged incremental jobs are enough; no recompute.
         con=open_state(path)
-        if aggregate_task_catalog.task_info(
-            con,TASK_ID)["status"]!="active":
+        loaded=aggregate_task_runner.load_task(
+            con,TASK_ID,cfg)
+        mapping=loaded["mapping"]
+        if loaded["task"]["status"]!="active":
             raise AssertionError("aggregate task active status was not durable")
         second_deliveries=drain_target(
             con,mapping,cfg)
         if second_deliveries<1:
             raise AssertionError(
                 "aggregate incremental target produced no real delivery")
-        status=aggregate_runtime.step(
-            con,SINK_KEY,PLAN_VERSION,CONSUMER_ID,ir,
-            STATE_ID,mapping,cfg)
+        status=aggregate_task_runner.step(
+            con,TASK_ID,cfg,mapping=mapping)
         if int(status["visible_frontier"])<3:
             raise AssertionError(
                 "aggregate target frontier did not cover seq 3")
@@ -469,9 +476,8 @@ def run_contract(output,load_mode):
         ],160)!=4:
             raise AssertionError("unexpected fourth source sequence")
         for _ in range(10):
-            status=aggregate_runtime.step(
-                con,SINK_KEY,PLAN_VERSION,CONSUMER_ID,ir,
-                STATE_ID,mapping,cfg)
+            status=aggregate_task_runner.step(
+                con,TASK_ID,cfg,mapping=mapping)
             if int(status["consumer"]["watermark"])==4:
                 break
         if int(status["consumer"]["watermark"])!=4:
@@ -481,9 +487,8 @@ def run_contract(output,load_mode):
         if delete_deliveries<1:
             raise AssertionError(
                 "aggregate group delete produced no real delivery")
-        status=aggregate_runtime.step(
-            con,SINK_KEY,PLAN_VERSION,CONSUMER_ID,ir,
-            STATE_ID,mapping,cfg)
+        status=aggregate_task_runner.step(
+            con,TASK_ID,cfg,mapping=mapping)
         if int(status["visible_frontier"])<4:
             raise AssertionError(
                 "aggregate target frontier did not cover delete seq 4")
@@ -496,9 +501,8 @@ def run_contract(output,load_mode):
         # StarRocks row change and no synthetic target write.
         if add_commit(con,None,180)!=5:
             raise AssertionError("unexpected empty source sequence")
-        status=aggregate_runtime.step(
-            con,SINK_KEY,PLAN_VERSION,CONSUMER_ID,ir,
-            STATE_ID,mapping,cfg)
+        status=aggregate_task_runner.step(
+            con,TASK_ID,cfg,mapping=mapping)
         if (
             int(status["consumer"]["watermark"])!=5
             or int(status["visible_frontier"])!=5
