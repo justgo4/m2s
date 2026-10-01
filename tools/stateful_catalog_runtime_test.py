@@ -220,6 +220,24 @@ def main():
         registered=stateful_catalog_runtime.register_compiled(
             con,[compiled])
         assert registered[0]["task"]["status"]=="candidate"
+        staged=stateful_catalog_runtime.stage_absent_retirements(
+            con,[],17)
+        assert staged==[dict(
+            task_id=compiled["task"]["task_id"],
+            kind="aggregate",
+            sink_key=compiled["task"]["sink_key"],
+            frontier=17,
+        )]
+        pending_retire=stateful_catalog_runtime.pending_retirements(
+            con)
+        assert len(pending_retire)==1
+        assert pending_retire[0]["frontier"]==17
+        assert pending_retire[0]["task"]["task_id"]==(
+            compiled["task"]["task_id"])
+        stateful_catalog_runtime.clear_retirement(
+            con,compiled["task"]["task_id"])
+        assert stateful_catalog_runtime.pending_retirements(
+            con)==[]
         durable=stateful_catalog_runtime.durable_mappings(con)
         identity=(
             stateful_task_plan.writer_plan_version(
@@ -250,7 +268,8 @@ def main():
     print(
         "stateful_catalog_runtime_test ok source_scope hidden_source "
         "target_inference stateful_engine_namespace monotonic_source_scope "
-        "descriptor_register durable_mapping drop_retire terminal_fence",
+        "descriptor_register durable_retirement_intent durable_mapping "
+        "drop_retire terminal_fence",
         flush=True,
     )
 
