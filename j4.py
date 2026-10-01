@@ -7190,7 +7190,7 @@ def table_delivery_worker(mapping, cfg, runtime):
             started = time.monotonic()
             version = delivery_plan_version(con,delivery)
             mapping = runtime_mapping(runtime,version,table)
-            engine = plan_engine(engines,runtime,cfg,version)
+            engine = plan_engine(engines,runtime,cfg,version,table)
             if not prepare_delivery(con,engine,mapping,delivery,cfg):
                 wake.wait(0.2)
                 wake.clear()
