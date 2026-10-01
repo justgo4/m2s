@@ -232,11 +232,13 @@ def add_commit(
     return seq
 
 
-def register_descriptor(con,ir):
+def register_descriptor(con,cfg,ir):
+    schema=join_target_mapping.descriptor_schema_from_target(
+        cfg,ir,TARGET_TABLE)
     return join_task_catalog.register_task(
         con,TASK_ID,SINK_KEY,PLAN_VERSION,
         ir,TARGET_TABLE,STATE_ID,CONSUMER_ID,
-        target_schema())
+        schema)
 
 
 def _target_runtime(table,cfg):
@@ -420,7 +422,7 @@ def run_contract(output,load_mode):
 
         con=open_state(path)
         register_sources(con)
-        task=register_descriptor(con,ir)
+        task=register_descriptor(con,cfg,ir)
         loaded=join_task_runner.load_task(
             con,TASK_ID,cfg)
         if loaded["task"]["descriptor_hash"]!=task["descriptor_hash"]:
