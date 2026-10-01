@@ -191,6 +191,15 @@ def _insert_commit(con,consumer_id,source_seq,kind,rows):
     return True
 
 
+def _public_row(spec,row):
+    names=list(spec["group_keys"])+[
+        item["output"] for item in spec["aggregates"]]
+    return {
+        name:row[name]
+        for name in names
+    }
+
+
 def seed_bootstrap(
         con,consumer_id,state_id,plan_version,generation_id,fixed_w
 ):
@@ -201,7 +210,8 @@ def seed_bootstrap(
     for row in aggregate_state.read_rows(con,state_id):
         key_blob,_=aggregate_state._group_key(spec,row)
         rows.append((
-            bytes(key_blob),0,pickle.dumps(row,protocol=5)))
+            bytes(key_blob),0,
+            pickle.dumps(_public_row(spec,row),protocol=5)))
     with transaction(con):
         _insert_commit(
             con,consumer_id,int(fixed_w),"bootstrap",rows)
@@ -232,7 +242,10 @@ def enqueue_incremental(
             rows.append((key_blob,1,payload))
         else:
             rows.append((
-                key_blob,0,pickle.dumps(current,protocol=5)))
+                key_blob,0,
+                pickle.dumps(
+                    _public_row(info["spec"],current),
+                    protocol=5)))
     with transaction(con):
         _insert_commit(
             con,consumer_id,int(source_seq),"incremental",rows)
