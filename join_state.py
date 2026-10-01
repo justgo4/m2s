@@ -169,6 +169,69 @@ def install(con):
     """)
 
 
+def clone_complete_state(
+        con,source_state_id,target_state_id,spec,watermark
+):
+    """Atomically clone one complete current JOIN state at exact W."""
+    source_state_id=_text(
+        source_state_id,"source_state_id")
+    target_state_id=_text(
+        target_state_id,"target_state_id")
+    if source_state_id==target_state_id:
+        raise ValueError(
+            "JOIN clone source and target state ids must differ")
+    spec=validate_spec(spec)
+    watermark=int(watermark)
+    if watermark<0:
+        raise ValueError("JOIN clone watermark cannot be negative")
+
+    with transaction(con):
+        if con.execute(
+            "SELECT 1 FROM join_states WHERE state_id=?",
+            (target_state_id,)
+        ).fetchone():
+            raise RuntimeError(
+                "JOIN clone target state already exists")
+        source=state_info(
+            con,source_state_id)
+        if (
+            not source["bootstrap_complete"]
+            or not source["left_complete"]
+            or not source["right_complete"]
+        ):
+            raise RuntimeError(
+                "JOIN clone source bootstrap is incomplete")
+        if int(source["watermark"])!=watermark:
+            raise RuntimeError(
+                "JOIN clone source watermark changed "
+                "expected=%d actual=%d"
+                % (watermark,int(source["watermark"])))
+        if source["spec_hash"]!=semantic_id(spec):
+            raise RuntimeError(
+                "JOIN clone source spec differs")
+        now=time.time()
+        con.execute("""
+            INSERT INTO join_states(
+                state_id,spec_hash,spec_json,watermark,last_digest,
+                bootstrap_complete,left_complete,right_complete,
+                left_cursor,right_cursor,created,updated)
+            VALUES(?,?,?,?,NULL,1,1,1,NULL,NULL,?,?)
+        """,(
+            target_state_id,semantic_id(spec),
+            canonical_bytes(spec).decode("utf-8"),
+            watermark,now,now,
+        ))
+        con.execute("""
+            INSERT INTO join_rows(
+                state_id,side,pk_blob,join_blob,row_payload)
+            SELECT ?,side,pk_blob,join_blob,row_payload
+            FROM join_rows
+            WHERE state_id=?
+        """,(target_state_id,source_state_id))
+    return state_info(
+        con,target_state_id)
+
+
 def _state_row(con,state_id):
     row=con.execute("""
         SELECT spec_hash,spec_json,watermark,last_digest,
