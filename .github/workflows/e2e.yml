@@ -106,8 +106,8 @@ jobs:
         if: matrix.protocol == 'merge_async' && matrix.shared == 'OFF'
         run: python tools/merge_quarantine_network_test.py --isolated
       - name: Aggregate fixed-W runtime to real StarRocks 4.1.1
-        if: matrix.protocol == 'transaction' && matrix.gtid == 'ON' && matrix.shared == 'ON'
-        run: python tools/aggregate_starrocks_contract.py --isolated
+        if: matrix.gtid == 'ON' && matrix.shared == 'ON'
+        run: python tools/aggregate_starrocks_contract.py --isolated --load-mode "$TEST_PROTOCOL"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: e2e-${{ matrix.protocol }}-gtid-${{ matrix.gtid }}-shared-${{ matrix.shared }}
