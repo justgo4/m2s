@@ -37,12 +37,14 @@ import pycurl
 import pymysql
 import sqlglot
 from sqlglot import exp
+import aggregate_job_bridge
 import aggregate_outbox
 import aggregate_task_catalog
 import aggregate_task_runner
 import cdc_catalog
 import incremental_contract
 import incremental_ir
+import join_job_bridge
 import join_outbox
 import join_task_catalog
 import join_task_runner
@@ -8864,6 +8866,91 @@ def process_lock(path):
         handle.close()
 
 
+def stateful_retire_frontier(runtime, task_id):
+    with runtime["plan_lock"]:
+        value=runtime.get(
+            "stateful_retire_frontiers",{}).get(str(task_id))
+    return None if value is None else int(value)
+
+
+def stateful_output_frontier(con, kind, consumer_id):
+    if str(kind)=="aggregate":
+        return int(aggregate_outbox.visible_frontier(
+            con,consumer_id))
+    if str(kind)=="inner_join":
+        return int(join_outbox.visible_frontier(
+            con,consumer_id))
+    raise ValueError(
+        "unsupported stateful task kind: "+str(kind))
+
+
+def stateful_stage_pending(con, kind, consumer_id, mapping, cfg):
+    if str(kind)=="aggregate":
+        return aggregate_job_bridge.stage_pending(
+            con,consumer_id,mapping,cfg)
+    if str(kind)=="inner_join":
+        return join_job_bridge.stage_pending(
+            con,consumer_id,mapping,cfg)
+    raise ValueError(
+        "unsupported stateful task kind: "+str(kind))
+
+
+def stateful_durable_task(con, kind, task_id):
+    if str(kind)=="aggregate":
+        return aggregate_task_catalog.task_info(
+            con,task_id)
+    if str(kind)=="inner_join":
+        return join_task_catalog.task_info(
+            con,task_id)
+    raise ValueError(
+        "unsupported stateful task kind: "+str(kind))
+
+
+def stateful_finish_retirement(
+        con,kind,task,mapping,cfg,runtime,frontier
+):
+    consumer=source_state.consumer_info(
+        con,task["consumer_id"])
+    watermark=int(consumer["watermark"])
+    if watermark!=int(frontier):
+        raise RuntimeError(
+            "stateful retirement frontier mismatch task=%s "
+            "consumer=%d frontier=%d"
+            % (task["task_id"],watermark,int(frontier)))
+    stateful_stage_pending(
+        con,kind,task["consumer_id"],mapping,cfg)
+    wake_loaders(runtime,mapping_key(mapping))
+    visible=stateful_output_frontier(
+        con,kind,task["consumer_id"])
+    if visible<int(frontier):
+        return False
+
+    durable=stateful_durable_task(
+        con,kind,task["task_id"])
+    stateful_catalog_runtime.retire_task(
+        con,cfg,kind,durable)
+    key=mapping_key(mapping)
+    with runtime["plan_lock"]:
+        runtime.get(
+            "stateful_active_task_ids",set()).discard(
+                task["task_id"])
+        runtime.get(
+            "stateful_retire_frontiers",{}).pop(
+                task["task_id"],None)
+        runtime.get(
+            "stateful_retire_items",{}).pop(
+                task["task_id"],None)
+    runtime_mark_sink_retiring(
+        runtime,key,cfg)
+    log(
+        "STATEFUL HOT DROP RETIRED task=%s sink=%s source_seq=%d "
+        "visible_frontier=%d target_preserved=1"
+        % (
+            task["task_id"],key,int(frontier),visible,
+        ))
+    return True
+
+
 def stateful_task_worker(item, cfg, runtime):
     con=open_state(cfg["state"])
     stop=runtime["stop"]
@@ -8889,6 +8976,9 @@ def stateful_task_worker(item, cfg, runtime):
                     and task["task_id"] not in active_ids
                 ):
                     break
+            retire_frontier=stateful_retire_frontier(
+                runtime,task["task_id"])
+
             complete=True
             for relation in relations:
                 info=source_state.relation_info(con,relation)
@@ -8899,13 +8989,34 @@ def stateful_task_worker(item, cfg, runtime):
                 stop.wait(0.05)
                 continue
 
+            if retire_frontier is not None:
+                consumer=source_state.consumer_info(
+                    con,task["consumer_id"])
+                watermark=int(consumer["watermark"])
+                if watermark>retire_frontier:
+                    raise RuntimeError(
+                        "stateful worker crossed retirement frontier "
+                        "task=%s consumer=%d frontier=%d"
+                        % (
+                            task["task_id"],watermark,
+                            retire_frontier,
+                        ))
+                if watermark==retire_frontier:
+                    if stateful_finish_retirement(
+                        con,kind,task,mapping,cfg,runtime,
+                        retire_frontier
+                    ):
+                        break
+                    stop.wait(0.05)
+                    continue
+
             try:
                 result=runner.step(
                     con,task["task_id"],cfg,
                     mapping=mapping,
                     bootstrap_limit=max(
                         1,min(int(cfg.get("snapshot_rows",1000)),4096)))
-            except RuntimeError:
+            except (RuntimeError,KeyError):
                 with runtime["plan_lock"]:
                     active_ids=runtime.get("stateful_active_task_ids")
                     removed=(
@@ -8917,6 +9028,26 @@ def stateful_task_worker(item, cfg, runtime):
                 raise
             wake_loaders(runtime,mapping_key(mapping))
             consumer=result.get("consumer")
+
+            if retire_frontier is not None and consumer is not None:
+                watermark=int(consumer["watermark"])
+                if watermark>retire_frontier:
+                    raise RuntimeError(
+                        "stateful runner crossed retirement frontier "
+                        "task=%s consumer=%d frontier=%d"
+                        % (
+                            task["task_id"],watermark,
+                            retire_frontier,
+                        ))
+                if watermark==retire_frontier:
+                    if stateful_finish_retirement(
+                        con,kind,task,mapping,cfg,runtime,
+                        retire_frontier
+                    ):
+                        break
+                    stop.wait(0.05)
+                    continue
+
             applied=int(result.get(
                 "source_applied",source_state.base_applied_seq(con)))
             caught=(
