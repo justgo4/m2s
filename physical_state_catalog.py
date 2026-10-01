@@ -68,6 +68,8 @@ def install(con):
 
         CREATE INDEX IF NOT EXISTS physical_state_pins_instance
             ON physical_state_pins(instance_id,watermark);
+        CREATE UNIQUE INDEX IF NOT EXISTS physical_state_pins_owner
+            ON physical_state_pins(instance_id,owner);
     """)
 
 
@@ -325,21 +327,34 @@ def state_refs(con, instance_id):
 
 def pin_state(con, instance_id, owner, watermark):
     state = state_info(con, instance_id)
+    instance_id = str(instance_id)
     owner = _text(owner, "owner")
     watermark = int(watermark)
     if not version_readable(state, watermark):
         raise ValueError("requested fixed-W is not readable from physical state")
-    pin_id = uuid.uuid4().hex
     with transaction(con):
+        existing = con.execute("""
+            SELECT pin_id,watermark FROM physical_state_pins
+            WHERE instance_id=? AND owner=?
+        """, (instance_id,owner)).fetchone()
+        if existing is not None:
+            if int(existing[1]) != watermark:
+                raise RuntimeError(
+                    "physical state pin owner attempted to change fixed-W "
+                    "across retry/restart")
+            return dict(
+                pin_id=str(existing[0]),instance_id=instance_id,
+                owner=owner,watermark=watermark)
+        pin_id = uuid.uuid4().hex
         con.execute("""
             INSERT INTO physical_state_pins(
                 pin_id,instance_id,owner,watermark,created)
             VALUES(?,?,?,?,?)
         """, (
-            pin_id,str(instance_id),owner,watermark,time.time(),
+            pin_id,instance_id,owner,watermark,time.time(),
         ))
     return dict(
-        pin_id=pin_id, instance_id=str(instance_id),
+        pin_id=pin_id, instance_id=instance_id,
         owner=owner, watermark=watermark)
 
 

@@ -50,6 +50,13 @@ def main():
     catalog.retain_state(con,"state-a","query-1","consumer")
     assert len(catalog.state_refs(con,"state-a")) == 1
     pin = catalog.pin_state(con,"state-a","build-1",5)
+    resumed_pin = catalog.pin_state(con,"state-a","build-1",5)
+    assert resumed_pin["pin_id"] == pin["pin_id"]
+    assert len(catalog.state_pins(con,"state-a")) == 1
+    expect_error(
+        lambda: catalog.pin_state(con,"state-a","build-1",6),
+        RuntimeError,
+    )
     expect_error(
         lambda: catalog.advance_state(
             con,"state-a",20,min_readable_watermark=6),
