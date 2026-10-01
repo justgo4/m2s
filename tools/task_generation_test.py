@@ -25,6 +25,8 @@ def main():
     assert build["status"] == "building"
     assert build["fixed_w"] == 120
     assert not build["source_pin_released"]
+    assert tg.source_relations(
+        con,"sink-a",7)==["db.orders"]
 
     # Same durable build can resume, but W/pin drift is forbidden.
     assert tg.ensure_build(
@@ -79,6 +81,29 @@ def main():
     assert imported_staged["history_staged_at"] is not None
     assert imported_staged["ready_at"] is None
 
+    multi = tg.ensure_build_multi(
+        con,"sink-join",9,
+        ["db.orders","db.customers"],160,"pin-join")
+    assert multi["source_relation"] == "db.orders"
+    assert tg.source_relations(
+        con,"sink-join",9)==["db.orders","db.customers"]
+    assert tg.ensure_build_multi(
+        con,"sink-join",9,
+        ["db.orders","db.customers"],160,"pin-join"
+    )["generation_id"] == multi["generation_id"]
+    expect_error(
+        lambda: tg.ensure_build_multi(
+            con,"sink-join",9,
+            ["db.customers","db.orders"],160,"pin-join"),
+        RuntimeError,
+    )
+    expect_error(
+        lambda: tg.ensure_build_multi(
+            con,"sink-join",9,
+            ["db.orders"],160,"pin-join"),
+        RuntimeError,
+    )
+
     # Durable sink state can be ahead of lifecycle metadata after a crash.
     # Reconciliation must finalize using the original pin/W, never acquire a
     # fresh watermark.
@@ -92,7 +117,7 @@ def main():
     assert recovered["status"] == "history_staged"
     assert recovered["fixed_w"] == 150
     assert recovered["source_pin_released"]
-    assert len(tg.list_generations(con)) == 4
+    assert len(tg.list_generations(con)) == 5
 
     retired = tg.set_terminal(con,"sink-a",7,"retired")
     assert retired["status"] == "retired"
