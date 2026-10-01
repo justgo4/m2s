@@ -113,6 +113,25 @@ def mapping_ir(mapping, macros=(), udfs=()):
     return ir
 
 
+def to_duckdb_sql(ir, input_name="_sync_raw"):
+    validate_ir(ir)
+    input_name = str(input_name or "").strip()
+    if not input_name.replace("_","").isalnum():
+        raise ValueError("unsafe DuckDB input relation name")
+    source_filter = ir["source_filter"]
+    query_filter = ir["query_filter"]
+    cte = (
+        "WITH arrow_batch AS (SELECT * FROM " + input_name
+        + (" WHERE " + source_filter if source_filter else "") + ") "
+    )
+    projections = ", ".join(
+        item["expression"] for item in ir["projection"])
+    return (
+        cte + "SELECT " + projections + " FROM arrow_batch"
+        + (" WHERE " + query_filter if query_filter else "")
+    )
+
+
 def validate_ir(ir):
     if not isinstance(ir, dict):
         raise ValueError("relational IR must be a dict")

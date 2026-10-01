@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
+from collections import Counter
+from decimal import Decimal
 from pathlib import Path
 import sys
+
+import duckdb
+import pyarrow as pa
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -75,6 +80,32 @@ def main():
         macros=["CREATE MACRO m(x) AS x * 3"])
     assert relational_ir.semantic_id(with_macro_a) != relational_ir.semantic_id(
         with_macro_b)
+
+    raw = pa.Table.from_pylist([
+        dict(id=1, amount=Decimal("2.50"), status="paid"),
+        dict(id=2, amount=None, status="paid"),
+        dict(id=3, amount=Decimal("-1.00"), status="paid"),
+        dict(id=4, amount=Decimal("4.00"), status="open"),
+        dict(id=5, amount=Decimal("2.50"), status="paid"),
+    ], schema=pa.schema([
+        pa.field("id", pa.int64()),
+        pa.field("amount", pa.decimal128(18,2)),
+        pa.field("status", pa.string()),
+    ]))
+    con = duckdb.connect(":memory:")
+    con.register("_sync_raw", raw)
+    current_sql = (
+        'WITH arrow_batch AS (SELECT * FROM _sync_raw '
+        'WHERE "amount" > 0) '
+        'SELECT "id", "amount" * 2 AS "double_amount" '
+        'FROM arrow_batch WHERE "status" = \'paid\''
+    )
+    expected = con.execute(current_sql).fetchall()
+    actual = con.execute(relational_ir.to_duckdb_sql(a)).fetchall()
+    assert Counter(expected) == Counter(actual)
+    assert len(actual) == 3
+    assert all(row[1] == Decimal("5.00") for row in actual)
+    con.close()
 
     broken = dict(a)
     broken["extra"] = 1
