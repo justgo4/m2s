@@ -8657,9 +8657,21 @@ def run_cdc(
             log(
                 f"STATE MIGRATION format={migrated_from}->{STATE_FORMAT} "
                 "fingerprint_verified=1")
+        if cfg.get("shared_source_state",False):
+            capture_seed=stateful_catalog_runtime.extend_durable_source_scope(
+                con,cfg,
+                list(prepared)+list(stateful_source_mappings))
+            capture_source_mappings=source_mappings(
+                capture_seed)
+            # Persist the complete monotonic capture scope in runtime memory so
+            # later stateless hot-plan decoder resets cannot drop a relation
+            # whose durable shared base still exists.
+            stateful_source_mappings=list(
+                capture_source_mappings)
+        else:
+            capture_source_mappings=source_mappings(
+                list(prepared))
         bootstrap(con,fingerprint,source_uuid,start,[mapping_key(m) for m in prepared],start_gtid)
-        capture_source_mappings=source_mappings(
-            list(prepared)+list(stateful_source_mappings))
         if cfg.get("shared_source_state",False):
             for source_mapping in capture_source_mappings:
                 source_state.register_relation(
