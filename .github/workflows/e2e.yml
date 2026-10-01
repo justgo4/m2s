@@ -6,6 +6,7 @@ on:
     paths:
       - 'j4.py'
       - 'cdc_catalog.py'
+      - 'source_state.py'
       - 'native/**'
       - 'tools/e2e_contract.py'
       - 'tools/merge_quarantine_network_test.py'
@@ -15,6 +16,7 @@ on:
     paths:
       - 'j4.py'
       - 'cdc_catalog.py'
+      - 'source_state.py'
       - 'native/**'
       - 'tools/e2e_contract.py'
       - 'tools/merge_quarantine_network_test.py'
@@ -37,9 +39,11 @@ jobs:
       matrix:
         protocol: [merge_async, transaction]
         gtid: ['ON', 'OFF']
+        shared: ['OFF', 'ON']
     env:
       TEST_PROTOCOL: ${{ matrix.protocol }}
       TEST_GTID: ${{ matrix.gtid }}
+      TEST_SHARED: ${{ matrix.shared }}
       PYTHONUNBUFFERED: '1'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -80,13 +84,16 @@ jobs:
               raise RuntimeError('isolated MySQL not ready')
           PY
       - name: Concurrent backfill and changes, exact SQL oracle, hard kill and durable resume
-        run: python tools/e2e_contract.py --isolated --load-mode "$TEST_PROTOCOL" --group-size 128
+        run: |
+          EXTRA=""
+          if [ "$TEST_SHARED" = "ON" ]; then EXTRA="--shared-source-state"; fi
+          python tools/e2e_contract.py --isolated --load-mode "$TEST_PROTOCOL" --group-size 128 $EXTRA
       - name: Drop a real accepted Merge Commit response, isolate only that target and restart
-        if: matrix.protocol == 'merge_async'
+        if: matrix.protocol == 'merge_async' && matrix.shared == 'OFF'
         run: python tools/merge_quarantine_network_test.py --isolated
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: e2e-${{ matrix.protocol }}-gtid-${{ matrix.gtid }}
+          name: e2e-${{ matrix.protocol }}-gtid-${{ matrix.gtid }}-shared-${{ matrix.shared }}
           path: |
             benchmark-results/e2e-contract.json
             benchmark-results/merge-quarantine.json
