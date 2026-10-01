@@ -27,7 +27,6 @@ def mapping():
             ("n",pa.int64()),
             ("total",pa.decimal128(38,2)),
             ("mean",pa.float64()),
-            ("_row_count",pa.int64()),
         ],
     )
 
