@@ -9,6 +9,7 @@ pin and entering history_staged/catch-up.
 import aggregate_bootstrap
 import aggregate_ir
 import aggregate_log_consumer
+import aggregate_outbox
 import aggregate_state
 import source_state
 import task_generation
@@ -158,6 +159,7 @@ def activate_catchup(
         raise RuntimeError(
             "aggregate generation cannot activate catch-up from status "
             +generation["status"])
+    aggregate_outbox.ensure_installed(con)
     pin_w=source_state.pin_watermark(
         con,generation["source_pin_id"])
     if int(pin_w)!=int(generation["fixed_w"]):
