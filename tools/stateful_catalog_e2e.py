@@ -630,6 +630,15 @@ def main():
                     +json.dumps(response,sort_keys=True))
             hot_state,hot_before=wait_hot_aggregate_exact(
                 proc,log,directory,source,cfg)
+            daemon_text=log.read_text(
+                errors="replace")
+            if (
+                "STATEFUL PHYSICAL REUSE" not in daemon_text
+                or "sink=starrocks.agg_hot" not in daemon_text
+            ):
+                raise AssertionError(
+                    "identical hot aggregate did not use physical fixed-W "
+                    "clone; diagnostics="+daemon_text[-6000:])
 
             mutate_after_hot_add(source)
             hot_live_state,hot_after=wait_hot_aggregate_exact(
@@ -751,6 +760,7 @@ def main():
                 same_transaction_update_exact=True,
                 hard_restart_exact=True,
                 online_stateful_add=True,
+                physical_state_reuse=True,
                 online_stateful_add_live_updates=True,
                 online_stateful_drop=True,
                 online_join_drop=True,
