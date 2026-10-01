@@ -618,27 +618,31 @@ def durable_mappings(con):
 def retire_task(con,cfg,kind,task):
     import aggregate_job_bridge
     import join_job_bridge
+    import j4
     import source_state
     import task_generation
 
     kind=str(kind)
     if kind not in {"aggregate","inner_join"}:
         raise ValueError("unsupported stateful task kind: "+kind)
-    if task["status"] in {"retired","failed"}:
-        mapping=(
-            aggregate_target_mapping.mapping_from_descriptor(task)
-            if kind=="aggregate"
-            else join_target_mapping.mapping_from_descriptor(task)
-        )
-        return dict(kind=kind,task=task,mapping=mapping)
-
     mapping=(
         aggregate_target_mapping.mapping_from_descriptor(task)
         if kind=="aggregate"
         else join_target_mapping.mapping_from_descriptor(task)
     )
+    if task["status"] in {"retired","failed"}:
+        clear_retirement(
+            con,task["task_id"])
+        return dict(
+            kind=kind,task=task,mapping=mapping)
+
     generation=task_generation.maybe_info(
         con,task["sink_key"],task["plan_version"])
+
+    # Materialize any remaining outbox rows before removing the retention
+    # consumer. For an active hot-drop this is normally a no-op because the
+    # caller already fenced on target VISIBLE; for an unpublished candidate it
+    # preserves any durable jobs that were staged before cancellation.
     if generation is not None and generation["source_pin_released"]:
         if kind=="aggregate":
             aggregate_job_bridge.stage_pending(
@@ -646,23 +650,28 @@ def retire_task(con,cfg,kind,task):
         else:
             join_job_bridge.stage_pending(
                 con,task["consumer_id"],mapping,cfg)
-        try:
+
+    # Consumer removal, generation retirement, descriptor retirement and
+    # retirement-intent cleanup are one SQLite commit. A crash can therefore
+    # never leave a pending intent whose source consumer was already deleted.
+    with j4.state_transaction(con):
+        if generation is not None and generation["source_pin_released"]:
             source_state.remove_consumer(
                 con,task["consumer_id"])
-        except KeyError:
-            pass
-    if generation is not None and generation["status"] not in {
-        "retired","failed"
-    }:
-        task_generation.abandon(
-            con,task["sink_key"],task["plan_version"],
-            status="retired")
-    if kind=="aggregate":
-        durable=aggregate_task_catalog.set_status(
-            con,task["task_id"],"retired")
-    else:
-        durable=join_task_catalog.set_status(
-            con,task["task_id"],"retired")
+        if generation is not None and generation["status"] not in {
+            "retired","failed"
+        }:
+            task_generation.abandon(
+                con,task["sink_key"],task["plan_version"],
+                status="retired")
+        if kind=="aggregate":
+            durable=aggregate_task_catalog.set_status(
+                con,task["task_id"],"retired")
+        else:
+            durable=join_task_catalog.set_status(
+                con,task["task_id"],"retired")
+        clear_retirement(
+            con,task["task_id"])
     return dict(
         kind=kind,task=durable,mapping=mapping)
 
