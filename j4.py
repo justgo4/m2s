@@ -5086,6 +5086,7 @@ def _catalog_plan_payload(cfg, publish_result):
             revision=int(publish_result.get("revision",0)),
             plan_hash=str(publish_result.get("plan_hash","")),
             mappings=list(publish_result.get("mappings",())),
+            stateful_tasks=list(publish_result.get("stateful_tasks",())),
             macros=list(publish_result.get("macros",())),
             udfs=list(publish_result.get("udfs",())))
     return cdc_catalog.load_plan_version(
@@ -5118,6 +5119,13 @@ def durable_plan_hot_add_sinks(cfg, plan):
 def validate_local_catalog_publish(publish_result, phase):
     if phase not in ("validate","validate_config","install","install_config"):
         raise ValueError(f"unknown catalog publish phase: {phase}")
+    if (
+        phase in ("validate","validate_config")
+        and publish_result.get("stateful_tasks")
+    ):
+        raise RuntimeError(
+            "stateful catalog task manifests are persisted but daemon "
+            "execution is not enabled yet; publish refused fail-closed")
 
     if phase in ("install","install_config"):
         if phase == "install_config" and not online_config_available():
@@ -5192,6 +5200,10 @@ def validate_local_catalog_publish(publish_result, phase):
 
 def validate_hot_catalog_plan(cfg, runtime, publish_result):
     version = int(publish_result["version"])
+    if publish_result.get("stateful_tasks"):
+        raise RuntimeError(
+            "stateful catalog task manifests are not yet wired into the live "
+            "daemon lifecycle; hot publish refused fail-closed")
     if version == runtime_active_version(runtime):
         return dict(status="active",version=version)
 
