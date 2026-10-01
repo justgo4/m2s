@@ -187,6 +187,9 @@ def main():
         side_effect=lambda con,cfg,kind,task:
             retire_calls.append((kind,task["task_id"]))
     ), patch.object(
+        j4.stateful_physical_registry,"retire",
+        return_value=None
+    ) as physical_retire, patch.object(
         stateful_catalog_runtime,"clear_retirement"
     ) as cleared, patch.object(
         j4,"runtime_mark_sink_retiring",
@@ -196,6 +199,8 @@ def main():
             None,"aggregate",drop["task"],drop["mapping"],
             {},drop_runtime,37)
     assert retire_calls==[("aggregate","task-drop")]
+    physical_retire.assert_called_once_with(
+        None,"aggregate",drop["task"])
     cleared.assert_called_once_with(
         None,"task-drop")
     assert drop_runtime["stateful_active_task_ids"]=={"task-keep"}
