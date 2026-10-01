@@ -15,6 +15,7 @@ import aggregate_job_bridge
 import aggregate_outbox
 import aggregate_state
 import j4
+import stateful_task_plan
 
 
 def mapping():
@@ -141,6 +142,12 @@ def main():
                 "SELECT source_seq FROM jobs WHERE id=?",(job_id,)
             ).fetchone()[0] in (1,3)
             for job_id in seq1+seq3)
+        assert {
+            int(con.execute(
+                "SELECT plan_version FROM jobs WHERE id=?",(job_id,)
+            ).fetchone()[0])
+            for job_id in seq1+seq3
+        }=={stateful_task_plan.writer_plan_version(7)}
 
         # Respect the production invariant UNIQUE(table_name,lane):
         # a lane owns at most one active delivery. Ack one durable lane job at
