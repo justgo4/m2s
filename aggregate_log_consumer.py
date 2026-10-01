@@ -49,7 +49,7 @@ def ensure_consumer(
         con,state_id,aggregate_ir.semantic_id(ir))
     aggregate_physical_state.sync_instance(
         con,state_id,ir,generation=1)
-    aggregate_outbox.install(con)
+    aggregate_outbox.ensure_installed(con)
     generation_id="aggregate:%s:plan:%d" % (
         consumer_id,int(plan_version))
     aggregate_outbox.ensure_stream(
