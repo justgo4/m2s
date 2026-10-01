@@ -290,7 +290,7 @@ def target_ddl(target_table,target_schema):
     )
 
 
-def target_schema(
+def resolve_target_schema(
         cfg,kind,ir,target_table,
         create_missing=False,allow_missing=False
 ):
@@ -334,7 +334,7 @@ def compile_catalog_tasks(
         base=stateful_task_plan.compile_ir(
             manifest,cfg["mysql"]["database"],
             source_metadata)
-        target_schema=globals()["target_schema"](
+        target_schema=resolve_target_schema(
             cfg,base["kind"],base["ir"],
             manifest["target_table"],
             create_missing=create_missing,
