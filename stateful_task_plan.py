@@ -15,6 +15,22 @@ import join_target_mapping
 import join_task_catalog
 
 
+def writer_plan_version(task_version):
+    task_version=int(task_version)
+    if task_version<0:
+        raise ValueError(
+            "stateful task version cannot be negative")
+    return -(task_version+1)
+
+
+def task_version_from_writer(plan_version):
+    plan_version=int(plan_version)
+    if plan_version>=0:
+        raise ValueError(
+            "stateful writer plan version must be negative")
+    return -plan_version-1
+
+
 def _text(value,name):
     value=str(value or "").strip()
     if not value:
