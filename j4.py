@@ -39,14 +39,17 @@ import sqlglot
 from sqlglot import exp
 import aggregate_outbox
 import aggregate_task_catalog
+import aggregate_task_runner
 import cdc_catalog
 import incremental_contract
 import incremental_ir
 import join_outbox
 import join_task_catalog
+import join_task_runner
 import physical_state_catalog
 import relational_ir
 import source_state
+import stateful_catalog_runtime
 import task_generation
 
 mappings = []
@@ -8925,9 +8928,10 @@ def activate_catalog(cfg):
             if active_version and active_version != int(published.get("version",0))
             else published
         )
-    reject_unactivated_stateful_tasks(
-        plan,"daemon_startup")
     mappings = [dict(item) for item in plan["mappings"]]
+    cfg["catalog_stateful_tasks"] = [
+        dict(item) for item in plan.get("stateful_tasks",())
+    ]
     version = int(plan.get("version",0))
     for mapping in mappings:
         mapping["_plan_version"] = version
@@ -8940,6 +8944,7 @@ def activate_catalog(cfg):
         f"CATALOG active_version={cfg['catalog_version']} "
         f"published_version={cfg['catalog_published_version']} "
         f"hash={cfg['catalog_hash'][:16]} mappings={len(mappings)} "
+        f"stateful_tasks={len(cfg.get('catalog_stateful_tasks',()))} "
         f"macros={len(cfg['catalog_macros'])} udfs={len(cfg['catalog_udfs'])}")
     return mappings
 
