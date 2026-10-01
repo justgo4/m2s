@@ -9143,6 +9143,14 @@ def stateful_task_worker(item, cfg, runtime):
                     break
                 raise
             wake_loaders(runtime,mapping_key(mapping))
+            if result.get("reused_physical"):
+                log(
+                    "STATEFUL PHYSICAL REUSE task=%s sink=%s kind=%s "
+                    "fixed_w=%s mode=atomic_clone"
+                    % (
+                        task["task_id"],mapping_key(mapping),kind,
+                        result["generation"].get("fixed_w"),
+                    ))
             stateful_physical_registry.sync_runtime_result(
                 con,item,result)
             consumer=result.get("consumer")
