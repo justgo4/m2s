@@ -216,11 +216,11 @@ def state(path):
             uri=True,timeout=2)
         try:
             agg=con.execute("""
-                SELECT status FROM aggregate_task_descriptors
+                SELECT sink_key,status FROM aggregate_task_descriptors
                 ORDER BY task_id
             """).fetchall()
             joins=con.execute("""
-                SELECT status FROM join_task_descriptors
+                SELECT sink_key,status FROM join_task_descriptors
                 ORDER BY task_id
             """).fetchall()
             generations=con.execute("""
@@ -242,8 +242,12 @@ def state(path):
                 FROM source_relations ORDER BY table_name
             """).fetchall()
             return dict(
-                aggregate=[row[0] for row in agg],
-                join=[row[0] for row in joins],
+                aggregate=[row[1] for row in agg],
+                join=[row[1] for row in joins],
+                aggregate_tasks=[
+                    (str(row[0]),str(row[1])) for row in agg],
+                join_tasks=[
+                    (str(row[0]),str(row[1])) for row in joins],
                 generations=[
                     (str(row[0]),str(row[1]),bool(row[2]))
                     for row in generations],
@@ -282,11 +286,11 @@ def aggregate_expected(source):
     ]
 
 
-def aggregate_actual(cfg):
+def aggregate_actual(cfg,table="agg"):
     rows,_=execute(
         cfg,
         "SELECT category,n,total,mean FROM "
-        +DATABASE+".agg ORDER BY category")
+        +DATABASE+"."+str(table)+" ORDER BY category")
     return [
         (
             str(row[0]),int(row[1]),
