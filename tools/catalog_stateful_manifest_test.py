@@ -113,8 +113,9 @@ def main():
             assert installed["status"]=="restart_required"
             assert installed["stateful_tasks"]==1
 
-        # A running daemon also creates/binds stateful targets after the
-        # catalog commit, but keeps execution fenced until restart.
+        # A precomputed restart/rebuild fence is authoritative during install;
+        # the running daemon must not re-run offline target installation after
+        # the catalog transaction has already committed.
         runtime=dict(
             plan_lock=__import__("threading").RLock(),
             active_plan_version=1,
@@ -143,8 +144,7 @@ def main():
                 fake_cfg,runtime,publish_result,"install")
             assert activation["status"]=="restart_required"
             assert runtime["catalog_activation"]["version"]==2
-            mocked.assert_called_once_with(
-                publish_result,"install")
+            mocked.assert_not_called()
 
         drop_result=dict(
             version=3,plan_hash="drop-last",
@@ -166,8 +166,7 @@ def main():
                 fake_cfg,runtime,drop_result,"install")
             assert activation["status"]=="restart_required"
             assert activation["version"]==3
-            drop_install.assert_called_once_with(
-                drop_result,"install")
+            drop_install.assert_not_called()
 
         # Bootstrap mode installs target contracts before releasing the data
         # plane, so a first stateful-only catalog cannot start with a missing
