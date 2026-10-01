@@ -85,7 +85,8 @@ def compile_task(
     ]
     mysql_database=_text(mysql_database,"mysql_database")
     metadata=dict(source_metadata or {})
-    ids=_task_ids(sink,plan_version)
+    task_version=int(manifest.get("task_version",plan_version))
+    ids=_task_ids(sink,task_version)
 
     for source in sources:
         if source not in metadata:
@@ -110,7 +111,7 @@ def compile_task(
             relation,entry["schema_signature"],
             _rewrite_aggregate(manifest.get("sql")))
         task=aggregate_task_catalog.descriptor(
-            ids["task_id"],ids["sink_key"],int(plan_version),
+            ids["task_id"],ids["sink_key"],task_version,
             ir,target_table,ids["state_id"],ids["consumer_id"],
             target_schema)
         mapping=aggregate_target_mapping.mapping_from_descriptor(
@@ -129,7 +130,7 @@ def compile_task(
             right_meta["schema_signature"],right_meta["primary_key"],
             _rewrite_join(manifest.get("sql")))
         task=join_task_catalog.descriptor(
-            ids["task_id"],ids["sink_key"],int(plan_version),
+            ids["task_id"],ids["sink_key"],task_version,
             ir,target_table,ids["state_id"],ids["consumer_id"],
             target_schema)
         mapping=join_target_mapping.mapping_from_descriptor(
@@ -138,7 +139,8 @@ def compile_task(
     return dict(
         kind=kind,
         sink=sink,
-        plan_version=int(plan_version),
+        catalog_plan_version=int(plan_version),
+        task_version=task_version,
         source_relations=list(sources),
         task=task,
         mapping=mapping,
