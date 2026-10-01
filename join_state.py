@@ -213,7 +213,7 @@ def create_state(con,state_id,spec,watermark=0,bootstrap_complete=True):
                 state_id,spec_hash,spec_json,watermark,last_digest,
                 bootstrap_complete,left_complete,right_complete,
                 left_cursor,right_cursor,created,updated)
-            VALUES(?,?,?,?,NULL,?,?,?,?,NULL,NULL,?,?)
+            VALUES(?,?,?,?,NULL,?,?,?,NULL,NULL,?,?)
         """,(
             state_id,semantic_id(spec),
             canonical_bytes(spec).decode("utf-8"),
