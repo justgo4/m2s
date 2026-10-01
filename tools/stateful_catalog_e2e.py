@@ -245,6 +245,11 @@ def state(path):
                 SELECT sink_key,status FROM join_task_descriptors
                 ORDER BY task_id
             """).fetchall()
+            retirements=con.execute("""
+                SELECT task_id,sink_key,frontier
+                FROM stateful_retirements
+                ORDER BY task_id
+            """).fetchall()
             generations=con.execute("""
                 SELECT sink_key,status,source_pin_released
                 FROM task_generations
@@ -270,6 +275,9 @@ def state(path):
                     (str(row[0]),str(row[1])) for row in agg],
                 join_tasks=[
                     (str(row[0]),str(row[1])) for row in joins],
+                retirements=[
+                    (str(row[0]),str(row[1]),int(row[2]))
+                    for row in retirements],
                 generations=[
                     (str(row[0]),str(row[1]),bool(row[2]))
                     for row in generations],
@@ -457,6 +465,9 @@ def wait_stateful_retired(
                 tasks.get(sink)=="retired"
                 and current["pending"]==0
                 and current["deliveries"]==0
+                and not any(
+                    item[1]==sink
+                    for item in current["retirements"])
             ):
                 return current
         time.sleep(.2)
