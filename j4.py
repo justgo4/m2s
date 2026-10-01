@@ -7289,11 +7289,16 @@ def capture_binlog_native(cfg, prepared, runtime):
                     transaction_batches = transaction_batch_new()
                     source_parts = []
                     source_parts_bytes = 0
-                    source_parts_limit = max(
-                        64*1024**2,
-                        min(
-                            int(cfg["txn_spool_max_bytes"]),
-                            int(cfg["resource"]["memory_mb"])*1024**2//4))
+                    if shared_source_state:
+                        resource_mb = int(
+                            (cfg.get("resource") or {}).get("memory_mb",512))
+                        source_parts_limit = max(
+                            64*1024**2,
+                            min(
+                                int(cfg["txn_spool_max_bytes"]),
+                                resource_mb*1024**2//4))
+                    else:
+                        source_parts_limit = 0
                     spool_guard_state = dict(size=0,checked=0.0)
                     pending_events = []
                     pending_event_bytes = 0
