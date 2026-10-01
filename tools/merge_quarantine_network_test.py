@@ -32,6 +32,7 @@ def proxy():
     lock = threading.Lock()
     def handle(client, address, server):
         stream, upstream = client.makefile('rb'), None
+        stage = 'request_line'
         try:
             request = stream.readline(8192).decode('ascii').strip().split()
             if len(request)!=3 or request[0]!='PUT':
@@ -42,6 +43,7 @@ def proxy():
                 path = path[3:]
             if not path.startswith('/api/'+e2e.DATABASE+'/') or not path.endswith('/_stream_load'):
                 raise ValueError('isolated proxy path is outside disposable stream-load endpoint')
+            stage = 'headers'
             headers = {}
             for _ in range(100):
                 line = stream.readline(8192)
@@ -56,6 +58,7 @@ def proxy():
                 raise ValueError('bounded content-length required')
             if headers.pop('expect','').lower()=='100-continue':
                 client.sendall(b'HTTP/1.1 100 Continue\r\n\r\n')
+            stage = 'body'
             body = stream.read(length)
             if len(body)!=length:
                 raise ValueError('truncated synthetic body')
@@ -67,8 +70,11 @@ def proxy():
                     counts = outcome['request_counts']
                     counts[digest] = counts.get(digest,0)+1
             upstream = http.client.HTTPConnection('127.0.0.1',port,timeout=90)
+            stage = 'upstream_request'
             upstream.request('PUT',path,body,headers)
+            stage = 'upstream_response'
             response = upstream.getresponse()
+            stage = 'upstream_body'
             payload = response.read()
             result = {}
             try:
@@ -85,6 +91,7 @@ def proxy():
                 # Server has accepted it. The daemon sees EOF, never TxnId/Label.
                 client.shutdown(socket.SHUT_RDWR)
                 return
+            stage = 'redirect'
             outgoing = []
             for name,value in response.getheaders():
                 if name.lower() in ('content-length','transfer-encoding','connection'):
@@ -97,11 +104,12 @@ def proxy():
                 outgoing.append(name+': '+value+'\r\n')
             head = ('HTTP/1.1 '+str(response.status)+' '+response.reason+'\r\n'+
                     ''.join(outgoing)+'Content-Length: '+str(len(payload))+'\r\nConnection: close\r\n\r\n')
+            stage = 'downstream_response'
             client.sendall(head.encode('ascii')+payload)
         except Exception as exc:
             # No raw headers/credentials/payloads in diagnostics.
             with lock:
-                outcome['errors'].append(type(exc).__name__)
+                outcome['errors'].append(dict(type=type(exc).__name__,stage=stage))
         finally:
             if upstream is not None:
                 upstream.close()
@@ -173,7 +181,12 @@ def main():
             env = e2e.setup_catalog(directory,cfg,options,'merge_async',128)
             proc,handle = e2e.start(directory,env,1)
             e2e.wait_started(proc,directory)
-            e2e.wait_equal(proc,directory,source,cfg)
+            try:
+                e2e.wait_equal(proc,directory,source,cfg)
+            except Exception:
+                print('SYNTHETIC PROXY DIAGNOSTICS '+json.dumps(dict(errors=outcome['errors'],dropped=outcome['dropped'])),flush=True)
+                print((directory/'daemon-1.log').read_text(errors='replace')[-12000:],flush=True)
+                raise
             deployment = directory/'extra.sql'
             deployment.write_text('CREATE TABLE starrocks.events_extra AS SELECT id,part,v,note,amount FROM mysql.events WHERE active=1 AND v>=0;')
             installed = subprocess.run([sys.executable,str(ROOT/'j4.py'),'sql',str(deployment)],env=env,capture_output=True,timeout=120)
