@@ -5128,7 +5128,9 @@ def _catalog_plan_payload(cfg, publish_result):
         cfg["catalog"],int(publish_result["version"]))
 
 
-def validate_stateful_catalog_plan(cfg, plan, prepared):
+def validate_stateful_catalog_plan(
+        cfg,plan,prepared,create_missing=False,allow_missing=False
+):
     tasks=list(plan.get("stateful_tasks",()) or ())
     if not tasks:
         return []
@@ -5139,7 +5141,9 @@ def validate_stateful_catalog_plan(cfg, plan, prepared):
         cfg,tasks,prepared)
     return stateful_catalog_runtime.compile_catalog_tasks(
         cfg,int(plan.get("version",0)),tasks,
-        scope["source_metadata"])
+        scope["source_metadata"],
+        create_missing=create_missing,
+        allow_missing=allow_missing)
 
 def durable_plan_hot_add_sinks(cfg, plan):
     state_path = cfg["state"]
@@ -5186,7 +5190,8 @@ def validate_local_catalog_publish(publish_result, phase):
             plan_udfs=local_cfg["catalog_udfs"],
             hot_add_sinks=hot_add_sinks)
         stateful=validate_stateful_catalog_plan(
-            local_cfg,plan,prepared)
+            local_cfg,plan,prepared,
+            create_missing=True)
         created = sorted(
             mapping["sr_table"] for mapping in prepared
             if mapping.get("_target_missing"))
@@ -5243,7 +5248,8 @@ def validate_local_catalog_publish(publish_result, phase):
             allow_missing_targets=True,
             hot_add_sinks=hot_add_sinks)
         stateful=validate_stateful_catalog_plan(
-            local_cfg,plan,prepared)
+            local_cfg,plan,prepared,
+            allow_missing=True)
     return dict(
         status=(
             "validated_config"
