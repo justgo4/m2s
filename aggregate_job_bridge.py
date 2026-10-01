@@ -16,6 +16,7 @@ import pyarrow as pa
 
 import aggregate_outbox
 import j4
+import stateful_task_plan
 
 
 def _text(value,name):
@@ -157,7 +158,7 @@ def stage_commit(con,consumer_id,source_seq,mapping,cfg,engine=None):
                 VALUES(?,?,'cdc',?,?,?,?,NULL,NULL,?,?,?)
             """,(
                 table,int(lane),bytes(payload),int(nrows),
-                int(logical_bytes),int(stream["plan_version"]),
+                int(logical_bytes),stateful_task_plan.writer_plan_version(stream["plan_version"]),
                 source_seq,now,now))
             job_id=int(cur.lastrowid)
             con.execute("""
