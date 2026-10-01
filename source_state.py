@@ -29,6 +29,9 @@ SOURCE_ARROW_WRITE_OPTIONS = pa.ipc.IpcWriteOptions(compression="zstd")
 
 @contextlib.contextmanager
 def transaction(con):
+    if con.in_transaction:
+        yield
+        return
     con.execute("BEGIN IMMEDIATE")
     try:
         yield
