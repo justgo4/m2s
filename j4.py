@@ -4988,6 +4988,11 @@ def runtime_plan(runtime, version):
 
 
 def runtime_mapping(runtime, version, table):
+    version = int(version)
+    table = str(table)
+    stateful = runtime.get("stateful_mappings",{}).get((version,table))
+    if stateful is not None:
+        return stateful
     plan = runtime_plan(runtime,version)
     mapping = plan["by_table"].get(table)
     if mapping is None:
@@ -5017,14 +5022,22 @@ def delivery_plan_version(con, delivery):
     return int(row[0])
 
 
-def plan_engine(engine_cache, runtime, cfg, version):
+def plan_engine(engine_cache, runtime, cfg, version, table=None):
     version = int(version)
-    engine = engine_cache.get(version)
+    stateful = (
+        None if table is None else
+        runtime.get("stateful_mappings",{}).get((version,str(table)))
+    )
+    key = ("stateful",version,str(table)) if stateful is not None else version
+    engine = engine_cache.get(key)
     if engine is None:
-        plan = runtime_plan(runtime,version)
-        engine = transform_engine(
-            cfg,macros=plan.get("macros",()),udfs=plan.get("udfs",()))
-        engine_cache[version] = engine
+        if stateful is not None:
+            engine = transform_engine(cfg)
+        else:
+            plan = runtime_plan(runtime,version)
+            engine = transform_engine(
+                cfg,macros=plan.get("macros",()),udfs=plan.get("udfs",()))
+        engine_cache[key] = engine
     return engine
 
 
@@ -5039,9 +5052,23 @@ def durable_draining_plan_versions(con, active_version):
     active_version = int(active_version)
     return sorted({
         int(row[0]) for row in con.execute("""
-            SELECT DISTINCT plan_version FROM active_jobs
+            SELECT DISTINCT j.plan_version
+            FROM active_jobs j
+            LEFT JOIN aggregate_job_links a ON a.job_id=j.id
+            LEFT JOIN join_job_links q ON q.job_id=j.id
+            WHERE a.job_id IS NULL AND q.job_id IS NULL
             UNION
-            SELECT DISTINCT plan_version FROM deliveries
+            SELECT DISTINCT d.plan_version
+            FROM deliveries d
+            WHERE EXISTS(
+                SELECT 1
+                FROM job_assignments x
+                JOIN jobs j ON j.id=x.job_id
+                LEFT JOIN aggregate_job_links a ON a.job_id=j.id
+                LEFT JOIN join_job_links q ON q.job_id=j.id
+                WHERE x.delivery_id=d.id
+                  AND a.job_id IS NULL AND q.job_id IS NULL
+            )
         """).fetchall()
         if row[0] is not None and int(row[0]) != active_version
     })
@@ -6672,7 +6699,7 @@ def process_merge_lane(con, engine_cache, handle, table, lane, cfg, runtime):
 
     version = delivery_plan_version(con,delivery)
     mapping = runtime_mapping(runtime,version,table)
-    engine = plan_engine(engine_cache,runtime,cfg,version)
+    engine = plan_engine(engine_cache,runtime,cfg,version,table)
 
     lanes = delivery_lanes(con,delivery)
     if not lanes or int(lane) not in lanes:
