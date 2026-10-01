@@ -631,9 +631,31 @@ def main():
                         'dropped shared generation was not durably retired: '
                         + repr(retired))
 
+            # First fence: DROP preserves the old target, so a direct same-name
+            # hot-add is unsafe while that target still contains history.
+            preserved, _ = execute(
+                cfg,
+                'SELECT COUNT(*) FROM ' + DATABASE + '.events_extra')
+            if not preserved or int(preserved[0][0]) <= 0:
+                raise AssertionError(
+                    'dropped target history was not preserved before re-add test')
+
+            # Isolated-test-only reset lets the second, independent fence be
+            # exercised: even an empty physical target must not reuse durable
+            # table_state/generation as a fresh bootstrap.
+            execute(
+                cfg,
+                'TRUNCATE TABLE ' + DATABASE + '.events_extra')
+            emptied, _ = execute(
+                cfg,
+                'SELECT COUNT(*) FROM ' + DATABASE + '.events_extra')
+            if int(emptied[0][0]) != 0:
+                raise AssertionError(
+                    'isolated target reset failed before durable-state re-add test')
+
             # Re-adding the same durable sink is intentionally not an online
-            # operation yet. Its old target/table_state/generation must never
-            # be mistaken for a fresh empty bootstrap.
+            # operation yet. Its old table_state/generation must never be
+            # mistaken for a fresh empty bootstrap.
             readd_file = directory / 'readd-extra.sql'
             readd_file.write_text(
                 'CREATE TABLE starrocks.events_extra AS '
@@ -692,6 +714,8 @@ def main():
                           task_generations=after_state.get('generations', []),
                           hot_drop_drained=True,
                           post_drop_marker_excluded=True,
+                          dropped_target_history_preserved=True,
+                          readd_empty_target_still_requires_rebuild=True,
                           readd_requires_rebuild=True,
                           drop_generation_retired=(
                               bool(args.shared_source_state)
