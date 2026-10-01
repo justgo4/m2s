@@ -473,7 +473,7 @@ def _select_tree(sql):
     return tree
 
 
-def _stateful_sink_manifest(name,sql,primary_key=None):
+def _stateful_sink_manifest(name,sql,primary_key=None,task_version=0):
     tree=_select_tree(sql)
     has_join=any(isinstance(node,exp.Join) for node in tree.walk())
     has_agg=any(
@@ -529,6 +529,7 @@ def _stateful_sink_manifest(name,sql,primary_key=None):
         sql=tree.sql(dialect="duckdb"),
         source_relations=sources,
         primary_key=list(primary_key or ()),
+        task_version=int(task_version),
     )
 
 
@@ -637,16 +638,17 @@ def compile_draft(con):
             FROM arrow_udfs ORDER BY revision,name
         """)]
     sinks = con.execute("""
-        SELECT name,sql_text,primary_key_json
+        SELECT name,sql_text,primary_key_json,revision
         FROM objects WHERE kind='sink' ORDER BY name
     """).fetchall()
     mappings = []
     stateful_tasks = []
-    for name,sql_text,primary_key_json in sinks:
+    for name,sql_text,primary_key_json,object_revision in sinks:
         keys = json.loads(primary_key_json) if primary_key_json else None
         if keys == []:
             raise ValueError(f"{name}: PRIMARY KEY is empty")
-        stateful=_stateful_sink_manifest(name,sql_text,keys)
+        stateful=_stateful_sink_manifest(
+            name,sql_text,keys,task_version=object_revision)
         if stateful is not None:
             stateful_tasks.append(stateful)
             continue
