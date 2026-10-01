@@ -101,6 +101,47 @@ def main():
     assert [entry["task"]["task_id"]
             for entry in runtime["stateful_tasks"]]==["task-hot"]
 
+    keep=item(
+        "task-keep","starrocks.keep",10,"hash-keep")
+    drop=item(
+        "task-drop","starrocks.drop",11,"hash-drop")
+    drop_runtime=dict(
+        plan_lock=threading.RLock(),
+        thread_lock=threading.Lock(),
+        stateful_mappings={},
+        stateful_active_task_ids={"task-keep","task-drop"},
+        stateful_tasks=[keep,drop],
+        stateful_worker_threads={},
+    )
+    drop_candidate=dict(
+        version=13,
+        stateful_candidate_tasks=[keep],
+        stateful_dropped_sinks=["starrocks.drop"],
+        stateful_additions=[],
+    )
+    retired_calls=[]
+    with patch.object(
+        stateful_catalog_runtime,"retire_absent",
+        return_value=[drop]
+    ) as retire, patch.object(
+        j4,"runtime_mark_sink_retiring",
+        side_effect=lambda runtime,key,cfg:
+            retired_calls.append(key) or True
+    ), patch.object(
+        j4,"activate_stateful_additions",
+        return_value=[]
+    ):
+        cutover=j4.activate_stateful_transition(
+            None,{},drop_runtime,drop_candidate)
+    assert cutover==dict(
+        added=[],retired=["task-drop"])
+    assert drop_runtime["stateful_active_task_ids"]=={"task-keep"}
+    assert [entry["task"]["task_id"]
+            for entry in drop_runtime["stateful_tasks"]]==["task-keep"]
+    assert retired_calls==["starrocks.drop"]
+    retire.assert_called_once_with(
+        None,{},[keep])
+
     generous=dict(
         load_mode="transaction",
         writer_max=4,
@@ -129,7 +170,7 @@ def main():
 
     print(
         "stateful_hot_add_test ok transition writer_only_activation "
-        "namespaced_mapping resource_fence",
+        "online_drop_retirement namespaced_mapping resource_fence",
         flush=True,
     )
 
