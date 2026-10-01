@@ -117,7 +117,7 @@ cost_vector = {
 | P0–P3 / P10 | 保持现有差分/故障测试；定义上述事务、水位、完整性、未知请求和代际协议；跨目标原子性未证明则明确不承诺 |
 | **P6A/P6B** | **SQLite correctness-first 路径已接 daemon 并通过真实 E2E**：authoritative log durable 与 base applied 分离、fixed-W pin/read、版本 GC、crash replay 已工作；本次继续加入 durable consumer frontier。尚未完成 50M 规模存储选型、schema epoch 在线迁移、空间耗尽/compaction 长跑 |
 | **P6C 最小接口 + P7** | **shared 模式的单源投影 hot-add 已不再回源历史 SELECT，并通过 GTID ON/OFF × transaction/merge_async 真实 E2E、构建中强退和重启续建。** 仍需 10+ generation 并发取消/替换、旧 generation 远端 fence、更多 source scope/DDL 场景 |
-| **P8A/P8B** | 受限增量 IR、COUNT/SUM/AVG、INNER JOIN；至少 10,000 次带多表同事务、UPDATE/DELETE、重复值、NULL、复合键和 skew 的随机操作，对照独立完整查询；跨构建/计算/outbox 崩溃点恢复后保持一致，再扩展其他算子 |
+| **P8A/P8B** | **P8A 已开始：当前已验证的单源投影/过滤进入 canonical relational IR + semantic ID，宏/UDF 定义版本纳入依赖，执行器暂不改变。** 下一步补 typed/null/bag oracle，再做受限 incremental IR、COUNT/SUM/AVG、INNER JOIN；至少 10,000 次随机操作对照完整查询后再扩算子 |
 | **P9A/P9B/P9C** | 共享 arrangement/subview、整图策略、统计反馈与 GC；1/10/100 个语义相同/部分共享任务，验证只维护所需共享状态、慢任务取消后安全回收；比较共享开/关、固定 IVM/自适应、不同放置，其他语义与耐久性保持一致 |
 | P4–P5 | 按 profile 插入 event/transaction batching、布局融合、native socket/snapshot；同 raw binlog 差分先通过，再重复 Python/native A/B，报告两进程总 CPU/RSS 和 IPC 成本 |
 | **P11** | 固定机器 50M 初始行 + 50 rows/s，72h 并动态新增任务/注入故障；报告健康区间 P95/P99、违规数、恢复区间、time-to-ready、空间与版本债务；每个部署给可完成的预算，超预算明确拒绝/等待 |
