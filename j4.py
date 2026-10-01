@@ -5756,7 +5756,9 @@ def activate_pending_plan(con, decoder, cfg, runtime, position):
         runtime["pending_plan"] = None
     for key in dropped:
         runtime_mark_sink_retiring(runtime,key,cfg)
-    native_reset(decoder,cfg,candidate["source_prepared"])
+    native_reset(
+        decoder,cfg,
+        runtime_capture_sources(runtime,candidate)[0])
     for key in added:
         runtime_add_sink(candidate["by_table"][key],cfg,runtime)
     catalog_activation_record(runtime,dict(status="active",version=version))
