@@ -1109,7 +1109,8 @@ def _show(con, command):
                 draft_revision=int(_meta_get(con,"draft_revision","0")),
                 plan=None)
         row = con.execute("""
-            SELECT revision,plan_hash,mappings_json,macros_json,udfs_json,created
+            SELECT revision,plan_hash,mappings_json,macros_json,udfs_json,
+                   stateful_tasks_json,created
             FROM plans WHERE version=?
         """,(version,)).fetchone()
         return dict(
@@ -1118,8 +1119,9 @@ def _show(con, command):
             plan=dict(
                 revision=int(row[0]),plan_hash=row[1],
                 mappings=json.loads(row[2]),macros=json.loads(row[3]),
-                udfs=json.loads(row[4]) if len(row) > 5 else [],
-                created=float(row[5] if len(row) > 5 else row[4])))
+                udfs=json.loads(row[4]),
+                stateful_tasks=json.loads(row[5]),
+                created=float(row[6])))
     return None
 
 
