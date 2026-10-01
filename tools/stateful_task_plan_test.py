@@ -38,6 +38,19 @@ def expect_error(function,error=Exception):
 
 
 def main():
+    for version in (0,1,5,7,99):
+        writer=stateful_task_plan.writer_plan_version(version)
+        assert writer<0
+        assert stateful_task_plan.task_version_from_writer(
+            writer)==version
+    assert stateful_task_plan.writer_plan_version(5)!=5
+    expect_error(
+        lambda: stateful_task_plan.writer_plan_version(-1),
+        ValueError)
+    expect_error(
+        lambda: stateful_task_plan.task_version_from_writer(0),
+        ValueError)
+
     aggregate_manifest=dict(
         kind="aggregate",
         sink="starrocks.agg",
@@ -151,7 +164,7 @@ def main():
     print(
         "stateful_task_plan_test ok aggregate join "
         "sink_revision_identity unrelated_plan_stability "
-        "live_metadata target_contract",
+        "live_metadata target_contract writer_namespace",
         flush=True,
     )
 
