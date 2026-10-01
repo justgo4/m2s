@@ -87,6 +87,8 @@ def main():
     assert len(first["refs"]) if "refs" in first else True
 
     aggregate_state.apply_transaction(
+        con,"agg-state-a",11,[])
+    aggregate_state.apply_transaction(
         con,"agg-state-a",12,[])
     advanced=stateful_physical_registry.sync_ready(
         con,"aggregate",agg_task,12)
@@ -156,7 +158,7 @@ def main():
         "source-epoch-a::db.customers",
     ]
     assert joined["spec"]["key_exprs"]==[
-        "left.customer_id","right.id"]
+        "left.customer_id=right.id"]
     assert joined["semantic_id"]!=advanced["semantic_id"]
 
     retired=stateful_physical_registry.retire(
