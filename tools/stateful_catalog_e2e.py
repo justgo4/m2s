@@ -506,6 +506,22 @@ def mutate_after_restart(source):
         raise
 
 
+def mutate_after_hot_add(source):
+    source.begin()
+    try:
+        with source.cursor() as cur:
+            cur.execute(
+                "UPDATE "+DATABASE+".orders "
+                "SET amount=amount+2.25 WHERE id=5")
+            cur.execute(
+                "INSERT INTO "+DATABASE+".orders "
+                "VALUES(7,'c',11,4.25)")
+        source.commit()
+    except BaseException:
+        source.rollback()
+        raise
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
