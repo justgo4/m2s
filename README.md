@@ -20,7 +20,7 @@
 
 - [j4.py](j4.py)、[cdc_catalog.py](cdc_catalog.py)：daemon、SQL catalog、动态部署。当前支持确定性的单源投影、过滤、宏和模型视图链；拒绝有状态 JOIN、聚合、窗口及跨源计划。**当前 hot-add 历史初始化仍启动 MySQL `snapshot_worker`。**
 - 当前组件包括 Python 控制/恢复、C 解码/批处理、Arrow、DuckDB 和 SQLite。native 路径仍含 Python 网络/协议与 IPC 成本，不等于完整 C replication client 或零拷贝；是否替换组件由 profile 决定。
-- [incremental_contract.py](incremental_contract.py)：独立于 daemon 的纯合同模块，已有 state spec/hash、handle 校验、日志保留水位计算和六维候选 Pareto 筛选。**尚无在线共享状态、实际统计、全局优化器或执行器接入。** 表达式规范化仍由调用方负责。
+- [incremental_contract.py](incremental_contract.py)：state identity / retention / Pareto 合同。\n- [source_state.py](source_state.py)：P6A/P6B correctness-first SQLite 协议实现，显式区分 authoritative log durable 与 base applied，提供 fixed-W pin/read/GC；**尚未接入 daemon 数据路径。**
 - [native/](native/)、[tools/](tools/)、[cdc_selftest.py](cdc_selftest.py)：解码差分、恢复、协议、故障注入和候选性能测量。
 
 | 已验证范围 | 可核查证据 | 证据边界 |
