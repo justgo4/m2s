@@ -12,7 +12,9 @@ sys.path.insert(0,str(ROOT))
 
 import aggregate_ir
 import aggregate_outbox
-import aggregate_runtime
+import aggregate_target_mapping
+import aggregate_task_catalog
+import aggregate_task_runner
 import aggregate_state
 import j4
 import source_state
@@ -64,17 +66,23 @@ def ir():
     )
 
 
-def mapping():
-    return dict(
-        src_table="agg_sink",sr_table="agg_sink",
-        primary_key="category",
-        _schema=[
-            ("category",pa.string()),
-            ("n",pa.int64()),
-            ("total",pa.decimal128(38,2)),
-            ("mean",pa.float64()),
-        ],
-    )
+def target_schema():
+    return [
+        dict(name="category",type="VARCHAR(16)",nullable=False,key=True),
+        dict(name="n",type="BIGINT",nullable=False,key=False),
+        dict(name="total",type="DECIMAL(38,2)",nullable=True,key=False),
+        dict(name="mean",type="DOUBLE",nullable=True,key=False),
+    ]
+
+
+def register_task(con,plan):
+    return aggregate_task_catalog.register_task(
+        con,"agg-task","agg_sink",31,plan,"agg_sink",
+        "agg-state","agg-consumer",target_schema())
+
+
+def mapping(task):
+    return aggregate_target_mapping.mapping_from_descriptor(task)
 
 
 def cfg(path):
@@ -149,10 +157,12 @@ def main():
             (2,"b",Decimal("5.00"),1,1),
             (2,"a",Decimal("20.00"),1,0),
         ],100)==1
+        task=register_task(con,plan)
+        wire_mapping=mapping(task)
 
-        first=aggregate_runtime.step(
-            con,"agg-sink",31,"agg-consumer",plan,
-            "agg-state",mapping(),cfg(path),bootstrap_limit=1)
+        first=aggregate_task_runner.step(
+            con,"agg-task",cfg(path),
+            mapping=wire_mapping,bootstrap_limit=1)
         assert first["phase"]=="bootstrap"
         fixed_w=first["generation"]["fixed_w"]
         assert fixed_w==1
@@ -166,9 +176,9 @@ def main():
         ],120)==2
 
         for _ in range(20):
-            status=aggregate_runtime.step(
-                con,"agg-sink",31,"agg-consumer",plan,
-                "agg-state",mapping(),cfg(path),bootstrap_limit=1)
+            status=aggregate_task_runner.step(
+                con,"agg-task",cfg(path),
+                mapping=wire_mapping,bootstrap_limit=1)
             if status["phase"]!="bootstrap":
                 break
         assert status["phase"]=="catchup"
@@ -181,9 +191,8 @@ def main():
         # Runtime may consume source ahead of target visibility, but cannot
         # publish the generation until the durable output prefix is visible.
         for _ in range(10):
-            status=aggregate_runtime.step(
-                con,"agg-sink",31,"agg-consumer",plan,
-                "agg-state",mapping(),cfg(path))
+            status=aggregate_task_runner.step(
+                con,"agg-task",cfg(path),mapping=wire_mapping)
             if status["consumer"]["watermark"]==2:
                 break
         assert status["consumer"]["watermark"]==2
@@ -194,20 +203,22 @@ def main():
         # Restart with durable jobs already staged; no recomputation/reacquire W.
         con=j4.init_state(path)
         aggregate_state.install(con)
+        persisted=aggregate_task_catalog.task_info(con,"agg-task")
+        assert persisted["descriptor_hash"]==task["descriptor_hash"]
+        wire_mapping=mapping(persisted)
         assert ack_all(con)>0
-        status=aggregate_runtime.step(
-            con,"agg-sink",31,"agg-consumer",plan,
-            "agg-state",mapping(),cfg(path))
+        status=aggregate_task_runner.step(
+            con,"agg-task",cfg(path),mapping=wire_mapping)
         assert status["generation"]["status"]=="ready"
+        assert status["task"]["status"]=="active"
         assert status["visible_frontier"]>=2
         assert status["consumer"]["watermark"]==2
 
         # Ready is a lifecycle milestone, not a stop condition. New source
         # commits continue through state/outbox/jobs without changing W.
         assert add_commit(con,None,140)==3
-        status=aggregate_runtime.step(
-            con,"agg-sink",31,"agg-consumer",plan,
-            "agg-state",mapping(),cfg(path))
+        status=aggregate_task_runner.step(
+            con,"agg-task",cfg(path),mapping=wire_mapping)
         assert status["generation"]["status"]=="ready"
         assert status["consumer"]["watermark"]==3
         # Zero-output source commit is immediately target-visible once prior
