@@ -5094,9 +5094,14 @@ def live_plan_versions(con, runtime):
 
 def prune_plan_engines(engine_cache, con, runtime):
     live = live_plan_versions(con,runtime)
-    for version in list(engine_cache):
-        if int(version) not in live:
-            engine = engine_cache.pop(version)
+    for key in list(engine_cache):
+        version = (
+            int(key[1])
+            if isinstance(key,tuple) and key and key[0]=="stateful"
+            else int(key)
+        )
+        if version not in live:
+            engine = engine_cache.pop(key)
             with contextlib.suppress(Exception):
                 engine.close()
     if len(runtime.get("plans",{})) > max(4,len(live)+1):
