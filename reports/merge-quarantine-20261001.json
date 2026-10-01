@@ -1,0 +1,48 @@
+{
+  "format_version": 1,
+  "commit": "96bab219166fcfea2d76e8b709c59f01ad0b33b2",
+  "workflow_run": 36795348744,
+  "cases": [
+    {
+      "format_version": 1,
+      "kind": "actual_accepted_merge_response_loss_quarantine",
+      "protocol": "merge_async",
+      "gtid_mode": "ON",
+      "starrocks_version": "4.1.1-14b7e3f",
+      "dropped_accepted_requests": 1,
+      "independently_confirmed_visible": true,
+      "unrelated_target_exact_before_restart": true,
+      "unrelated_target_exact_after_restart": true,
+      "before_rows": 161,
+      "after_rows": 194,
+      "durable_unknown_parts": 1,
+      "unknown_payload_not_replayed": true,
+      "unknown_payload_forward_attempts": 1,
+      "health": "degraded",
+      "scope": "target_isolation_not_automatic_remote_reconciliation"
+    },
+    {
+      "format_version": 1,
+      "kind": "actual_accepted_merge_response_loss_quarantine",
+      "protocol": "merge_async",
+      "gtid_mode": "OFF",
+      "starrocks_version": "4.1.1-14b7e3f",
+      "dropped_accepted_requests": 1,
+      "independently_confirmed_visible": true,
+      "unrelated_target_exact_before_restart": true,
+      "unrelated_target_exact_after_restart": true,
+      "before_rows": 161,
+      "after_rows": 194,
+      "durable_unknown_parts": 1,
+      "unknown_payload_not_replayed": true,
+      "unknown_payload_forward_attempts": 1,
+      "health": "degraded",
+      "scope": "target_isolation_not_automatic_remote_reconciliation"
+    }
+  ],
+  "limits": [
+    "synthetic short test",
+    "target isolation; no automatic remote reconciliation",
+    "finite journal budget; quarantined target does not meet freshness SLA"
+  ]
+}

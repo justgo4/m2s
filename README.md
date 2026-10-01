@@ -114,7 +114,7 @@ python j4.py cli
 | P7 动态新增下游 | 先完成单源投影/过滤的 W→构建→追赶→发布→取消闭环 | 10 次交错部署/更新/删除/重启场景；旧任务继续运行；新目标最终逐键逐字段等于 oracle；构建进度可恢复、旧 generation 被隔离，最新行不被历史覆盖；登记 completeness 和 time-to-ready | 基线在线新增下游通过四组真实数据库测试；本地状态 W/generation 闭环仍依赖 P6 |
 | P8 增量 SQL | 先 COUNT/SUM/AVG 及索引 INNER JOIN，再 LEFT JOIN、MIN/MAX、DISTINCT | 至少 10,000 组有重复/NULL/撤回/跨表同事务的随机用例；SQL 三值逻辑、空分组、匹配数归零及输出主键正确；状态/输出放大可界定；每类算子单独验收，窗口不隐含支持 | 计划，逐算子开放 |
 | P9 共享执行与策略 | 多任务共享扫描/索引/子图，必要时增量与重算切换 | 1/10/100 任务真实成本对照；持久基底/索引可共享但不强求零构建成本；热点/fanout/策略维护计入；切换可恢复且结果等价 | 计划，等待多任务 profile |
-| P10 输出与回填调度 | 前置最小可用输出：顺序、可见性、未知状态恢复、预算；后续再编码优化 | 默认 SR 服务参数下回填可限速也可恢复；同键旧请求不覆盖新数据；不丢 delete；积压有界且回填不永久饥饿；merge/2PC 分开验收，不承诺消除 compaction | 四组短时端到端正确性通过；未知请求/完整压力故障矩阵仍待验收 |
+| P10 输出与回填调度 | 前置最小可用输出：顺序、可见性、未知状态恢复、预算；后续再编码优化 | 默认 SR 服务参数下回填可限速也可恢复；同键旧请求不覆盖新数据；不丢 delete；积压有界且回填不永久饥饿；merge/2PC 分开验收，不承诺消除 compaction | 四组短时端到端及真实未知响应隔离/重启通过；完整压力故障矩阵仍待验收 |
 | P11 目标规模与长跑 | 从小规模持续测试扩到 50M + 50 行/s，并动态建任务 | 固定资源连续至少 72 小时；基础镜像及已就绪任务正常时段 P95 <= 5 秒、P99 <= 10 秒；记录最大延迟和违约率，故障期单报；排空后逐键字段正确；测 time-to-ready、回填总时长和容量余量；默认 SR 参数 | 计划；机器/行宽/任务数与资源预算须固定 |
 | P12 硬件参考与对标 | 分层瓶颈上界与七系统相同语义比较 | 同资源/版本/耐久性/正确性、至少 5 次重复及区间；不支持项单列；复制、状态计算、目标导入分开比较，禁止用微基准宣称全面领先；低负载测延迟，高负载扫描饱和点及持续积压，50 行/s 本身不能证明吞吐极限 | 计划，不作为首个可用版本的阻塞条件 |
 | P13 控制接口、MCP 与发布 | 先定版本化 deploy/explain/status/cancel，再自然语言入口和可回滚发布 | MCP 复用相同校验与部署事务，不绕过权限/成本检查；状态格式迁移、升级失败/回滚及备份恢复实测；72h、恢复和目标能力 gate 通过才标对应范围生产候选 | 计划；接口先行，MCP 不要求先完成七系统对标 |
@@ -292,4 +292,11 @@ python tools/state_layout_benchmark.py --rows 1000 --transactions 10 --changes 2
 
 status 和 summary 显示 `health=degraded`、`quarantined_tables` 及原因。这不表示未知请求已经解决，不重新发送旧 payload，也不自动删除标记或宣称该目标继续满足新鲜度目标。如果隔离目标长期不处理，有限 journal 填满仍会对源施加背压；不是无限持续服务保证。自动有证据对账/隔离 generation 重建仍是后续 P2/P6/P7 工作，当前不能标完整故障恢复完成。
 
-`tools/merge_quarantine_test.py` 用实际 SQLite 标记和实际 writer 循环模拟响应丢失，验证原 payload/未知标记跨重启保留、坏目标只尝试一次、独立目标 worker 继续执行，以及普通错误不会被错误地隔离。它不含真实网络，远程不确定 HTTP 边界的证明仍待补充。
+`tools/merge_quarantine_test.py` 用实际 SQLite 标记和实际 writer 循环模拟响应丢失，验证原 payload/未知标记跨重启保留、坏目标只尝试一次、独立目标 worker 继续执行，以及普通错误不会被错误地隔离。它不含真实网络，真实 HTTP 边界由下面的独立代理测试覆盖。
+
+
+真实网络验收：[CI 36795348744](https://github.com/justgo4/m2s/actions/runs/36795348744) 的 transaction/merge_async × GTID ON/OFF 四组全部通过。两组 merge_async 还运行 `tools/merge_quarantine_network_test.py`：隔离代理在实际 StarRocks 4.1.1 接受一条请求后丢弃成功响应，独立查询确认该事务最终 VISIBLE；daemon 未收到 TxnId，保留一条未知标记。原 payload 的 BE 转发次数严格为 1，受影响目标被隔离；另一个目标在硬退出前和重启后均与 MySQL 逐字段一致，源在程序退出期间的新事务也被补获。两种 GTID 模式结果相同，公开计数见 `reports/merge-quarantine-20261001.json`。
+
+同一实现的 [Python 3.12/3.14 离线回归](https://github.com/justgo4/m2s/actions/runs/36795348655) 与 [真实 MySQL/StarRocks、sanitizer、snapshot A/B](https://github.com/justgo4/m2s/actions/runs/36795348569) 全部通过。测试代理保留 `Expect` 与重定向查询参数，不主动制造非目标网络故障。独立协议 runner 清理未使用工具链来腾出磁盘，不修改 StarRocks 磁盘阈值或服务参数。
+
+本轮仅完成未知响应的安全隔离验收，未完成自动对账或目标重建；共享源状态接入 daemon（P6）、本地 W/generation 动态任务（P7）、增量聚合/JOIN（P8）、50M+50 行/s 的 72 小时验收和公平性能对标仍未完成。不能将这些短测结果称为整个路线已完成、生产认证或物理性能极限。
