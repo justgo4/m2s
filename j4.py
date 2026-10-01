@@ -5285,7 +5285,10 @@ def ensure_hot_add_targets(cfg, candidate, added_sinks):
 
 def catalog_activation_record(runtime, validation):
     record = {name:validation[name] for name in
-              ('status','version','reason','added_sinks','history_mode') if name in validation}
+              (
+                  'status','version','reason','added_sinks','dropped_sinks',
+                  'history_mode'
+              ) if name in validation}
     with runtime['plan_lock']:
         runtime['catalog_activation'] = record
     if record.get('status') in ('restart_required','rebuild_required'):
