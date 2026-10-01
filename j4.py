@@ -43,6 +43,7 @@ import cdc_catalog
 import incremental_contract
 import incremental_ir
 import join_outbox
+import join_task_catalog
 import physical_state_catalog
 import relational_ir
 import source_state
@@ -1624,6 +1625,7 @@ def init_state(path):
     source_state.install(con)
     aggregate_outbox.install(con)
     join_outbox.install(con)
+    join_task_catalog.install(con)
     aggregate_task_catalog.install(con)
     physical_state_catalog.install(con)
     task_generation.install(con)
