@@ -1543,6 +1543,12 @@ def init_state(path):
         CREATE TABLE IF NOT EXISTS job_assignments(
             job_id INTEGER PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
             delivery_id TEXT NOT NULL REFERENCES deliveries(id) ON DELETE CASCADE);
+        CREATE TABLE IF NOT EXISTS aggregate_job_links(
+            job_id INTEGER PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+            consumer_id TEXT NOT NULL,
+            source_seq INTEGER NOT NULL);
+        CREATE INDEX IF NOT EXISTS aggregate_job_links_commit
+            ON aggregate_job_links(consumer_id,source_seq,job_id);
         CREATE TABLE IF NOT EXISTS prepare_reservations(
             delivery_id TEXT PRIMARY KEY REFERENCES deliveries(id) ON DELETE CASCADE,
             reserved_bytes INTEGER NOT NULL CHECK(reserved_bytes>=0));
@@ -3067,10 +3073,30 @@ def acknowledge_delivery(con, delivery):
             FROM active_jobs j JOIN job_assignments a ON a.job_id=j.id
             WHERE a.delivery_id=?
         """,(delivery,)).fetchone()[0]
+        aggregate_commits = [
+            (str(row[0]),int(row[1]))
+            for row in con.execute("""
+                SELECT DISTINCT l.consumer_id,l.source_seq
+                FROM aggregate_job_links l
+                JOIN job_assignments a ON a.job_id=l.job_id
+                WHERE a.delivery_id=?
+            """,(delivery,)).fetchall()
+        ]
         con.execute("""
             INSERT OR IGNORE INTO retired_jobs(job_id)
             SELECT job_id FROM job_assignments WHERE delivery_id=?
         """,(delivery,))
+        for consumer_id,source_seq in aggregate_commits:
+            if not con.execute("""
+                SELECT 1
+                FROM aggregate_job_links l
+                LEFT JOIN retired_jobs r ON r.job_id=l.job_id
+                WHERE l.consumer_id=? AND l.source_seq=?
+                  AND r.job_id IS NULL
+                LIMIT 1
+            """,(consumer_id,source_seq)).fetchone():
+                aggregate_outbox.mark_visible(
+                    con,consumer_id,source_seq)
         con.execute("DELETE FROM load_parts WHERE delivery_id=?", (delivery,))
         con.execute("DELETE FROM load_transactions WHERE delivery_id=?", (delivery,))
         con.execute("DELETE FROM deliveries WHERE id=?", (delivery,))
