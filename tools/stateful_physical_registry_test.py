@@ -100,6 +100,18 @@ def main():
         (row["owner_id"],row["role"])
         for row in refs
     ]==[("agg-task-a","owner")]
+    assert physical_state_catalog.acquire_reusable_state(
+        con,advanced["spec"],"unsafe-pin",12,
+        backend=advanced["backend"],
+        format_tag=advanced["format_tag"]
+    ) is None
+    try:
+        physical_state_catalog.pin_state(
+            con,advanced["instance_id"],"unsafe-pin",12)
+        raise AssertionError(
+            "current-only physical state accepted a durable logical pin")
+    except RuntimeError as exc:
+        assert "current-only" in str(exc)
 
     # A second sink with identical source semantics produces a distinct physical
     # instance but the same semantic identity, which is the prerequisite for a
@@ -172,7 +184,8 @@ def main():
     con.close()
     print(
         "stateful_physical_registry_test ok semantic_identity "
-        "schema_epoch source_epoch ready_advance retire_gc",
+        "schema_epoch source_epoch current_only_pin_fence "
+        "ready_advance retire_gc",
         flush=True,
     )
 
