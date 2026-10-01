@@ -704,6 +704,42 @@ def main():
                     "online stateful retire did not drain cleanly: "
                     +repr(state(directory/"state.sqlite3")))
 
+            # JOIN uses the same retirement journal/frontier protocol but a
+            # different pair-identity outbox. Retire it online too and preserve
+            # the exact final target at the cutover frontier.
+            join_before_drop=join_actual(cfg)
+            join_expected_before_drop=join_expected(source)
+            if join_before_drop!=join_expected_before_drop:
+                raise AssertionError(
+                    "JOIN target not exact before online drop")
+            result,response,activation=run_catalog_sql(
+                directory,env,"drop-join",
+                "DROP TABLE starrocks.joined;")
+            if (
+                result.returncode!=0
+                or activation.get("status") not in {
+                    "hot_pending",
+                    "deferred_until_snapshot_done",
+                    "deferred_until_previous_plan_drained",
+                }
+            ):
+                raise AssertionError(
+                    "stateful JOIN drop was not accepted online: "
+                    +json.dumps(response,sort_keys=True))
+            join_retired=wait_stateful_retired(
+                proc,log,directory,"starrocks.joined",
+                kind="join")
+            if join_actual(cfg)!=join_expected_before_drop:
+                raise AssertionError(
+                    "retired JOIN target changed after cutover")
+            if (
+                join_retired["consumers"]!=0
+                or join_retired["retirements"]
+            ):
+                raise AssertionError(
+                    "final stateful retirement leaked consumer/intent: "
+                    +repr(join_retired))
+
             stop(proc,handle,kill=False)
             proc=handle=log=None
             report=dict(
@@ -717,6 +753,7 @@ def main():
                 online_stateful_add=True,
                 online_stateful_add_live_updates=True,
                 online_stateful_drop=True,
+                online_join_drop=True,
                 aggregate_status_before_drop=third_state["aggregate"],
                 join_status_before_drop=third_state["join"],
                 dropped_aggregate_retired=True,
@@ -730,6 +767,7 @@ def main():
                 hot_before=hot_before,
                 hot_after=hot_after,
                 retired_state=retired_state,
+                join_retired=join_retired,
             )
             args.output.parent.mkdir(
                 parents=True,exist_ok=True)
@@ -740,7 +778,8 @@ def main():
                     key:value for key,value in report.items()
                     if key not in {
                         "first","second","third",
-                        "hot_before","hot_after","retired_state"
+                        "hot_before","hot_after","retired_state",
+                        "join_retired"
                     }
                 },sort_keys=True),
                 flush=True)
