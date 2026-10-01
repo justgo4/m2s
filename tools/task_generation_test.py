@@ -43,6 +43,10 @@ def main():
     staged = tg.mark_history_staged(con,"sink-a",7)
     assert staged["status"] == "history_staged"
     assert staged["history_staged_at"] is not None
+    expect_error(
+        lambda: tg.mark_ready_if_exists(con,"sink-a",7),
+        RuntimeError,
+    )
     con.execute(
         "CREATE TABLE source_pins("
         "pin_id TEXT PRIMARY KEY,watermark INTEGER NOT NULL,"

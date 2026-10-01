@@ -257,19 +257,27 @@ def mark_ready_if_exists(con, sink_key, plan_version):
     if current is None:
         return None
     if current["status"] == "ready":
+        if not current["source_pin_released"]:
+            raise RuntimeError(
+                "ready generation still retains a fixed-W source pin")
         return current
-    if current["status"] not in {"building","history_staged"}:
+    if current["status"] != "history_staged":
         raise RuntimeError(
-            "cannot publish generation from status " + current["status"])
+            "cannot publish generation before durable history_staged; status="
+            + current["status"])
+    if not current["source_pin_released"]:
+        raise RuntimeError(
+            "cannot publish generation before fixed-W source pin is released")
+    if current["history_staged_at"] is None:
+        raise RuntimeError(
+            "history_staged generation lacks durable staged timestamp")
     now = time.time()
     with transaction(con):
         con.execute("""
             UPDATE task_generations
-            SET status='ready',
-                history_staged_at=COALESCE(history_staged_at,?),
-                ready_at=?,updated=?
+            SET status='ready',ready_at=?,updated=?
             WHERE sink_key=? AND plan_version=?
-        """, (now,now,now,str(sink_key),int(plan_version)))
+        """, (now,now,str(sink_key),int(plan_version)))
     return info(con,sink_key,plan_version)
 
 
