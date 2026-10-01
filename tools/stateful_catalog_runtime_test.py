@@ -244,8 +244,10 @@ def main():
         assert pending_retire[0]["frontier"]==17
         assert pending_retire[0]["task"]["task_id"]==(
             compiled["task"]["task_id"])
-        stateful_catalog_runtime.clear_retirement(
-            con,compiled["task"]["task_id"])
+        retained=stateful_catalog_runtime.prepare_startup_retirements(
+            con,{},[compiled],101)
+        assert retained==dict(
+            staged=[],abandoned=[])
         assert stateful_catalog_runtime.pending_retirements(
             con)==[]
         durable=stateful_catalog_runtime.durable_mappings(con)
@@ -278,7 +280,8 @@ def main():
     print(
         "stateful_catalog_runtime_test ok source_scope hidden_source "
         "target_inference stateful_engine_namespace monotonic_source_scope "
-        "descriptor_register durable_retirement_restart_same_w durable_mapping "
+        "descriptor_register durable_retirement_restart_same_w "
+        "retained_catalog_cancels_retire durable_mapping "
         "drop_retire terminal_fence",
         flush=True,
     )
