@@ -9,6 +9,7 @@ consumer frontier.
 import time
 
 import join_ir
+import join_outbox
 import join_state
 import source_state
 
@@ -60,6 +61,13 @@ def ensure_consumer(
     ):
         raise RuntimeError(
             "JOIN state semantics differ from consumer IR")
+    join_outbox.ensure_installed(con)
+    join_outbox.ensure_stream(
+        con,consumer_id,state_id,int(plan_version),
+        generation_id,watermark)
+    join_outbox.seed_bootstrap(
+        con,consumer_id,state_id,int(plan_version),
+        generation_id,watermark)
     metadata=_metadata(
         plan_version,ir,state_id,generation_id)
     try:
@@ -178,6 +186,9 @@ def process_next(
         if not applied["applied"]:
             raise RuntimeError(
                 "JOIN state unexpectedly treated next source seq as retry")
+        output_commit=join_outbox.enqueue_incremental(
+            con,consumer_id,state_id,seq,
+            applied["deltas"])
         updated=con.execute("""
             UPDATE source_consumers
             SET watermark=?,updated=?
@@ -199,6 +210,7 @@ def process_next(
         source_seq=seq,
         nchanges=len(changes),
         deltas=applied["deltas"],
+        output_commit=output_commit,
         position=(
             str(commit["position"][0]),
             int(commit["position"][1]),
