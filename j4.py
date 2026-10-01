@@ -8682,6 +8682,13 @@ def stateful_task_worker(item, cfg, runtime):
     )
     try:
         while not stop.is_set():
+            with runtime["plan_lock"]:
+                active_ids=runtime.get("stateful_active_task_ids")
+                if (
+                    active_ids is not None
+                    and task["task_id"] not in active_ids
+                ):
+                    break
             complete=True
             for relation in relations:
                 info=source_state.relation_info(con,relation)
@@ -8995,6 +9002,10 @@ def run_cdc(
                        plans=recovered_plans,
                        stateful_mappings=stateful_mappings,
                        stateful_tasks=list(compiled_stateful),
+                       stateful_active_task_ids={
+                           item["task"]["task_id"]
+                           for item in compiled_stateful},
+                       stateful_worker_threads={},
                        stateful_source_mappings=list(stateful_source_mappings),
                        pending_plan=None,deferred_plan=None,
                        validated_catalog_plans={},
@@ -9107,6 +9118,8 @@ def run_cdc(
                          +mapping_key(item["mapping"]))
                 thread.start()
                 threads.append(thread)
+                runtime["stateful_worker_threads"][
+                    item["task"]["task_id"]]=thread
             began = time.monotonic()
             next_status = began + cfg["status_seconds"]
             if cfg["load_mode"] == "merge_async":
