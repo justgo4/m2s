@@ -157,11 +157,12 @@ def import_existing(
                 generation_id,sink_key,plan_version,source_relation,fixed_w,
                 source_pin_id,source_pin_released,status,imported,
                 created,updated,history_staged_at,ready_at)
-            VALUES(?,?,?,?,NULL,NULL,1,?,1,?,?,?,?)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (
             generation_id(sink_key,plan_version),
             str(sink_key),int(plan_version),str(source_relation),
-            status,now,now,now,now if status == "ready" else None,
+            None,None,1,status,1,now,now,now,
+            now if status == "ready" else None,
         ))
     return info(con,sink_key,plan_version)
 
