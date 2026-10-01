@@ -194,7 +194,8 @@ def main():
         assert registered[0]["task"]["status"]=="candidate"
         durable=stateful_catalog_runtime.durable_mappings(con)
         identity=(
-            compiled["task"]["plan_version"],
+            stateful_task_plan.writer_plan_version(
+                compiled["task"]["plan_version"]),
             compiled["task"]["sink_key"])
         assert identity in durable
         retired=stateful_catalog_runtime.retire_absent(
