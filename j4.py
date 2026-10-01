@@ -41,6 +41,7 @@ import cdc_catalog
 import incremental_contract
 import physical_state_catalog
 import source_state
+import task_generation
 
 mappings = []
 
@@ -1508,7 +1509,8 @@ def init_state(path):
         CREATE TABLE IF NOT EXISTS snapshot_groups(
             id TEXT PRIMARY KEY, table_name TEXT NOT NULL,
             cursor BLOB, is_last INTEGER NOT NULL,
-            stage_seq INTEGER NOT NULL DEFAULT 0);
+            stage_seq INTEGER NOT NULL DEFAULT 0,
+            plan_version INTEGER NOT NULL DEFAULT 0);
         CREATE TABLE IF NOT EXISTS jobs(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             table_name TEXT NOT NULL, lane INTEGER NOT NULL, kind TEXT NOT NULL,
@@ -1595,6 +1597,7 @@ def init_state(path):
     """)
     source_state.install(con)
     physical_state_catalog.install(con)
+    task_generation.install(con)
     existing_format = meta_get(con,"state_format")
     if existing_format is None:
         if con.execute("SELECT 1 FROM meta LIMIT 1").fetchone():
@@ -1628,6 +1631,11 @@ def init_state(path):
             con.execute(
                 "ALTER TABLE snapshot_groups "
                 "ADD COLUMN stage_seq INTEGER NOT NULL DEFAULT 0")
+    if "plan_version" not in snapshot_group_columns:
+        with state_transaction(con):
+            con.execute(
+                "ALTER TABLE snapshot_groups "
+                "ADD COLUMN plan_version INTEGER NOT NULL DEFAULT 0")
 
     if meta_get(con,"snapshot_staged_cursor_v1",0) != 1:
         # Pre-read-ahead versions allowed at most one pending snapshot group per
@@ -2446,9 +2454,11 @@ def stage_snapshot(con, mapping, rows, cursor, is_last, high, cfg, engine=None):
                 """,(table,)).fetchone()[0])
                 con.execute("""
                     INSERT INTO snapshot_groups(
-                        id,table_name,cursor,is_last,stage_seq)
-                    VALUES(?,?,?,?,?)
-                """,(group,table,pack(cursor),int(is_last),stage_seq))
+                        id,table_name,cursor,is_last,stage_seq,plan_version)
+                    VALUES(?,?,?,?,?,?)
+                """,(
+                    group,table,pack(cursor),int(is_last),stage_seq,
+                    int(mapping.get("_plan_version",0))))
                 total = 0
                 while True:
                     record = read_spool_record(spool)
@@ -2490,7 +2500,7 @@ def finish_snapshot_group(con, group):
     # through the longest completed prefix of stage_seq.
     while True:
         head = con.execute("""
-            SELECT id,cursor,is_last
+            SELECT id,cursor,is_last,plan_version
             FROM snapshot_groups
             WHERE table_name=?
             ORDER BY stage_seq,id
@@ -2498,7 +2508,7 @@ def finish_snapshot_group(con, group):
         """,(table,)).fetchone()
         if not head:
             return
-        head_id,cursor,is_last = head
+        head_id,cursor,is_last,plan_version = head
         if con.execute(
                 "SELECT 1 FROM active_jobs WHERE group_id=?",
                 (head_id,)).fetchone():
@@ -2510,6 +2520,8 @@ def finish_snapshot_group(con, group):
         """,(cursor,int(is_last),table))
         if is_last:
             con.execute("DELETE FROM touched WHERE table_name=?",(table,))
+            task_generation.mark_ready_if_exists(
+                con,table,int(plan_version))
         con.execute("DELETE FROM snapshot_groups WHERE id=?",(head_id,))
 
 
@@ -7780,7 +7792,7 @@ def shared_snapshot_worker(mapping, cfg, runtime):
     pin = None
     try:
         state = con.execute("""
-            SELECT cursor,staged_cursor,staged_done
+            SELECT cursor,staged_cursor,staged_done,snapshot_done
             FROM table_state WHERE name=?
         """,(table,)).fetchone()
         if state is None:
@@ -7788,11 +7800,23 @@ def shared_snapshot_worker(mapping, cfg, runtime):
         owner = "sink:%s:plan:%d" % (
             table,int(mapping.get("_plan_version",0)))
         if state[2]:
+            generation = task_generation.maybe_info(
+                con,table,int(mapping.get("_plan_version",0)))
+            if generation is None:
+                generation = task_generation.import_existing(
+                    con,table,int(mapping.get("_plan_version",0)),relation,
+                    "ready" if state[3] else "history_staged")
             row = con.execute(
                 "SELECT pin_id FROM source_pins WHERE owner=?",(owner,)
             ).fetchone()
             if row:
                 source_state.release_pin(con,row[0])
+            if not generation["source_pin_released"]:
+                task_generation.mark_pin_released(
+                    con,table,int(mapping.get("_plan_version",0)))
+            if state[3]:
+                task_generation.mark_ready_if_exists(
+                    con,table,int(mapping.get("_plan_version",0)))
             return
 
         while not stop.is_set():
@@ -7805,6 +7829,9 @@ def shared_snapshot_worker(mapping, cfg, runtime):
 
         sync_source_base_catalog(con)
         pin = source_state.acquire_or_resume_pin(con,owner,[relation])
+        task_generation.ensure_build(
+            con,table,int(mapping.get("_plan_version",0)),relation,
+            pin["watermark"],pin["pin_id"])
         cursor_blob = state[1] if state[1] is not None else state[0]
         cursor = unpack(cursor_blob) if cursor_blob is not None else None
         count = min(int(cfg["snapshot_rows"]),4096)
@@ -7833,7 +7860,11 @@ def shared_snapshot_worker(mapping, cfg, runtime):
                     f"last={int(is_last)}")
             cursor = next_cursor
             if is_last:
+                task_generation.mark_history_staged(
+                    con,table,int(mapping.get("_plan_version",0)))
                 source_state.release_pin(con,pin["pin_id"])
+                task_generation.mark_pin_released(
+                    con,table,int(mapping.get("_plan_version",0)))
                 pin = None
                 return
     finally:
