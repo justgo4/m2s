@@ -5026,6 +5026,19 @@ def delivery_plan_version(con, delivery):
     return int(row[0])
 
 
+def transform_engine_for_version(runtime, cfg, version, table=None):
+    version=int(version)
+    stateful=(
+        None if table is None else
+        runtime.get("stateful_mappings",{}).get((version,str(table)))
+    )
+    if stateful is not None:
+        return transform_engine(cfg)
+    plan=runtime_plan(runtime,version)
+    return transform_engine(
+        cfg,macros=plan.get("macros",()),udfs=plan.get("udfs",()))
+
+
 def plan_engine(engine_cache, runtime, cfg, version, table=None):
     version = int(version)
     stateful = (
@@ -5035,12 +5048,8 @@ def plan_engine(engine_cache, runtime, cfg, version, table=None):
     key = ("stateful",version,str(table)) if stateful is not None else version
     engine = engine_cache.get(key)
     if engine is None:
-        if stateful is not None:
-            engine = transform_engine(cfg)
-        else:
-            plan = runtime_plan(runtime,version)
-            engine = transform_engine(
-                cfg,macros=plan.get("macros",()),udfs=plan.get("udfs",()))
+        engine=transform_engine_for_version(
+            runtime,cfg,version,table)
         engine_cache[key] = engine
     return engine
 
@@ -6830,17 +6839,8 @@ def process_merge_lane(con, engine_cache, handle, table, lane, cfg, runtime):
             recovery_mb = max(
                 1,(recovery_bytes + 1024**2 - 1)//1024**2)
             recovery_cfg["duckdb_memory"] = f"{recovery_mb}MB"
-            stateful_mapping=runtime.get(
-                "stateful_mappings",{}).get((int(version),str(table)))
-            if stateful_mapping is not None:
-                recovery_engine=transform_engine(
-                    recovery_cfg)
-            else:
-                plan=runtime_plan(runtime,version)
-                recovery_engine=transform_engine(
-                    recovery_cfg,
-                    macros=plan.get("macros",()),
-                    udfs=plan.get("udfs",()))
+            recovery_engine=transform_engine_for_version(
+                runtime,recovery_cfg,version,table)
             log(
                 f"DUCKDB OOM ESCALATE table={table} delivery={delivery} "
                 f"jobs=1 memory={cfg['duckdb_memory']}->{recovery_cfg['duckdb_memory']} "
