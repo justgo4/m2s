@@ -84,7 +84,7 @@ generation 更替须证明旧的在途请求不能覆盖新结果。停止本地
 
 语义 identity 后续还需覆盖 source instance/epoch、稳定 relation identity、类型/精度、时区、NULL/bag 语义、collation 及宏/UDF 定义版本；watermark、路径、refcount 属于实例状态。物理复用另检查 backend/encoding/ABI、健康、pin/追赶与恢复能力。以上扩展**尚未全部在当前合同模块实现**。
 
-最小共享接口只需先支持：获取/构建状态、fixed-version read、change subscription、retain/release、持久进度与安全 GC。当前 `source_state.py` 已有 fixed-W pin/read、版本/changelog GC，并新增 durable consumer watermark；consumer 可跨“零输出事务”单调推进，GC 自动受最慢 consumer/pin 约束。第一个正确 JOIN 不等待通用优化器，但也不能只凭 refcount 或相同 hash 回收/复用状态。
+最小共享接口只需先支持：获取/构建状态、fixed-version read、change subscription、retain/release、持久进度与安全 GC。当前 `source_state.py` 已有 fixed-W pin/read、版本/changelog GC 和 durable consumer watermark；consumer 可跨“零输出事务”单调推进，GC 自动受最慢 consumer/pin 约束。新增 `physical_state_catalog.py` 把 semantic identity、backend/format、generation、可读版本区间、health、refs、pins 与 GC eligibility 持久化，并将 `semantic_compatible` / `version_readable(W)` / `physically_reusable` 三个判断拆开。第一个正确 JOIN 不等待通用优化器。
 
 shared 模式下内部 `source_commits.seq` 现在继续写入 durable `jobs.source_seq`，目标确认 VISIBLE 后推进 `applied.source_seq`（per lane ordered domain）。lane FIFO 仍是第一道顺序保证，ack 额外拒绝 source_seq 回退，避免损坏状态或未来并发改造让旧写覆盖新写。
 

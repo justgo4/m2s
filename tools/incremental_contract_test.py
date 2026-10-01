@@ -95,6 +95,12 @@ def main():
     expect_error(lambda: ic.plan_candidate(
         "incremental_build", [], {name: -1 for name in ic.COST_FIELDS}))
     expect_error(lambda: ic.state_spec("arrangement", ["a"], [], key_exprs=["k"]))
+    malformed = dict(base)
+    malformed["unexpected"] = "x"
+    expect_error(lambda: ic.state_identity(malformed))
+    malformed = dict(base)
+    del malformed["collation"]
+    expect_error(lambda: ic.state_identity(malformed))
 
     print("incremental_contract_test ok", flush=True)
 

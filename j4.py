@@ -38,6 +38,7 @@ import pymysql
 import sqlglot
 from sqlglot import exp
 import cdc_catalog
+import physical_state_catalog
 import source_state
 
 mappings = []
@@ -1528,6 +1529,7 @@ def init_state(path):
             ON field_overflow(table_name,column_name,id);
     """)
     source_state.install(con)
+    physical_state_catalog.install(con)
     existing_format = meta_get(con,"state_format")
     if existing_format is None:
         if con.execute("SELECT 1 FROM meta LIMIT 1").fetchone():

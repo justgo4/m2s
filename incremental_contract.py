@@ -31,6 +31,17 @@ COST_FIELDS = (
     "write_bytes",
     "catchup_lag_ms",
 )
+STATE_SPEC_FIELDS = {
+    "format_version",
+    "kind",
+    "relations",
+    "schema_epochs",
+    "key_exprs",
+    "value_exprs",
+    "predicate",
+    "collation",
+    "semantics_version",
+}
 
 
 def _nonempty_text(value, name):
@@ -89,13 +100,40 @@ def canonical_bytes(value):
     ).encode("utf-8")
 
 
-def state_identity(spec):
+def validate_state_spec(spec):
     if not isinstance(spec, dict):
         raise ValueError("state spec must be a dict")
+    if set(spec) != STATE_SPEC_FIELDS:
+        missing = sorted(STATE_SPEC_FIELDS-set(spec))
+        extra = sorted(set(spec)-STATE_SPEC_FIELDS)
+        raise ValueError(
+            "state spec fields differ from format v1 "
+            + "missing=" + repr(missing) + " extra=" + repr(extra)
+        )
+    if int(spec["format_version"]) != 1:
+        raise ValueError("unsupported state spec format version")
+    normalized = state_spec(
+        spec["kind"],
+        spec["relations"],
+        spec["schema_epochs"],
+        key_exprs=spec["key_exprs"],
+        value_exprs=spec["value_exprs"],
+        predicate=spec["predicate"],
+        collation=spec["collation"],
+        semantics_version=spec["semantics_version"],
+    )
+    if normalized != spec:
+        raise ValueError("state spec is not canonical")
+    return normalized
+
+
+def state_identity(spec):
+    spec = validate_state_spec(spec)
     return hashlib.sha256(canonical_bytes(spec)).hexdigest()
 
 
 def state_handle(spec, watermark, backend=None, metadata=None):
+    spec = validate_state_spec(spec)
     watermark = int(watermark)
     if watermark < 0:
         raise ValueError("watermark cannot be negative")
