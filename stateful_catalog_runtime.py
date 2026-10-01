@@ -166,22 +166,179 @@ def source_scope(cfg,manifests,prepared):
     )
 
 
+def _signature(ir,side,name=None):
+    if ir["kind"]=="group_aggregate":
+        column=side
+        rows=ir["source"]["schema"]
+    else:
+        column=name
+        rows=ir["sources"][side]["schema"]
+    for item in rows:
+        if str(item[0])==str(column):
+            return item
+    raise ValueError(
+        "stateful source schema lacks column "+str(column))
+
+
+def infer_target_schema(kind,ir):
+    import j4
+    kind=str(kind)
+    if kind=="aggregate":
+        result=[]
+        for name in ir["group_keys"]:
+            source=_signature(ir,name)
+            if str(source[3]).upper()=="YES":
+                raise ValueError(
+                    "aggregate GROUP BY key is nullable; stateful runtime v1 "
+                    "requires non-null group keys: "+name)
+            result.append(dict(
+                name=name,
+                type=j4.mysql_pk_target_type(source),
+                nullable=False,key=True))
+        for aggregate in ir["aggregates"]:
+            function=aggregate["function"]
+            output=aggregate["output"]
+            if function=="count":
+                type_sql="BIGINT"
+                nullable=False
+            elif function=="avg":
+                type_sql="DOUBLE"
+                nullable=True
+            elif function=="sum":
+                source=_signature(ir,aggregate["input"])
+                data_type=str(source[1]).lower()
+                column_type=str(source[2]).lower()
+                if data_type in {"decimal","numeric"}:
+                    match=re.search(
+                        r"\((\d+)\s*,\s*(\d+)\)",column_type)
+                    scale=int(match.group(2)) if match else 0
+                    type_sql="DECIMAL(38,%d)" % scale
+                elif data_type in {
+                    "tinyint","smallint","mediumint","int",
+                    "integer","bigint","year"
+                }:
+                    type_sql="LARGEINT"
+                elif data_type in {"float","double","real"}:
+                    type_sql="DOUBLE"
+                else:
+                    raise ValueError(
+                        "SUM input type is unsupported for automatic "
+                        "stateful target creation: "+data_type)
+                nullable=True
+            else:
+                raise ValueError(
+                    "unsupported aggregate function: "+function)
+            result.append(dict(
+                name=output,type=type_sql,
+                nullable=nullable,key=False))
+        return aggregate_target_mapping.validate_semantic_target(
+            ir,result)
+
+    if kind!="inner_join":
+        raise ValueError("unsupported stateful kind: "+kind)
+    result=[dict(
+        name=join_target_mapping.PAIR_COLUMN,
+        type="VARCHAR(1024)",nullable=False,key=True)]
+    for projection in ir["projections"]:
+        source=_signature(
+            ir,projection["source"],projection["column"])
+        dtype=j4.source_type(
+            str(source[1]),str(source[2]))
+        type_sql,track_size=j4.mysql_output_target_type(
+            source,str(dtype))
+        if track_size:
+            raise ValueError(
+                "JOIN projected source column can exceed the automatic "
+                "StarRocks field limit; create the target explicitly: "
+                +projection["output"])
+        result.append(dict(
+            name=projection["output"],
+            type=type_sql,
+            nullable=str(source[3]).upper()=="YES",
+            key=False))
+    import join_task_catalog
+    return join_task_catalog.normalize_target_schema(
+        ir,result)
+
+
+def target_ddl(target_table,target_schema):
+    import j4
+    target_table=_text(target_table,"target_table")
+    schema=list(target_schema or ())
+    keys=[item["name"] for item in schema if item["key"]]
+    if not keys:
+        raise ValueError("stateful target requires a primary key")
+    ordered=keys+[
+        item["name"] for item in schema
+        if item["name"] not in keys]
+    by_name={item["name"]:item for item in schema}
+    definitions=[]
+    for name in ordered:
+        item=by_name[name]
+        definitions.append(
+            "  "+j4.sql_name(name,True)+" "+item["type"]+" "
+            +("NOT NULL" if not item["nullable"] else "NULL"))
+    return (
+        "CREATE TABLE IF NOT EXISTS "
+        +j4.sql_name(target_table,True)+" (\n"
+        +",\n".join(definitions)
+        +"\n) ENGINE=OLAP\nPRIMARY KEY("
+        +",".join(j4.sql_name(name,True) for name in keys)
+        +")\nDISTRIBUTED BY HASH("
+        +",".join(j4.sql_name(name,True) for name in keys[:3])
+        +")"
+    )
+
+
+def target_schema(
+        cfg,kind,ir,target_table,
+        create_missing=False,allow_missing=False
+):
+    import j4
+    target_table=_text(target_table,"target_table")
+    with j4.mysql_connect(cfg,target=True) as target:
+        with target.cursor() as cur:
+            exists=j4.target_table_exists(
+                cur,cfg,target_table)
+            if not exists:
+                inferred=infer_target_schema(kind,ir)
+                if create_missing:
+                    ddl=target_ddl(
+                        target_table,inferred)
+                    try:
+                        cur.execute(ddl)
+                    except Exception as exc:
+                        raise RuntimeError(
+                            "automatic stateful target creation failed: "
+                            +str(exc)+"; ddl="+ddl) from exc
+                    exists=True
+                elif allow_missing:
+                    return inferred
+                else:
+                    raise RuntimeError(
+                        "stateful target table does not exist: "
+                        +target_table)
+    if kind=="aggregate":
+        return aggregate_target_mapping.descriptor_schema_from_target(
+            cfg,ir,target_table)
+    return join_target_mapping.descriptor_schema_from_target(
+        cfg,ir,target_table)
+
+
 def compile_catalog_tasks(
-        cfg,catalog_plan_version,manifests,source_metadata
+        cfg,catalog_plan_version,manifests,source_metadata,
+        create_missing=False,allow_missing=False
 ):
     compiled=[]
     for manifest in manifests or ():
         base=stateful_task_plan.compile_ir(
             manifest,cfg["mysql"]["database"],
             source_metadata)
-        if base["kind"]=="aggregate":
-            target_schema=(
-                aggregate_target_mapping.descriptor_schema_from_target(
-                    cfg,base["ir"],manifest["target_table"]))
-        else:
-            target_schema=(
-                join_target_mapping.descriptor_schema_from_target(
-                    cfg,base["ir"],manifest["target_table"]))
+        target_schema=globals()["target_schema"](
+            cfg,base["kind"],base["ir"],
+            manifest["target_table"],
+            create_missing=create_missing,
+            allow_missing=allow_missing)
         item=stateful_task_plan.compile_task(
             manifest,int(catalog_plan_version),
             cfg["mysql"]["database"],
