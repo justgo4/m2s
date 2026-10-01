@@ -159,6 +159,34 @@ def register_state(
     return state_info(con, instance_id)
 
 
+def ensure_state(
+        con, spec, backend, format_tag, watermark,
+        min_readable_watermark=None, generation=1,
+        health="building", metadata=None, instance_id=None
+):
+    instance_id = _text(instance_id, "instance_id")
+    try:
+        existing = state_info(con, instance_id)
+    except KeyError:
+        return register_state(
+            con,spec,backend,format_tag,watermark,
+            min_readable_watermark=min_readable_watermark,
+            generation=generation,health=health,metadata=metadata,
+            instance_id=instance_id)
+    expected_id = contract.state_identity(spec)
+    if existing["semantic_id"] != expected_id:
+        raise RuntimeError("physical state instance id was reused for new semantics")
+    if existing["backend"] != str(backend):
+        raise RuntimeError("physical state backend changed in place")
+    if existing["format_tag"] != str(format_tag):
+        raise RuntimeError("physical state format changed in place")
+    if existing["generation"] != int(generation):
+        raise RuntimeError("physical state generation changed in place")
+    if metadata is not None and existing["metadata"] != dict(metadata):
+        raise RuntimeError("physical state metadata changed in place")
+    return existing
+
+
 def semantic_compatible(state, requested_spec):
     try:
         requested_id = contract.state_identity(requested_spec)

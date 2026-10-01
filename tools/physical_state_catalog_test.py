@@ -76,6 +76,18 @@ def main():
     found = catalog.find_semantic(con,spec)
     assert [item["instance_id"] for item in found] == ["state-b","state-a"]
     assert catalog.physically_reusable(second,"rocksdb","sst-v1")
+    assert catalog.ensure_state(
+        con,spec,"rocksdb","sst-v1",21,
+        min_readable_watermark=10,generation=2,
+        health="ready",instance_id="state-b"
+    )["instance_id"] == "state-b"
+    expect_error(
+        lambda: catalog.ensure_state(
+            con,spec,"sqlite","sst-v1",21,
+            min_readable_watermark=10,generation=2,
+            health="ready",instance_id="state-b"),
+        RuntimeError,
+    )
 
     catalog.release_state(con,"state-a","query-1","consumer")
     catalog.set_health(con,"state-a","retired")

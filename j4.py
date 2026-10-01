@@ -38,6 +38,7 @@ import pymysql
 import sqlglot
 from sqlglot import exp
 import cdc_catalog
+import incremental_contract
 import physical_state_catalog
 import source_state
 
@@ -1270,6 +1271,70 @@ def source_state_relation_exists(con, relation):
         return True
     except KeyError:
         return False
+
+
+def source_base_catalog_spec(info):
+    relation_identity = (
+        str(info["source_epoch"]) + "::" + str(info["table_name"])
+        + "::" + str(info["schema_hash"])
+    )
+    return incremental_contract.state_spec(
+        "base",
+        [relation_identity],
+        [int(info["schema_epoch"])],
+        key_exprs=list(info["pk_columns"]),
+        value_exprs=list(info["columns"]),
+        predicate="TRUE",
+        collation="source-values-v1",
+    )
+
+
+def source_base_catalog_instance_id(info):
+    identity = incremental_contract.state_identity(
+        source_base_catalog_spec(info))
+    return "source-base-" + identity[:40]
+
+
+def sync_source_base_catalog(con):
+    applied = source_state.base_applied_seq(con)
+    floor = source_state.retention_floor(con)
+    result = []
+    tables = [
+        row[0] for row in con.execute(
+            "SELECT table_name FROM source_relations ORDER BY table_name")
+    ]
+    for table_name in tables:
+        info = source_state.relation_info(con,table_name)
+        complete = info["complete_seq"]
+        minimum = (
+            applied if complete is None
+            else max(int(complete),int(floor))
+        )
+        spec = source_base_catalog_spec(info)
+        instance_id = source_base_catalog_instance_id(info)
+        metadata = dict(
+            source_relation=str(table_name),
+            source_epoch=str(info["source_epoch"]),
+            schema_hash=str(info["schema_hash"]),
+            pin_authority="source_state",
+        )
+        state = physical_state_catalog.ensure_state(
+            con,spec,"sqlite-source-state","source-state-v1",
+            applied,min_readable_watermark=minimum,
+            generation=1,
+            health="ready" if complete is not None else "building",
+            metadata=metadata,instance_id=instance_id)
+        state = physical_state_catalog.advance_state(
+            con,instance_id,applied,
+            min_readable_watermark=minimum)
+        desired = "ready" if complete is not None else "building"
+        if state["health"] != desired:
+            state = physical_state_catalog.set_health(
+                con,instance_id,desired)
+        physical_state_catalog.retain_state(
+            con,instance_id,"source-state:"+str(table_name),"owner")
+        result.append(state)
+    return result
 
 
 def source_mappings(prepared):
@@ -6131,6 +6196,7 @@ def state_gc_worker(cfg, runtime):
                         incomplete = source_state.status(con)["incomplete_relations"]
                         if not incomplete:
                             source_gc = source_state.gc(con)
+                            sync_source_base_catalog(con)
                             if (
                                 cfg.get("detail_logs",False)
                                 and (source_gc["versions"] or source_gc["commits"])
@@ -7669,6 +7735,8 @@ def source_state_snapshot_worker(mapping, cfg, runtime):
                         con,relation,
                         rows if isinstance(rows,pa.Table) else snapshot_arrow(mapping,rows),
                         next_cursor,is_last=is_last)
+                    if is_last:
+                        sync_source_base_catalog(con)
                     break
                 except RuntimeError as exc:
                     if (
@@ -7735,6 +7803,7 @@ def shared_snapshot_worker(mapping, cfg, runtime):
         if stop.is_set():
             return
 
+        sync_source_base_catalog(con)
         pin = source_state.acquire_or_resume_pin(con,owner,[relation])
         cursor_blob = state[1] if state[1] is not None else state[0]
         cursor = unpack(cursor_blob) if cursor_blob is not None else None
@@ -8131,6 +8200,7 @@ def run_cdc(
                     con,source_relation_key(cfg,source_mapping),source_uuid,
                     source_arrow_schema(source_mapping),pk_columns(source_mapping))
             recovered = source_state.apply_pending(con)
+            sync_source_base_catalog(con)
             if recovered:
                 log(f"SOURCE STATE replayed_pending_commits={recovered}")
         migrate_sink_identity(
