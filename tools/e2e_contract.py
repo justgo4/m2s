@@ -80,6 +80,7 @@ def state(directory):
             cursor = con.execute("SELECT value FROM meta WHERE key='read_position'").fetchone()
             source_ready = source_log = source_base = None
             source_pins = []
+            visible_frontiers = []
             try:
                 relation_rows = con.execute(
                     'SELECT table_name,complete_seq FROM source_relations ORDER BY table_name'
@@ -97,13 +98,23 @@ def state(directory):
                         'SELECT owner,watermark FROM source_pins ORDER BY owner'
                     ).fetchall()
                 ]
+                visible_frontiers = [
+                    dict(
+                        table_name=row[0], lane=int(row[1]),
+                        source_seq=None if row[2] is None else int(row[2]))
+                    for row in con.execute(
+                        'SELECT table_name,lane,source_seq '
+                        'FROM applied ORDER BY table_name,lane'
+                    ).fetchall()
+                ]
             except sqlite3.OperationalError:
                 pass
             return dict(done=bool(rows) and all(row[0] for row in rows),
                         pending=pending, deliveries=deliveries,
                         cursor=j4.unpack(cursor[0]) if cursor else None,
                         source_ready=source_ready, source_log=source_log,
-                        source_base=source_base, source_pins=source_pins)
+                        source_base=source_base, source_pins=source_pins,
+                        visible_frontiers=visible_frontiers)
         finally:
             con.close()
     except sqlite3.Error:
@@ -416,6 +427,21 @@ def main():
                 if before_state.get('source_log') != before_state.get('source_base'):
                     raise AssertionError(
                         'source base did not catch durable log after dynamic build')
+                frontiers = before_state.get('visible_frontiers') or []
+                if not frontiers:
+                    raise AssertionError(
+                        'shared mode produced no durable target visible frontier')
+                if any(item['source_seq'] is None for item in frontiers):
+                    raise AssertionError(
+                        'shared mode left a target visible frontier without source_seq: '
+                        + repr(frontiers))
+                if any(
+                    item['source_seq'] > int(before_state['source_base'])
+                    for item in frontiers
+                ):
+                    raise AssertionError(
+                        'target visible source_seq exceeded applied source base: '
+                        + repr(frontiers))
             # Crash after a fully drained checkpoint. Separate from the uncertain-request test.
             stop(proc, handle, kill=True)
             proc, handle = None, None
@@ -424,6 +450,19 @@ def main():
             proc, handle = start(directory, env, 3)
             wait_started(proc, directory)
             after_count, after_state = wait_equal(proc, directory, source, cfg, extra=True)
+            if args.shared_source_state:
+                after_frontiers = after_state.get('visible_frontiers') or []
+                if (
+                    not after_frontiers
+                    or any(item['source_seq'] is None for item in after_frontiers)
+                    or any(
+                        item['source_seq'] > int(after_state['source_base'])
+                        for item in after_frontiers
+                    )
+                ):
+                    raise AssertionError(
+                        'shared source_seq frontier was not durable across restart: '
+                        + repr(after_frontiers))
             stop(proc, handle)
             proc, handle = None, None
             latencies = [item['seconds'] for item in samples.values()]
@@ -442,6 +481,14 @@ def main():
                           dynamic_markers_visible_during_backfill=sum(x['during_backfill'] for x in dynamic_samples.values()),
                           existing_task_markers_during_deploy=len(existing_samples),
                           dynamic_task_exact_final_result=True,
+                          source_seq_visible_frontier=(
+                              bool(args.shared_source_state)
+                              and all(
+                                  item['source_seq'] is not None
+                                  for item in after_state.get('visible_frontiers', ())
+                              )
+                          ),
+                          visible_frontiers=after_state.get('visible_frontiers', []),
                           dynamic_task_latency_seconds=dict(p95=percentile([x['seconds'] for x in dynamic_samples.values()],.95),
                                                            p99=percentile([x['seconds'] for x in dynamic_samples.values()],.99)),
                           crash_boundary='active_new_task_backfill_then_drained_checkpoint; HTTP_boundary_not_controlled',
