@@ -10,6 +10,7 @@ import pyarrow as pa
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 
+import aggregate_task_catalog
 import j4
 import stateful_catalog_runtime
 import stateful_task_plan
@@ -220,6 +221,9 @@ def main():
         registered=stateful_catalog_runtime.register_compiled(
             con,[compiled])
         assert registered[0]["task"]["status"]=="candidate"
+        active=aggregate_task_catalog.set_status(
+            con,compiled["task"]["task_id"],"active")
+        assert active["status"]=="active"
         staged=stateful_catalog_runtime.stage_absent_retirements(
             con,[],17)
         assert staged==[dict(
@@ -230,6 +234,10 @@ def main():
         )]
         con.close()
         con=j4.init_state(state_path)
+        recovered=stateful_catalog_runtime.prepare_startup_retirements(
+            con,{},[],99)
+        assert recovered["abandoned"]==[]
+        assert recovered["staged"][0]["frontier"]==17
         pending_retire=stateful_catalog_runtime.pending_retirements(
             con)
         assert len(pending_retire)==1
@@ -270,7 +278,7 @@ def main():
     print(
         "stateful_catalog_runtime_test ok source_scope hidden_source "
         "target_inference stateful_engine_namespace monotonic_source_scope "
-        "descriptor_register durable_retirement_restart durable_mapping "
+        "descriptor_register durable_retirement_restart_same_w durable_mapping "
         "drop_retire terminal_fence",
         flush=True,
     )
