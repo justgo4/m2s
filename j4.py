@@ -5617,6 +5617,14 @@ def prepare_hot_stateful_additions(cfg, runtime, candidate):
     finally:
         con.close()
     candidate["stateful_additions"]=registered
+    if "stateful_candidate_tasks" in candidate:
+        replacements=stateful_catalog_runtime.compiled_by_sink(
+            registered)
+        candidate["stateful_candidate_tasks"]=[
+            replacements.get(
+                item["task"]["sink_key"],item)
+            for item in candidate["stateful_candidate_tasks"]
+        ]
     return registered
 
 
@@ -5670,6 +5678,48 @@ def activate_stateful_additions(cfg, runtime, candidate):
             "STATEFUL HOT ADD ACTIVE task=%s sink=%s writer_version=%d"
             % (task["task_id"],key,version))
     return activated
+
+
+def activate_stateful_transition(con, cfg, runtime, candidate):
+    candidate_tasks=candidate.get("stateful_candidate_tasks")
+    if candidate_tasks is None:
+        return dict(
+            added=activate_stateful_additions(
+                cfg,runtime,candidate),
+            retired=[])
+
+    candidate_tasks=list(candidate_tasks)
+    active_ids={
+        item["task"]["task_id"]
+        for item in candidate_tasks
+    }
+    with runtime["plan_lock"]:
+        runtime["stateful_active_task_ids"]=set(active_ids)
+
+    retired=stateful_catalog_runtime.retire_absent(
+        con,cfg,candidate_tasks)
+
+    with runtime["plan_lock"]:
+        runtime["stateful_tasks"]=list(candidate_tasks)
+
+    retired_ids=[]
+    for item in retired:
+        task=item["task"]
+        key=mapping_key(item["mapping"])
+        retired_ids.append(task["task_id"])
+        runtime_mark_sink_retiring(
+            runtime,key,cfg)
+        log(
+            "STATEFUL HOT DROP RETIRING task=%s sink=%s "
+            "target_preserved=1"
+            % (task["task_id"],key))
+
+    added=activate_stateful_additions(
+        cfg,runtime,candidate)
+    return dict(
+        added=added,
+        retired=retired_ids,
+    )
 
 
 def catalog_activation_record(runtime, validation):
@@ -6041,20 +6091,23 @@ def activate_pending_plan(con, decoder, cfg, runtime, position):
         runtime_capture_sources(runtime,candidate)[0])
     for key in added:
         runtime_add_sink(candidate["by_table"][key],cfg,runtime)
-    stateful_activated=activate_stateful_additions(
-        cfg,runtime,candidate)
+    stateful_transition=activate_stateful_transition(
+        con,cfg,runtime,candidate)
     catalog_activation_record(
         runtime,dict(
             status="active",version=version,
             stateful_added_sinks=[
                 item["task"]["sink_key"]
                 for item in candidate.get("stateful_additions",())
-            ]))
+            ],
+            stateful_dropped_sinks=list(
+                candidate.get("stateful_dropped_sinks",()))))
     wake_loaders(runtime)
     log(
         f"PLAN ACTIVE version={version} cutover={position[0]}:{position[1]} "
         f"added_sinks={added} dropped_sinks={dropped} "
-        f"stateful_added={stateful_activated} "
+        f"stateful_added={stateful_transition['added']} "
+        f"stateful_retired={stateful_transition['retired']} "
         "old durable jobs continue on stamped plan_version")
     return candidate
 
