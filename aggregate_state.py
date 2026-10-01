@@ -304,7 +304,13 @@ def _apply_change_locked(con, state_id, spec, row):
         function = item["function"]
         input_name = item["input"]
         state = accum[output]
-        value = None if input_name == "*" else row.get(input_name)
+        if input_name == "*":
+            value = None
+        else:
+            if input_name not in row:
+                raise ValueError(
+                    "aggregate change lacks input column " + input_name)
+            value = row[input_name]
 
         if function == "count":
             contributes = input_name == "*" or value is not None

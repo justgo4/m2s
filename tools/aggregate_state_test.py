@@ -112,6 +112,14 @@ def main():
         )
         assert aggregate_state.state_info(con,"agg")["watermark"] == 15
         assert aggregate_state.read_rows(con,"agg") == before
+        expect_error(
+            lambda: aggregate_state.apply_transaction(con,"agg",16,[
+                dict(category="c",_sync_op=0),
+            ]),
+            ValueError,
+        )
+        assert aggregate_state.state_info(con,"agg")["watermark"] == 15
+        assert aggregate_state.read_rows(con,"agg") == before
 
         assert aggregate_state.apply_transaction(con,"agg",16,[
             dict(category="c",amount=Decimal("2.00"),_sync_op=0),
