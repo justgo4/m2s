@@ -8623,8 +8623,10 @@ def run_cdc(
                 f"STATE MIGRATION format={migrated_from}->{STATE_FORMAT} "
                 "fingerprint_verified=1")
         bootstrap(con,fingerprint,source_uuid,start,[mapping_key(m) for m in prepared],start_gtid)
+        capture_source_mappings=source_mappings(
+            list(prepared)+list(stateful_source_mappings))
         if cfg.get("shared_source_state",False):
-            for source_mapping in source_mappings(prepared):
+            for source_mapping in capture_source_mappings:
                 source_state.register_relation(
                     con,source_relation_key(cfg,source_mapping),source_uuid,
                     source_arrow_schema(source_mapping),pk_columns(source_mapping))
@@ -8632,6 +8634,11 @@ def run_cdc(
             sync_source_base_catalog(con)
             if recovered:
                 log(f"SOURCE STATE replayed_pending_commits={recovered}")
+        if compiled_stateful:
+            stateful_catalog_runtime.ensure_registration_safe(
+                con,cfg,compiled_stateful)
+            compiled_stateful=stateful_catalog_runtime.register_compiled(
+                con,compiled_stateful)
         migrate_sink_identity(
             con,cfg["catalog"],int(cfg.get("catalog_version",0)),
             prepared,fresh=fresh_state)
