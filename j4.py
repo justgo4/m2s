@@ -8511,6 +8511,57 @@ def process_lock(path):
         handle.close()
 
 
+def stateful_task_worker(item, cfg, runtime):
+    con=open_state(cfg["state"])
+    stop=runtime["stop"]
+    kind=str(item["kind"])
+    task=item["task"]
+    mapping=item["mapping"]
+    runner=(
+        aggregate_task_runner
+        if kind=="aggregate"
+        else join_task_runner
+    )
+    relations=(
+        [task["source_relation"]]
+        if kind=="aggregate"
+        else list(task["source_relations"])
+    )
+    try:
+        while not stop.is_set():
+            complete=True
+            for relation in relations:
+                info=source_state.relation_info(con,relation)
+                if info["complete_seq"] is None:
+                    complete=False
+                    break
+            if not complete:
+                stop.wait(0.05)
+                continue
+
+            result=runner.step(
+                con,task["task_id"],cfg,
+                mapping=mapping,
+                bootstrap_limit=max(
+                    1,min(int(cfg.get("snapshot_rows",1000)),4096)))
+            wake_loaders(runtime,mapping_key(mapping))
+            consumer=result.get("consumer")
+            applied=int(result.get(
+                "source_applied",source_state.base_applied_seq(con)))
+            caught=(
+                consumer is not None
+                and int(consumer["watermark"])>=applied
+            )
+            pending=con.execute("""
+                SELECT 1 FROM active_jobs
+                WHERE table_name=? LIMIT 1
+            """,(mapping_key(mapping),)).fetchone()
+            if caught and pending is None and result.get("phase")=="ready":
+                stop.wait(0.05)
+    finally:
+        con.close()
+
+
 def run_cdc(
         cfg, prepared, source_uuid, start, start_gtid, available_logs,
         fingerprint, control=None, catalog_control=None):
