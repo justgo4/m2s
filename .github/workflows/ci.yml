@@ -52,7 +52,7 @@ jobs:
         run: python -m pip install -r requirements.txt
       - name: Syntax and CLI
         run: |
-          python -m compileall -q aggregate_generation.py aggregate_physical_state.py aggregate_bootstrap.py aggregate_ir.py aggregate_log_consumer.py aggregate_state.py source_log_consumer.py j4.py cdc_catalog.py cdc_selftest.py incremental_contract.py incremental_ir.py physical_state_catalog.py relational_ir.py source_state.py task_generation.py native tools
+          python -m compileall -q aggregate_outbox.py aggregate_generation.py aggregate_physical_state.py aggregate_bootstrap.py aggregate_ir.py aggregate_log_consumer.py aggregate_state.py source_log_consumer.py j4.py cdc_catalog.py cdc_selftest.py incremental_contract.py incremental_ir.py physical_state_catalog.py relational_ir.py source_state.py task_generation.py native tools
           python j4.py --help
           python tools/aggregate_bootstrap_test.py
           python tools/aggregate_generation_test.py

@@ -11,6 +11,7 @@ import time
 import duckdb
 
 import aggregate_ir
+import aggregate_outbox
 import aggregate_physical_state
 import aggregate_state
 import source_state
@@ -48,6 +49,15 @@ def ensure_consumer(
         con,state_id,aggregate_ir.semantic_id(ir))
     aggregate_physical_state.sync_instance(
         con,state_id,ir,generation=1)
+    aggregate_outbox.install(con)
+    generation_id="aggregate:%s:plan:%d" % (
+        consumer_id,int(plan_version))
+    aggregate_outbox.ensure_stream(
+        con,consumer_id,state_id,int(plan_version),
+        generation_id,watermark)
+    aggregate_outbox.seed_bootstrap(
+        con,consumer_id,state_id,int(plan_version),
+        generation_id,watermark)
     if int(state["watermark"])!=watermark:
         raise RuntimeError(
             "aggregate state exists at a different watermark; resume from its "
@@ -170,6 +180,8 @@ def process_next(
             fault_after_state(seq)
         aggregate_physical_state.sync_instance(
             con,state_id,ir,generation=1)
+        aggregate_outbox.enqueue_incremental(
+            con,consumer_id,state_id,seq,changes)
         updated=con.execute("""
             UPDATE source_consumers
             SET watermark=?,updated=?

@@ -525,6 +525,50 @@ def apply_transaction(con, state_id, source_seq, changes):
     return True
 
 
+def affected_group_keys(spec, changes):
+    spec=validate_spec(spec)
+    result={}
+    for row in changes or ():
+        key_blob,key_payload=_group_key(spec,row)
+        result[bytes(key_blob)]=bytes(key_payload)
+    return [
+        (key_blob,result[key_blob])
+        for key_blob in sorted(result)
+    ]
+
+
+def read_group(con,state_id,key_blob):
+    info=state_info(con,state_id)
+    if not info["bootstrap_complete"]:
+        raise RuntimeError(
+            "cannot read incomplete aggregate bootstrap state")
+    row=con.execute("""
+        SELECT key_payload,row_count,accum_payload
+        FROM aggregate_groups
+        WHERE state_id=? AND key_blob=?
+    """,(str(state_id),bytes(key_blob))).fetchone()
+    if row is None:
+        return None
+    spec=info["spec"]
+    keys=pickle.loads(row[0])
+    accum=pickle.loads(row[2])
+    item=dict(zip(spec["group_keys"],keys))
+    for aggregate in spec["aggregates"]:
+        output=aggregate["output"]
+        function=aggregate["function"]
+        aggregate_value=accum[output]
+        if function=="count":
+            item[output]=int(aggregate_value["count"])
+        elif function=="sum":
+            item[output]=aggregate_value["sum"]
+        else:
+            item[output]=(
+                None if int(aggregate_value["nonnull"])==0
+                else float(aggregate_value["sum"])/int(aggregate_value["nonnull"]))
+    item["_row_count"]=int(row[1])
+    return item
+
+
 def read_rows(con, state_id):
     info = state_info(con,state_id)
     if not info["bootstrap_complete"]:

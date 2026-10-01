@@ -12,6 +12,7 @@ ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 import aggregate_ir
 import aggregate_log_consumer
+import aggregate_outbox
 import aggregate_physical_state
 import aggregate_state
 import physical_state_catalog
@@ -112,6 +113,12 @@ def main():
 
         aggregate_log_consumer.ensure_consumer(
             con,"agg-task","db.orders",9,plan,"agg-state",0)
+        bootstrap=aggregate_outbox.commit_info(
+            con,"agg-task",0)
+        assert bootstrap["kind"]=="bootstrap"
+        assert bootstrap["nrows"]==0
+        assert aggregate_outbox.visible_frontier(
+            con,"agg-task")==-1
 
         first=aggregate_log_consumer.process_next(
             con,"agg-task",plan)
@@ -119,6 +126,11 @@ def main():
         assert by_group(con)["a"]==dict(
             category="a",n=2,nn=1,total=Decimal("10.00"),
             mean=10.0,_row_count=2)
+        first_out=aggregate_outbox.commit_info(
+            con,"agg-task",1)
+        assert first_out["nrows"]==1
+        assert aggregate_outbox.commit_rows(
+            con,"agg-task",1)[0]["row"]["category"]=="a"
 
         def crash(seq):
             assert seq==2
@@ -134,6 +146,13 @@ def main():
             con,"agg-state")["watermark"]==1
         assert source_state.consumer_info(
             con,"agg-task")["watermark"]==1
+        try:
+            aggregate_outbox.commit_info(
+                con,"agg-task",2)
+            raise AssertionError(
+                "fault rollback leaked aggregate output commit")
+        except KeyError:
+            pass
         assert "b" not in by_group(con)
         con.close()
 
@@ -148,6 +167,12 @@ def main():
         assert groups["b"]==dict(
             category="b",n=1,nn=1,total=Decimal("30.00"),
             mean=30.0,_row_count=1)
+        second_rows=aggregate_outbox.commit_rows(
+            con,"agg-task",2)
+        assert len(second_rows)==2
+        assert {
+            item["row"]["category"] for item in second_rows
+        }=={"a","b"}
 
         third=aggregate_log_consumer.process_next(
             con,"agg-task",plan)
@@ -156,6 +181,23 @@ def main():
             con,"agg-state")["watermark"]==3
         assert source_state.consumer_info(
             con,"agg-task")["watermark"]==3
+        third_out=aggregate_outbox.commit_info(
+            con,"agg-task",3)
+        assert third_out["nrows"]==0
+
+        # Out-of-order delivery is allowed, but visibility advances only over
+        # one continuous prefix, including the zero-row commit marker.
+        assert aggregate_outbox.mark_visible(
+            con,"agg-task",1)["visible_seq"]==-1
+        assert aggregate_outbox.mark_visible(
+            con,"agg-task",0)["visible_seq"]==1
+        assert aggregate_outbox.mark_visible(
+            con,"agg-task",3)["visible_seq"]==1
+        assert aggregate_outbox.mark_visible(
+            con,"agg-task",2)["visible_seq"]==3
+        assert aggregate_outbox.pending_commits(
+            con,"agg-task")==[]
+
         physical=physical_state_catalog.state_info(
             con,aggregate_physical_state.instance_id("agg-state"))
         assert physical["watermark"]==3
