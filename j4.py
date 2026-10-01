@@ -54,6 +54,7 @@ import physical_state_catalog
 import relational_ir
 import source_state
 import stateful_catalog_runtime
+import stateful_physical_registry
 import stateful_task_plan
 import task_generation
 
@@ -9040,6 +9041,8 @@ def stateful_finish_retirement(
         con,kind,task["task_id"])
     stateful_catalog_runtime.retire_task(
         con,cfg,kind,durable)
+    stateful_physical_registry.retire(
+        con,kind,durable)
     stateful_catalog_runtime.clear_retirement(
         con,task["task_id"])
     key=mapping_key(mapping)
@@ -9140,6 +9143,8 @@ def stateful_task_worker(item, cfg, runtime):
                     break
                 raise
             wake_loaders(runtime,mapping_key(mapping))
+            stateful_physical_registry.sync_runtime_result(
+                con,item,result)
             consumer=result.get("consumer")
 
             if retire_frontier is not None and consumer is not None:
