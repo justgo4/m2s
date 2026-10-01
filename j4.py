@@ -5689,36 +5689,48 @@ def activate_stateful_transition(con, cfg, runtime, candidate):
             retired=[])
 
     candidate_tasks=list(candidate_tasks)
-    active_ids={
+    candidate_ids={
         item["task"]["task_id"]
         for item in candidate_tasks
     }
     with runtime["plan_lock"]:
-        runtime["stateful_active_task_ids"]=set(active_ids)
-
-    retired=stateful_catalog_runtime.retire_absent(
-        con,cfg,candidate_tasks)
-
+        prior_tasks=list(runtime.get("stateful_tasks",()))
+    dropped=[
+        item for item in prior_tasks
+        if item["task"]["task_id"] not in candidate_ids
+    ]
+    frontier=source_state.base_applied_seq(con)
+    retiring_ids={
+        item["task"]["task_id"]
+        for item in dropped
+    }
     with runtime["plan_lock"]:
         runtime["stateful_tasks"]=list(candidate_tasks)
+        runtime["stateful_active_task_ids"]=set(
+            candidate_ids|retiring_ids)
+        retire_frontiers=runtime.setdefault(
+            "stateful_retire_frontiers",{})
+        retire_items=runtime.setdefault(
+            "stateful_retire_items",{})
+        for item in dropped:
+            task_id=item["task"]["task_id"]
+            retire_frontiers[task_id]=int(frontier)
+            retire_items[task_id]=item
 
-    retired_ids=[]
-    for item in retired:
+    for item in dropped:
         task=item["task"]
-        key=mapping_key(item["mapping"])
-        retired_ids.append(task["task_id"])
-        runtime_mark_sink_retiring(
-            runtime,key,cfg)
         log(
-            "STATEFUL HOT DROP RETIRING task=%s sink=%s "
-            "target_preserved=1"
-            % (task["task_id"],key))
+            "STATEFUL HOT DROP FENCE task=%s sink=%s source_seq=%d "
+            "policy=catch_up_visible_then_retire"
+            % (
+                task["task_id"],task["sink_key"],int(frontier),
+            ))
 
     added=activate_stateful_additions(
         cfg,runtime,candidate)
     return dict(
         added=added,
-        retired=retired_ids,
+        retired=sorted(retiring_ids),
     )
 
 
@@ -9209,6 +9221,8 @@ def run_cdc(
                            item["task"]["task_id"]
                            for item in compiled_stateful},
                        stateful_worker_threads={},
+                       stateful_retire_frontiers={},
+                       stateful_retire_items={},
                        stateful_source_mappings=list(stateful_source_mappings),
                        pending_plan=None,deferred_plan=None,
                        validated_catalog_plans={},
