@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Physical-catalog adapter for the correctness-first INNER JOIN state.
 
-The current SQLite JOIN backend is current-only.  It exposes one exact readable
-watermark at a time, so physical catalog min_readable_watermark tracks the live
-watermark and any fixed-W reuse pin blocks advancement until an MVCC backend is
-introduced.
+The current SQLite JOIN backend is current-only. It exposes one exact readable
+watermark at a time. Generic catalog pins do not preserve backing bytes; reuse
+is therefore allowed only through an atomic SQLite clone that revalidates and
+copies the backing state under one IMMEDIATE write transaction.
 """
 import json
 
@@ -129,9 +129,87 @@ def sync_instance(con,state_id,ir,generation=1):
     return physical
 
 
+def clone_reusable_current(con,target_state_id,ir,watermark,generation=1):
+    join_ir.validate_ir(ir)
+    target_state_id=_text(
+        target_state_id,"target_state_id")
+    watermark=int(watermark)
+    generation=int(generation)
+    if watermark<0:
+        raise ValueError("JOIN clone watermark cannot be negative")
+    if generation<1:
+        raise ValueError("JOIN clone generation must be >= 1")
+    _ensure_catalog(con)
+    spec=physical_spec(con,ir)
+    ir_id=join_ir.semantic_id(ir)
+
+    with join_state.transaction(con):
+        try:
+            join_state.state_info(
+                con,target_state_id)
+        except KeyError:
+            pass
+        else:
+            return None
+
+        chosen=None
+        expected_state_id=join_state.semantic_id(
+            join_ir.state_spec(ir))
+        for physical in physical_state_catalog.find_semantic(
+            con,spec
+        ):
+            if not physical_state_catalog.physically_reusable(
+                physical,BACKEND,FORMAT_TAG
+            ):
+                continue
+            if (
+                int(physical["watermark"])!=watermark
+                or int(physical["min_readable_watermark"])!=watermark
+            ):
+                continue
+            metadata=physical["metadata"]
+            if (
+                metadata.get("version_model")!="current_only"
+                or metadata.get("join_ir_id")!=ir_id
+            ):
+                continue
+            source_state_id=str(
+                metadata.get("join_state_id") or "")
+            if not source_state_id or source_state_id==target_state_id:
+                continue
+            try:
+                backing=join_state.state_info(
+                    con,source_state_id)
+            except KeyError:
+                continue
+            if (
+                not backing["bootstrap_complete"]
+                or not backing["left_complete"]
+                or not backing["right_complete"]
+                or int(backing["watermark"])!=watermark
+                or backing["spec_hash"]!=expected_state_id
+            ):
+                continue
+            chosen=(physical,source_state_id)
+            break
+
+        if chosen is None:
+            return None
+        source_physical,source_state_id=chosen
+        cloned=join_state.clone_complete_state(
+            con,source_state_id,target_state_id,
+            join_ir.state_spec(ir),watermark)
+        target_physical=sync_instance(
+            con,target_state_id,ir,generation=generation)
+        return dict(
+            source_physical=source_physical,
+            source_state_id=source_state_id,
+            state=cloned,
+            physical=target_physical,
+        )
+
+
 def acquire_current(con,state_id,ir,owner,role="consumer",generation=1):
-    physical=sync_instance(
-        con,state_id,ir,generation=generation)
-    return physical_state_catalog.acquire_reusable_state(
-        con,physical["spec"],owner,physical["watermark"],
-        backend=BACKEND,format_tag=FORMAT_TAG,role=role)
+    raise RuntimeError(
+        "current-only JOIN state cannot be safely retained by a logical "
+        "physical pin; use clone_reusable_current() for atomic bytes-at-W reuse")
