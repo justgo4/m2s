@@ -12,8 +12,9 @@ on:
       - 'relational_ir.py'
       - 'source_state.py'
       - 'task_generation.py'
+      - 'aggregate_*.py'
       - 'native/**'
-      - 'tools/e2e_contract.py'
+      - 'tools/aggregate_starrocks_contract.py'\n      - 'tools/e2e_contract.py'
       - 'tools/merge_quarantine_network_test.py'
       - 'tools/starrocks_contract.py'
       - '.github/workflows/e2e.yml'
@@ -27,8 +28,8 @@ on:
       - 'relational_ir.py'
       - 'source_state.py'
       - 'task_generation.py'
-      - 'native/**'
-      - 'tools/e2e_contract.py'
+      - 'aggregate_*.py'\n      - 'native/**'
+      - 'tools/aggregate_starrocks_contract.py'\n      - 'tools/e2e_contract.py'
       - 'tools/merge_quarantine_network_test.py'
       - '.github/workflows/e2e.yml'
   workflow_dispatch:
@@ -101,11 +102,15 @@ jobs:
       - name: Drop a real accepted Merge Commit response, isolate only that target and restart
         if: matrix.protocol == 'merge_async' && matrix.shared == 'OFF'
         run: python tools/merge_quarantine_network_test.py --isolated
+      - name: Aggregate fixed-W runtime to real StarRocks 4.1.1
+        if: matrix.protocol == 'transaction' && matrix.gtid == 'ON' && matrix.shared == 'ON'
+        run: python tools/aggregate_starrocks_contract.py --isolated
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: e2e-${{ matrix.protocol }}-gtid-${{ matrix.gtid }}-shared-${{ matrix.shared }}
           path: |
             benchmark-results/e2e-contract.json
+            benchmark-results/aggregate-starrocks-contract.json
             benchmark-results/merge-quarantine.json
           if-no-files-found: error
           retention-days: 14
