@@ -141,11 +141,19 @@ def setup_catalog(directory,cfg,source,mode):
             "ON o.customer_id=c.id"
         ),
     ])
+    os.environ["CDC_CATALOG_FILE"]=str(catalog)
+    os.environ["CDC_CATALOG_SOCKET"]=str(directory/"control.sock")
     result=cdc_catalog.execute_batch(
-        str(catalog),commands)
+        str(catalog),commands,
+        publish_callback=j4.validate_local_catalog_publish)
     if not result.get("publish"):
         raise AssertionError(
             "stateful catalog fixture was not published")
+    activation=result["publish"].get("activation") or {}
+    if activation.get("status")!="restart_required":
+        raise AssertionError(
+            "stateful catalog fixture did not request restart activation: "
+            +repr(activation))
     tasks=result["publish"].get("stateful_tasks",())
     if [item["kind"] for item in tasks]!=[
         "aggregate","inner_join"
@@ -435,7 +443,6 @@ def main():
     cfg["sr"]["database"]=DATABASE
     execute(cfg,"DROP DATABASE IF EXISTS "+DATABASE)
     execute(cfg,"CREATE DATABASE "+DATABASE)
-    create_targets(cfg)
 
     opts=source_options()
     source=j4.pymysql.connect(**opts)
@@ -559,6 +566,7 @@ def main():
                 join_status_before_drop=third_state["join"],
                 dropped_aggregate_retired=True,
                 remaining_join_exact=True,
+                automatic_stateful_target_creation=True,
                 source_relations=third_state["source"],
                 first=first,
                 second=second,
