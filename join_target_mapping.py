@@ -23,6 +23,16 @@ def _text(value,name):
     return value
 
 
+def _target_key(row):
+    value=str(row[3] if len(row)>3 else "").strip().lower()
+    if value in {"true","yes","1","pri","primary","key"}:
+        return True
+    if value in {"","false","no","0","none"}:
+        return False
+    raise ValueError(
+        "unrecognized StarRocks SHOW COLUMNS key marker: "+repr(value))
+
+
 def build(
         sink_key,sr_table,projection_schema,plan_version=0
 ):
@@ -64,14 +74,14 @@ def bind_target(mapping,target_columns):
     if str(row[2]).upper()=="YES":
         raise ValueError(
             "JOIN target pair identity must be NOT NULL")
-    if not str(row[3] or "").strip():
+    if not _target_key(row):
         raise ValueError(
             "JOIN target pair identity must be a key column")
     for name in mapping.get("_output_columns",()):
         if (
             name!=PAIR_COLUMN
             and name in target_columns
-            and str(target_columns[name][3] or "").strip()
+            and _target_key(target_columns[name])
         ):
             raise ValueError(
                 "JOIN target cannot key projected column "+name)
