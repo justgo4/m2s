@@ -53,6 +53,18 @@ def install(con):
             accum_payload BLOB NOT NULL,
             PRIMARY KEY(state_id,key_blob));
     """)
+    columns={
+        row[1] for row in con.execute(
+            "PRAGMA table_info(aggregate_states)").fetchall()
+    }
+    if "bootstrap_complete" not in columns:
+        con.execute(
+            "ALTER TABLE aggregate_states "
+            "ADD COLUMN bootstrap_complete INTEGER NOT NULL DEFAULT 1")
+    if "bootstrap_cursor" not in columns:
+        con.execute(
+            "ALTER TABLE aggregate_states "
+            "ADD COLUMN bootstrap_cursor BLOB")
 
 
 def _text(value, name):
@@ -171,7 +183,8 @@ def create_state(con, state_id, spec, watermark=0):
 
 def state_info(con, state_id):
     row = con.execute("""
-        SELECT spec_hash,spec_json,watermark,last_digest,created,updated
+        SELECT spec_hash,spec_json,watermark,last_digest,created,updated,
+               bootstrap_complete,bootstrap_cursor
         FROM aggregate_states WHERE state_id=?
     """,(str(state_id),)).fetchone()
     if not row:
@@ -185,6 +198,8 @@ def state_info(con, state_id):
         watermark=int(row[2]),
         last_digest=None if row[3] is None else str(row[3]),
         created=float(row[4]),updated=float(row[5]),
+        bootstrap_complete=bool(row[6]),
+        bootstrap_cursor=None if row[7] is None else bytes(row[7]),
     )
 
 
@@ -198,7 +213,79 @@ def ensure_state(con, state_id, spec, watermark=0):
     if current["watermark"] < int(watermark):
         raise RuntimeError(
             "existing aggregate state is behind requested initial watermark")
+    if not current["bootstrap_complete"]:
+        raise RuntimeError(
+            "aggregate state bootstrap is incomplete")
     return current
+
+
+def begin_bootstrap(con, state_id, spec, fixed_w):
+    state_id=_text(state_id,"state_id")
+    spec=validate_spec(spec)
+    fixed_w=int(fixed_w)
+    if fixed_w<0:
+        raise ValueError("aggregate fixed_w cannot be negative")
+    try:
+        current=state_info(con,state_id)
+    except KeyError:
+        now=time.time()
+        with transaction(con):
+            con.execute("""
+                INSERT INTO aggregate_states(
+                    state_id,spec_hash,spec_json,watermark,last_digest,
+                    created,updated,bootstrap_complete,bootstrap_cursor)
+                VALUES(?,?,?,?,NULL,?,?,0,NULL)
+            """,(
+                state_id,semantic_id(spec),
+                canonical_bytes(spec).decode("utf-8"),
+                fixed_w,now,now,
+            ))
+        return state_info(con,state_id)
+    if current["spec_hash"]!=semantic_id(spec):
+        raise RuntimeError(
+            "aggregate bootstrap state id was reused for new semantics")
+    if current["watermark"]!=fixed_w:
+        raise RuntimeError(
+            "aggregate bootstrap fixed-W changed across restart")
+    return current
+
+
+def apply_bootstrap_chunk(
+        con,state_id,fixed_w,changes,next_cursor,is_last,
+        fault_after_changes=None
+):
+    state_id=_text(state_id,"state_id")
+    fixed_w=int(fixed_w)
+    changes=list(changes or ())
+    with transaction(con):
+        row=con.execute("""
+            SELECT spec_json,watermark,bootstrap_complete,bootstrap_cursor
+            FROM aggregate_states WHERE state_id=?
+        """,(state_id,)).fetchone()
+        if not row:
+            raise KeyError("aggregate bootstrap state does not exist")
+        spec=validate_spec(json.loads(row[0]))
+        if int(row[1])!=fixed_w:
+            raise RuntimeError("aggregate bootstrap fixed-W changed")
+        if bool(row[2]):
+            return False
+        for change in changes:
+            if int(change.get("_sync_op",-1))!=0:
+                raise ValueError(
+                    "aggregate bootstrap accepts only snapshot upserts")
+            _apply_change_locked(con,state_id,spec,change)
+        if fault_after_changes is not None:
+            fault_after_changes()
+        con.execute("""
+            UPDATE aggregate_states
+            SET bootstrap_cursor=?,bootstrap_complete=?,updated=?
+            WHERE state_id=?
+        """,(
+            None if next_cursor is None else bytes(next_cursor),
+            1 if is_last else 0,
+            time.time(),state_id,
+        ))
+    return True
 
 
 def _tag(value):
@@ -385,6 +472,10 @@ def apply_transaction(con, state_id, source_seq, changes):
         if not row:
             raise KeyError("aggregate state does not exist")
         spec = validate_spec(json.loads(row[0]))
+        current=state_info(con,state_id)
+        if not current["bootstrap_complete"]:
+            raise RuntimeError(
+                "cannot consume changelog before aggregate bootstrap completes")
         watermark = int(row[1])
         last_digest = None if row[2] is None else str(row[2])
         if source_seq == watermark:
@@ -408,6 +499,9 @@ def apply_transaction(con, state_id, source_seq, changes):
 
 def read_rows(con, state_id):
     info = state_info(con,state_id)
+    if not info["bootstrap_complete"]:
+        raise RuntimeError(
+            "cannot read incomplete aggregate bootstrap state")
     spec = info["spec"]
     result = []
     rows = con.execute("""
