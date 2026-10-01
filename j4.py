@@ -38,6 +38,7 @@ import pymysql
 import sqlglot
 from sqlglot import exp
 import aggregate_outbox
+import aggregate_task_catalog
 import cdc_catalog
 import incremental_contract
 import incremental_ir
@@ -1615,6 +1616,7 @@ def init_state(path):
     """)
     source_state.install(con)
     aggregate_outbox.install(con)
+    aggregate_task_catalog.install(con)
     physical_state_catalog.install(con)
     task_generation.install(con)
     existing_format = meta_get(con,"state_format")
