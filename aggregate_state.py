@@ -431,7 +431,7 @@ def read_rows(con, state_id):
             else:
                 item[output] = (
                     None if int(state["nonnull"]) == 0
-                    else float(state["sum"])/int(state["nonnull"]))
+                    else float(state["sum"]/int(state["nonnull"])))
         item["_row_count"] = int(row_count)
         result.append(item)
     return result
