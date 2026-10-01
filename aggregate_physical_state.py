@@ -17,7 +17,7 @@ import source_state
 
 
 BACKEND="sqlite"
-FORMAT_TAG="aggregate-current-v1"
+FORMAT_TAG="aggregate-current-v2"
 
 
 def _text(value,name):
@@ -28,7 +28,7 @@ def _text(value,name):
 
 
 def instance_id(state_id):
-    return "aggregate:"+_text(state_id,"state_id")
+    return "aggregate:v2:"+_text(state_id,"state_id")
 
 
 def _relation_identity(info):
