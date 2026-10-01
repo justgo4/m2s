@@ -9244,9 +9244,14 @@ def run_cdc(
         # A catalog restart/drop is a cutover too. Persist a fixed retirement
         # frontier instead of immediately deleting the old consumer; this lets
         # a crash/restart resume the exact same catch-up boundary.
-        stateful_catalog_runtime.stage_absent_retirements(
-            con,compiled_stateful,
-            source_state.base_applied_seq(con))
+        startup_retirement=(
+            stateful_catalog_runtime.prepare_startup_retirements(
+                con,cfg,compiled_stateful,
+                source_state.base_applied_seq(con)))
+        if startup_retirement["abandoned"]:
+            log(
+                "STATEFUL STARTUP ABANDON unpublished=%d"
+                % len(startup_retirement["abandoned"]))
         retiring_stateful=(
             stateful_catalog_runtime.pending_retirements(con))
         durable_stateful_mappings=(
