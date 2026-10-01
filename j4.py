@@ -37,6 +37,7 @@ import pycurl
 import pymysql
 import sqlglot
 from sqlglot import exp
+import aggregate_outbox
 import cdc_catalog
 import incremental_contract
 import incremental_ir
@@ -1607,6 +1608,7 @@ def init_state(path):
             ON field_overflow(table_name,column_name,id);
     """)
     source_state.install(con)
+    aggregate_outbox.install(con)
     physical_state_catalog.install(con)
     task_generation.install(con)
     existing_format = meta_get(con,"state_format")
