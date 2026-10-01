@@ -44,7 +44,76 @@ def install(con):
             UNIQUE(sink_key,plan_version));
         CREATE INDEX IF NOT EXISTS task_generations_status
             ON task_generations(status,updated);
+        CREATE TABLE IF NOT EXISTS task_generation_sources(
+            generation_id TEXT NOT NULL
+                REFERENCES task_generations(generation_id) ON DELETE CASCADE,
+            ordinal INTEGER NOT NULL,
+            source_relation TEXT NOT NULL,
+            PRIMARY KEY(generation_id,ordinal),
+            UNIQUE(generation_id,source_relation));
+        CREATE INDEX IF NOT EXISTS task_generation_sources_relation
+            ON task_generation_sources(source_relation,generation_id);
+        INSERT OR IGNORE INTO task_generation_sources(
+            generation_id,ordinal,source_relation)
+        SELECT generation_id,0,source_relation
+        FROM task_generations;
     """)
+
+
+def normalize_source_relations(source_relations):
+    values = [
+        str(value or "").strip()
+        for value in source_relations or ()
+    ]
+    if not values or any(not value for value in values):
+        raise ValueError("source_relations must be non-empty")
+    if len(values) != len(set(values)):
+        raise ValueError("source_relations must be unique and ordered")
+    return values
+
+
+def source_relations(con, sink_key, plan_version):
+    current = info(con,sink_key,plan_version)
+    rows = con.execute("""
+        SELECT source_relation
+        FROM task_generation_sources
+        WHERE generation_id=?
+        ORDER BY ordinal
+    """,(current["generation_id"],)).fetchall()
+    values = [str(row[0]) for row in rows]
+    if not values:
+        values = [current["source_relation"]]
+    if values[0] != current["source_relation"]:
+        raise RuntimeError(
+            "task generation primary source differs from source set")
+    if len(values) != len(set(values)):
+        raise RuntimeError(
+            "task generation source set is not unique")
+    return values
+
+
+def _bind_sources_locked(con, generation_id_value, source_relations_value):
+    expected = normalize_source_relations(source_relations_value)
+    rows = con.execute("""
+        SELECT source_relation
+        FROM task_generation_sources
+        WHERE generation_id=?
+        ORDER BY ordinal
+    """,(str(generation_id_value),)).fetchall()
+    actual = [str(row[0]) for row in rows]
+    if actual:
+        if actual != expected:
+            raise RuntimeError(
+                "task generation source set changed across restart "
+                "expected=%r actual=%r" % (actual,expected))
+        return actual
+    for ordinal,relation in enumerate(expected):
+        con.execute("""
+            INSERT INTO task_generation_sources(
+                generation_id,ordinal,source_relation)
+            VALUES(?,?,?)
+        """,(str(generation_id_value),int(ordinal),relation))
+    return expected
 
 
 def generation_id(sink_key, plan_version):
@@ -95,24 +164,26 @@ def maybe_info(con, sink_key, plan_version):
         return None
 
 
-def ensure_build(
-        con, sink_key, plan_version, source_relation, fixed_w, source_pin_id
+def ensure_build_multi(
+        con, sink_key, plan_version, source_relations_value, fixed_w, source_pin_id
 ):
     gid = generation_id(sink_key,plan_version)
-    source_relation = str(source_relation or "").strip()
+    relations = normalize_source_relations(source_relations_value)
     source_pin_id = str(source_pin_id or "").strip()
     fixed_w = int(fixed_w)
-    if not source_relation or not source_pin_id:
-        raise ValueError("source_relation and source_pin_id are required")
+    if not source_pin_id:
+        raise ValueError("source_pin_id is required")
     if fixed_w < 0:
         raise ValueError("fixed_w cannot be negative")
     existing = maybe_info(con,sink_key,plan_version)
     if existing is not None:
+        actual_relations = source_relations(
+            con,sink_key,plan_version)
         expected = (
-            source_relation,fixed_w,source_pin_id
+            relations,fixed_w,source_pin_id
         )
         actual = (
-            existing["source_relation"],
+            actual_relations,
             existing["fixed_w"],
             existing["source_pin_id"],
         )
@@ -135,10 +206,22 @@ def ensure_build(
                 created,updated)
             VALUES(?,?,?,?,?,?,0,'building',0,?,?)
         """, (
-            gid,str(sink_key),int(plan_version),source_relation,fixed_w,
+            gid,str(sink_key),int(plan_version),relations[0],fixed_w,
             source_pin_id,now,now,
         ))
+        _bind_sources_locked(con,gid,relations)
     return info(con,sink_key,plan_version)
+
+
+def ensure_build(
+        con, sink_key, plan_version, source_relation, fixed_w, source_pin_id
+):
+    source_relation = str(source_relation or "").strip()
+    if not source_relation:
+        raise ValueError("source_relation is required")
+    return ensure_build_multi(
+        con,sink_key,plan_version,[source_relation],
+        fixed_w,source_pin_id)
 
 
 def import_existing(
