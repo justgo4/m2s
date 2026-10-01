@@ -5285,18 +5285,34 @@ def validate_hot_catalog_plan(cfg, runtime, publish_result):
     plan=_catalog_plan_payload(cfg,publish_result)
     current_catalog=cdc_catalog.load_plan_version(
         cfg["catalog"],runtime_active_version(runtime))
-    if list(plan.get("stateful_tasks",()))!=list(
-        current_catalog.get("stateful_tasks",())
-    ):
+    current_stateful={
+        str(item.get("sink")):dict(item)
+        for item in current_catalog.get("stateful_tasks",())
+    }
+    candidate_stateful={
+        str(item.get("sink")):dict(item)
+        for item in plan.get("stateful_tasks",())
+    }
+    stateful_added=sorted(
+        set(candidate_stateful)-set(current_stateful))
+    stateful_dropped=sorted(
+        set(current_stateful)-set(candidate_stateful))
+    stateful_changed=sorted(
+        sink for sink in set(current_stateful)&set(candidate_stateful)
+        if current_stateful[sink]!=candidate_stateful[sink])
+    if stateful_dropped or stateful_changed:
         validate_local_catalog_publish(
             publish_result,"validate")
         return dict(
             status="restart_required",
             version=version,
             reason=(
-                "stateful task topology/semantics changed; candidate was "
-                "validated but shared capture/task generations activate only "
-                "at a daemon restart boundary"))
+                "stateful task drop/semantic replacement is restart-fenced "
+                "until its exact retirement/cutover frontier protocol is active; "
+                "dropped=%s changed=%s"
+                % (stateful_dropped,stateful_changed)),
+            stateful_dropped_sinks=stateful_dropped,
+            stateful_changed_sinks=stateful_changed)
 
     candidate_config_revision = int(
         publish_result.get(
@@ -5322,6 +5338,74 @@ def validate_hot_catalog_plan(cfg, runtime, publish_result):
     hot_add_sinks = sorted(candidate_keys-current_keys)
     candidate = prepare_runtime_catalog_plan(
         cfg,plan,hot_add_sinks=hot_add_sinks)
+    stateful_additions=[]
+    if stateful_added:
+        manifests=[
+            candidate_stateful[sink]
+            for sink in stateful_added
+        ]
+        scope=stateful_catalog_runtime.source_scope(
+            cfg,manifests,candidate["prepared"])
+        probe=open_state(cfg["state"])
+        try:
+            for mapping in scope["capture_mappings"]:
+                source=str(mapping["src_table"])
+                if source not in set(scope["required_sources"]):
+                    continue
+                relation=source_relation_key(cfg,mapping)
+                try:
+                    info=source_state.relation_info(
+                        probe,relation)
+                except KeyError:
+                    return dict(
+                        status="restart_required",version=version,
+                        reason=(
+                            "online stateful add references a relation outside "
+                            "the live shared capture scope; restart is required "
+                            "to expand the native decoder/source mirror: "
+                            +relation),
+                        stateful_added_sinks=stateful_added)
+                if list(info["pk_columns"])!=pk_columns(mapping):
+                    return dict(
+                        status="rebuild_required",version=version,
+                        reason=(
+                            "online stateful add source primary key differs "
+                            "from durable shared source state: "+relation),
+                        stateful_added_sinks=stateful_added)
+                if not info["schema"].equals(
+                    source_arrow_schema(mapping),
+                    check_metadata=False):
+                    return dict(
+                        status="rebuild_required",version=version,
+                        reason=(
+                            "online stateful add source schema differs from "
+                            "durable shared source state: "+relation),
+                        stateful_added_sinks=stateful_added)
+            stateful_additions=(
+                stateful_catalog_runtime.compile_catalog_tasks(
+                    cfg,version,manifests,
+                    scope["source_metadata"],
+                    allow_missing=True))
+            stateful_catalog_runtime.ensure_registration_safe(
+                probe,cfg,stateful_additions)
+        finally:
+            probe.close()
+        stateless_keys=set(candidate["by_table"])
+        collision=sorted(
+            mapping_key(item["mapping"])
+            for item in stateful_additions
+            if mapping_key(item["mapping"]) in stateless_keys
+        )
+        if collision:
+            return dict(
+                status="rebuild_required",version=version,
+                reason=(
+                    "stateful/stateless sink identity collision: "
+                    +",".join(collision)),
+                stateful_added_sinks=stateful_added)
+        candidate["stateful_additions"]=stateful_additions
+        candidate["stateful_added_manifests"]=manifests
+        candidate["stateful_source_metadata"]=scope["source_metadata"]
     compatible,reason = runtime_plan_compatible(current,candidate)
     if not compatible:
         return dict(status="rebuild_required",version=version,reason=reason)
@@ -5392,7 +5476,12 @@ def validate_hot_catalog_plan(cfg, runtime, publish_result):
         status=status,version=version,reason=reason,
         history_mode=(
             "snapshot_plus_live_cdc"
-            if change["added"] else "forward"))
+            if change["added"] else
+            "stateful_fixed_w"
+            if stateful_added else "forward"))
+    if stateful_added:
+        validation["stateful_added_sinks"]=list(
+            stateful_added)
     if change["added"]:
         validation["added_sinks"] = list(change["added"])
     if change["dropped"]:
