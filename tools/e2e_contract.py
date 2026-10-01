@@ -351,22 +351,27 @@ def main():
             if activation.get('status') != 'hot_pending':
                 raise AssertionError('online synthetic SQL was not accepted for hot activation: ' +
                                      json.dumps(activation, sort_keys=True))
+            # Publication becomes active only at the next safe MySQL
+            # transaction boundary. Produce one explicit cutover transaction
+            # before asserting which historical source the new sink selected.
+            dynamic_commits, existing_samples, dynamic_samples = {}, {}, {}
+            first_dynamic = args.transactions
+            dynamic_commits[first_dynamic] = change(source, first_dynamic)
             if args.shared_source_state:
                 activation_log = wait_log_contains(
                     proc, 'HOT ADD WORKERS sink=events_extra ', timeout=30)
-                if 'sink=events_extra' not in activation_log or 'snapshot=shared_fixed_w' not in activation_log:
+                marker = 'HOT ADD WORKERS sink=events_extra source=events target=events_extra'
+                line = next(
+                    (row for row in activation_log.splitlines() if marker in row), '')
+                if not line or 'snapshot=shared_fixed_w' not in line:
                     raise AssertionError(
-                        'shared-state hot-add did not use fixed-W local history')
-                if 'HOT ADD WORKERS sink=events_extra source=events target=events_extra' in activation_log:
-                    marker = 'HOT ADD WORKERS sink=events_extra source=events target=events_extra'
-                    line = next(
-                        (row for row in activation_log.splitlines() if marker in row), '')
-                    if 'snapshot=mysql' in line:
-                        raise AssertionError('shared-state hot-add silently fell back to MySQL')
+                        'shared-state hot-add did not use fixed-W local history; '
+                        'matching_log=' + repr(line))
+                if 'snapshot=mysql' in line:
+                    raise AssertionError('shared-state hot-add silently fell back to MySQL')
             # The new task is live before history is complete; existing output
             # must continue. Output schemas/filters deliberately differ.
-            dynamic_commits, existing_samples, dynamic_samples = {}, {}, {}
-            for seq in range(args.transactions, args.transactions + 20):
+            for seq in range(args.transactions + 1, args.transactions + 20):
                 dynamic_commits[seq] = change(source, seq)
                 time.sleep(.08)
             deadline = time.monotonic() + 90
