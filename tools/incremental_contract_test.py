@@ -61,6 +61,12 @@ def main():
     assert ic.state_compatible(handle, base, minimum_watermark=120)
     assert not ic.state_compatible(handle, base, minimum_watermark=121)
     assert not ic.state_compatible(handle, changed_epoch)
+    tampered = dict(handle)
+    tampered["spec"] = changed_epoch
+    assert not ic.state_compatible(tampered, base)
+    missing_spec = dict(handle)
+    del missing_spec["spec"]
+    assert not ic.state_compatible(missing_spec, base)
 
     assert ic.changelog_retention_floor(200, [180, 190], [150]) == 150
     assert ic.changelog_retention_floor(200, [180, 190], []) == 180
