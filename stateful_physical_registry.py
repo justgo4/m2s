@@ -69,17 +69,16 @@ def task_state_spec(con,kind,task):
         aggregate_ir.validate_ir(ir)
         keys=[
             str(value)
-            for value in ir.get("group_by",())
+            for value in ir["group_keys"]
         ]
         semantic=aggregate_ir.semantic_id(ir)
     elif kind=="inner_join":
         ir=task["ir"]
         join_ir.validate_ir(ir)
         keys=[]
-        for side in ("left","right"):
-            keys.extend(
-                side+"."+str(value)
-                for value in ir["sources"][side]["join_key"])
+        for pair in ir["join_pairs"]:
+            keys.append("left."+str(pair["left"]))
+            keys.append("right."+str(pair["right"]))
         semantic=join_ir.semantic_id(ir)
     else:
         raise ValueError(
