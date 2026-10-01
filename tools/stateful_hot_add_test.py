@@ -122,8 +122,10 @@ def main():
     drop_runtime["stateful_retire_frontiers"]={}
     drop_runtime["stateful_retire_items"]={}
     with patch.object(
-        j4.source_state,"base_applied_seq",
-        return_value=37
+        stateful_catalog_runtime,"retirement_info",
+        return_value=dict(
+            task_id="task-drop",kind="aggregate",
+            sink_key="starrocks.drop",frontier=37)
     ), patch.object(
         j4,"activate_stateful_additions",
         return_value=[]
