@@ -699,6 +699,9 @@ def retire_task(con,cfg,kind,task):
                 con,task["task_id"],"retired")
         clear_retirement(
             con,task["task_id"])
+    import stateful_physical_registry
+    stateful_physical_registry.retire(
+        con,kind,durable)
     return dict(
         kind=kind,task=durable,mapping=mapping)
 
