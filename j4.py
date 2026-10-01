@@ -8654,6 +8654,10 @@ def run_cdc(
                 con,cfg,compiled_stateful)
             compiled_stateful=stateful_catalog_runtime.register_compiled(
                 con,compiled_stateful)
+        retired_stateful=stateful_catalog_runtime.retire_absent(
+            con,cfg,compiled_stateful)
+        durable_stateful_mappings=(
+            stateful_catalog_runtime.durable_mappings(con))
         migrate_sink_identity(
             con,cfg["catalog"],int(cfg.get("catalog_version",0)),
             prepared,fresh=fresh_state)
@@ -8710,16 +8714,20 @@ def run_cdc(
             int(cfg.get("catalog_version",0)),prepared,
             cfg.get("catalog_macros",()),cfg.get("catalog_udfs",()),fingerprint)
         recovered_plans = {int(active_plan["version"]):active_plan}
-        stateful_mappings={}
+        stateful_mappings=dict(durable_stateful_mappings)
         current_stateful_keys=set()
         for item in compiled_stateful:
             mapping=item["mapping"]
             key=mapping_key(mapping)
             version=int(item["task"]["plan_version"])
             identity=(version,key)
-            if identity in stateful_mappings:
+            previous=stateful_mappings.get(identity)
+            if previous is not None and (
+                previous.get("_output_columns")!=mapping.get("_output_columns")
+                or previous.get("sr_table")!=mapping.get("sr_table")
+            ):
                 raise RuntimeError(
-                    "duplicate stateful writer identity: %r" % (identity,))
+                    "durable stateful writer identity changed: %r" % (identity,))
             if key in active_plan["by_table"]:
                 raise RuntimeError(
                     "stateful/stateless sink identity collision: "+key)
