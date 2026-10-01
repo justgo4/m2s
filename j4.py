@@ -5139,11 +5139,19 @@ def validate_stateful_catalog_plan(
             "stateful catalog tasks require CDC_SHARED_SOURCE_STATE=1")
     scope=stateful_catalog_runtime.source_scope(
         cfg,tasks,prepared)
-    return stateful_catalog_runtime.compile_catalog_tasks(
+    compiled=stateful_catalog_runtime.compile_catalog_tasks(
         cfg,int(plan.get("version",0)),tasks,
         scope["source_metadata"],
         create_missing=create_missing,
         allow_missing=allow_missing)
+    if os.path.exists(cfg["state"]):
+        probe=open_state(cfg["state"])
+        try:
+            stateful_catalog_runtime.ensure_registration_safe(
+                probe,cfg,compiled)
+        finally:
+            probe.close()
+    return compiled
 
 def durable_plan_hot_add_sinks(cfg, plan):
     state_path = cfg["state"]
