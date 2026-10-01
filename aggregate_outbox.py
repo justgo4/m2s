@@ -32,6 +32,9 @@ def transaction(con):
 
 
 def install(con):
+    if con.in_transaction:
+        raise RuntimeError(
+            "aggregate outbox schema must be installed before transactional use")
     con.executescript("""
         CREATE TABLE IF NOT EXISTS aggregate_output_streams(
             consumer_id TEXT PRIMARY KEY,
@@ -69,6 +72,16 @@ def install(con):
         CREATE INDEX IF NOT EXISTS aggregate_output_pending
             ON aggregate_output_commits(consumer_id,visible,source_seq);
     """)
+
+
+def ensure_installed(con):
+    exists=con.execute("""
+        SELECT 1 FROM sqlite_master
+        WHERE type='table' AND name='aggregate_output_streams'
+    """).fetchone()
+    if exists:
+        return
+    install(con)
 
 
 def _text(value,name):
