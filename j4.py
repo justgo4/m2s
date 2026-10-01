@@ -5541,8 +5541,13 @@ def catalog_publish_callback(cfg, runtime, publish_result, phase):
             if candidate_tasks!=active_tasks:
                 installed=validate_local_catalog_publish(
                     publish_result,"install")
+                installed["status"]="restart_required"
+                installed["version"]=int(
+                    publish_result.get("version",0))
                 installed.setdefault(
-                    "status","restart_required")
+                    "reason",
+                    "stateful task topology/semantics changed; restart "
+                    "the daemon to activate the committed cutover")
                 return catalog_activation_record(
                     runtime,installed)
             return install_hot_catalog_plan(
