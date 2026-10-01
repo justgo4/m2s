@@ -1385,6 +1385,17 @@ def selftest():
         check(compatible and "hot-add" in reason,
               "adding a source/sink must be hot-compatible via snapshot+live CDC")
 
+        semantic_change = dict(
+            mapping,sql="SELECT id,v+1 AS v FROM arrow_batch")
+        validate_mapping(semantic_change)
+        semantic_plan = runtime_plan_entry(
+            11,[semantic_change],fingerprint="plan11")
+        compatible,reason = runtime_plan_compatible(drop_plan,semantic_plan)
+        check(
+            not compatible and "semantics changed" in reason,
+            "retained sink SQL/filter/macro/UDF semantics must never switch "
+            "forward-hot without rebuilding historical target state")
+
         class SubmitProbe:
             def __init__(self):
                 self.calls = []

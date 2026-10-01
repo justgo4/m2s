@@ -4849,6 +4849,14 @@ def runtime_plan_compatible(current, candidate):
             return False,f"{table}: primary key changed"
         if old.get("_schema_signature") != new.get("_schema_signature"):
             return False,f"{table}: source schema changed"
+        if old.get("_relational_ir_id") != new.get("_relational_ir_id"):
+            return False,(
+                f"{table}: retained sink relational semantics changed; "
+                "rebuild/new generation is required")
+        if old.get("_incremental_ir_id") != new.get("_incremental_ir_id"):
+            return False,(
+                f"{table}: retained sink incremental semantics changed; "
+                "rebuild/new generation is required")
     if change["added"]:
         return True,(
             "compatible hot-add sinks require snapshot+live CDC bootstrap: "
