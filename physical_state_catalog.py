@@ -470,6 +470,22 @@ def gc_eligible(con, instance_id):
     )
 
 
+def delete_eligible_state(con, instance_id):
+    """Delete one terminal physical catalog row only when refs/pins are gone."""
+    instance_id=str(instance_id)
+    with transaction(con):
+        if not gc_eligible(con,instance_id):
+            return False
+        deleted=con.execute(
+            "DELETE FROM physical_states WHERE instance_id=?",
+            (instance_id,)
+        ).rowcount
+        if int(deleted)!=1:
+            raise RuntimeError(
+                "eligible physical state disappeared during GC")
+    return True
+
+
 def delete_state(con, instance_id):
     if not gc_eligible(con, instance_id):
         raise RuntimeError("physical state is not eligible for GC")
