@@ -424,6 +424,10 @@ def ensure_registration_safe(con,cfg,compiled):
             continue
         with j4.mysql_connect(cfg,target=True) as target:
             with target.cursor() as cur:
+                if not j4.target_table_exists(
+                    cur,cfg,task["target_table"]
+                ):
+                    continue
                 cur.execute(
                     "SELECT 1 FROM "
                     +j4.sql_name(task["target_table"],True)
