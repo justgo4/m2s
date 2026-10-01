@@ -4,7 +4,7 @@
 
 目标：一次捕获源数据，已有任务持续更新；运行期间新增 SQL 和下游表，完成历史构建后持续增量维护。共享源镜像完整后，新任务正常情况下不再扫描 MySQL，也不默认复制整份基础数据。未来 MCP 自然语言入口复用同一套 SQL 校验与部署协议。
 
-**当前已是可运行的 CDC + shared fixed-W 动态投影基线，并已有 correctness-first 的有状态 SQL 候选运行时；有状态 SQL 尚未接入用户 catalog/daemon。** shared 模式已经接入 authoritative source log/base、fixed-W hot-add、generation 生命周期和 drop/drain；COUNT/SUM/AVG 与受限双源 INNER equi-join 已分别具备 canonical IR、durable state、fixed-W bootstrap、changelog catch-up、outbox、StarRocks writer bridge 和 restart-safe task descriptor/runner。legacy 模式仍保留 MySQL snapshot 路径。本文区分已有证据、待实现协议和研究候选；不宣称已达到物理极限、生产就绪或全面超过其他引擎。
+**当前已是可运行的 CDC + shared fixed-W 动态投影基线；COUNT/SUM/AVG 与受限双源 INNER equi-join 的 correctness-first 有状态 SQL 已接入用户 catalog/daemon，并通过真实 MySQL→StarRocks 合同持续验证。** shared 模式已经接入 authoritative source log/base、fixed-W hot-add、generation 生命周期和 drop/drain；COUNT/SUM/AVG 与受限双源 INNER equi-join 已分别具备 canonical IR、durable state、fixed-W bootstrap、changelog catch-up、outbox、StarRocks writer bridge 和 restart-safe task descriptor/runner。legacy 模式仍保留 MySQL snapshot 路径。本文区分已有证据、待实现协议和研究候选；不宣称已达到物理极限、生产就绪或全面超过其他引擎。
 
 ## 1. 场景与待验证假说
 
@@ -18,7 +18,7 @@
 
 ## 2. 当前代码与证据
 
-- [j4.py](j4.py)、[cdc_catalog.py](cdc_catalog.py)：daemon、SQL catalog、动态部署。**用户 catalog 当前仍只暴露**确定性的单源投影、过滤、宏和模型视图链，并继续 fail-closed 拒绝有状态 JOIN、聚合、窗口及跨源计划；这不等于候选引擎不存在。`CDC_SHARED_SOURCE_STATE=1` 时，新 stateless sink 历史从 shared fixed-W state 构建；legacy 模式仍使用 MySQL `snapshot_worker`。
+- [j4.py](j4.py)、[cdc_catalog.py](cdc_catalog.py)：daemon、SQL catalog、动态部署。用户 catalog 已暴露确定性的单源投影/过滤/宏/模型视图，以及 v1 的 COUNT/SUM/AVG 与受限双源 INNER equi-join；窗口、JOIN+聚合、子查询等更广 stateful SQL 继续 fail-closed。`CDC_SHARED_SOURCE_STATE=1` 是 stateful catalog task 的硬前提；legacy 模式仍保留 MySQL `snapshot_worker`。
 - hot-add / drop 已有持久 generation 生命周期：`building → history_staged → ready/retired`；drop 会先 drain 旧 durable jobs，再退出 worker。同名 sink re-add 与 retained sink SQL/filter/macro/UDF 语义变化目前 fail-closed，要求显式 rebuild/new generation。
 - 当前组件包括 Python 控制/恢复、C 解码/批处理、Arrow、DuckDB 和 SQLite。native 路径仍含 Python 网络/协议与 IPC 成本，不等于完整 C replication client 或零拷贝；是否替换组件由 profile 决定。
 - [incremental_contract.py](incremental_contract.py)：state identity / retention / Pareto 合同；[physical_state_catalog.py](physical_state_catalog.py) 持久化 semantic/backend/format/generation/readable-range/health/refs/pins，fixed-W pin 已按 state+owner 做重启幂等。
@@ -122,13 +122,13 @@ cost_vector = {
 | P0–P3 / P10 | 保持现有差分/故障测试；定义上述事务、水位、完整性、未知请求和代际协议；跨目标原子性未证明则明确不承诺 |
 | **P6A/P6B** | **SQLite correctness-first 路径已接 daemon 并通过真实 E2E**：authoritative log durable 与 base applied 分离、fixed-W pin/read、版本 GC、crash replay 已工作；本次继续加入 durable consumer frontier。尚未完成 50M 规模存储选型、schema epoch 在线迁移、空间耗尽/compaction 长跑 |
 | **P6C 最小接口 + P7** | **shared 模式的单源投影 hot-add 已不再回源历史 SELECT，并通过 GTID ON/OFF × transaction/merge_async 真实 E2E、构建中强退和重启续建。** generation 的 fixed-W/pin 生命周期、drop/drain/retire、同名 re-add fail-closed、retained semantic-change rebuild gate 已进入主线。仍需 10+ generation 并发取消/替换、真正的在线 rebuild/new-generation、旧 generation 远端 fence、更多 source scope/DDL 场景 |
-| **P8A/P8B** | **P8A stateless IR 已闭环；P8B correctness-first 候选也已推进到 COUNT/SUM/AVG + 受限双源 INNER equi-join 的完整 durable runtime。** 两者均已有 canonical IR、撤回语义、fixed-W bootstrap、atomic state/consumer/outbox、generation、writer bridge 与 restart-safe task descriptor/runner；聚合与 JOIN 的真实 StarRocks 4.1.1 transaction/merge_async 合同均已通过；JOIN 另有固定 seed 的 2000 事务 randomized/full-state DuckDB oracle，覆盖多-event 同事务、NULL、重复投影与 fan-out。**尚未完成的是把 stateful task 安全暴露给 cdc_catalog/daemon、在线 deploy/rebuild/drop 生命周期，以及更广 SQL 语义。** |
+| **P8A/P8B** | **P8A stateless IR 已闭环；P8B correctness-first 候选也已推进到 COUNT/SUM/AVG + 受限双源 INNER equi-join 的完整 durable runtime。** 两者均已有 canonical IR、撤回语义、fixed-W bootstrap、atomic state/consumer/outbox、generation、writer bridge 与 restart-safe task descriptor/runner；聚合与 JOIN 的真实 StarRocks 4.1.1 transaction/merge_async 合同均已通过；JOIN 另有固定 seed 的 2000 事务 randomized/full-state DuckDB oracle，覆盖多-event 同事务、NULL、重复投影与 fan-out。**stateful task 已安全暴露给 cdc_catalog/daemon；当前语义变更、新增/删除 stateful task 采用经过校验的 restart-boundary 激活。尚未完成的是无需重启的 stateful deploy/rebuild/drop cutover、共享 arrangement/代价策略，以及更广 SQL 语义。** |
 | **P9A/P9B/P9C** | 共享 arrangement/subview、整图策略、统计反馈与 GC；1/10/100 个语义相同/部分共享任务，验证只维护所需共享状态、慢任务取消后安全回收；比较共享开/关、固定 IVM/自适应、不同放置，其他语义与耐久性保持一致 |
 | P4–P5 | 按 profile 插入 event/transaction batching、布局融合、native socket/snapshot；同 raw binlog 差分先通过，再重复 Python/native A/B，报告两进程总 CPU/RSS 和 IPC 成本 |
 | **P11** | 固定机器 50M 初始行 + 50 rows/s，72h 并动态新增任务/注入故障；报告健康区间 P95/P99、违规数、恢复区间、time-to-ready、空间与版本债务；每个部署给可完成的预算，超预算明确拒绝/等待 |
 | P12 / P13 | 公平对标后再给优势结论；补可解释 deploy/explain/status/cancel、预算准入、权限、版本化升级/回滚，MCP 接同一控制面；catalog 已保存不等于任务已激活 |
 
-最短主线现在是：**把已验证的 aggregate/JOIN 候选闭环接入 cdc_catalog/daemon → 验证在线 stateful deploy/rebuild/drop 与真实 E2E → 再做共享 arrangement/代价策略**。完整优化器和更多语言重写不应阻塞这条主线。
+最短主线现在是：**把已通过 startup/restart E2E 的 stateful catalog task 推进到无需重启的 deploy/rebuild/drop cutover → 再做共享 arrangement/代价策略**。完整优化器和更多语言重写不应阻塞这条主线。
 
 测量分 decoder、local durable pipeline、snapshot、端到端四层；最终 gate 固定机器/资源并计入 Python/C、source/sink、compaction、存储和网络。与 Flink、RisingWave、Materialize、Bytewax、Pathway、Proton、Arroyo 对比时保持 SQL/结果语义、源/目标、耐久性和恢复要求一致，分别报告吞吐、延迟、构建、空间、恢复与功能缺失；不宣称任意 SQL 下全面领先。
 
