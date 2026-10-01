@@ -406,12 +406,21 @@ def ensure_registration_safe(con,cfg,compiled):
                     "stateful sink semantic replacement requires an explicit "
                     "generation cutover/fence before activation: "
                     +task["sink_key"])
-        exists=any(
-            old_kind==item["kind"]
+        same=[
+            old for old_kind,old in durable
+            if old_kind==item["kind"]
             and old["task_id"]==task["task_id"]
-            for old_kind,old in durable
-        )
-        if exists:
+        ]
+        if same:
+            old=same[0]
+            if old["descriptor_hash"]!=task["descriptor_hash"]:
+                raise RuntimeError(
+                    "stateful task id was reused with different semantics: "
+                    +task["task_id"])
+            if old["status"] in {"retired","failed"}:
+                raise RuntimeError(
+                    "terminal stateful task cannot be revived; create a new "
+                    "catalog generation: "+task["task_id"])
             continue
         with j4.mysql_connect(cfg,target=True) as target:
             with target.cursor() as cur:
