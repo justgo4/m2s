@@ -43,8 +43,16 @@ def main():
     staged = tg.mark_history_staged(con,"sink-a",7)
     assert staged["status"] == "history_staged"
     assert staged["history_staged_at"] is not None
-    staged = tg.mark_pin_released(con,"sink-a",7)
+    con.execute(
+        "CREATE TABLE source_pins("
+        "pin_id TEXT PRIMARY KEY,watermark INTEGER NOT NULL,"
+        "owner TEXT NOT NULL,created REAL NOT NULL)")
+    con.execute(
+        "INSERT INTO source_pins VALUES('pin-a',120,'sink:sink-a:plan:7',0)")
+    staged = tg.finalize_history_and_release_pin(con,"sink-a",7)
     assert staged["source_pin_released"]
+    assert con.execute(
+        "SELECT 1 FROM source_pins WHERE pin_id='pin-a'").fetchone() is None
 
     ready = tg.mark_ready_if_exists(con,"sink-a",7)
     assert ready["status"] == "ready"
@@ -66,7 +74,21 @@ def main():
     assert imported_staged["status"] == "history_staged"
     assert imported_staged["history_staged_at"] is not None
     assert imported_staged["ready_at"] is None
-    assert len(tg.list_generations(con)) == 3
+
+    # Durable sink state can be ahead of lifecycle metadata after a crash.
+    # Reconciliation must finalize using the original pin/W, never acquire a
+    # fresh watermark.
+    recovery = tg.ensure_build(
+        con,"sink-recover",4,"db.orders",150,"pin-recover")
+    con.execute(
+        "INSERT INTO source_pins VALUES("
+        "'pin-recover',150,'sink:sink-recover:plan:4',0)")
+    recovered = tg.finalize_history_and_release_pin(
+        con,"sink-recover",4)
+    assert recovered["status"] == "history_staged"
+    assert recovered["fixed_w"] == 150
+    assert recovered["source_pin_released"]
+    assert len(tg.list_generations(con)) == 4
 
     retired = tg.set_terminal(con,"sink-a",7,"retired")
     assert retired["status"] == "retired"

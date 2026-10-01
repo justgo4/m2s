@@ -201,6 +201,57 @@ def mark_pin_released(con, sink_key, plan_version):
     return info(con,sink_key,plan_version)
 
 
+def finalize_history_and_release_pin(con, sink_key, plan_version):
+    """Atomically reconcile durable staged history and release fixed-W retention.
+
+    The caller must invoke this only after the sink's final historical snapshot
+    chunk is durably staged.  Deleting source_pins and changing the generation
+    lifecycle happen in the same SQLite transaction, eliminating a crash window
+    where a restart could see a missing pin but a still-building generation.
+    """
+    current = info(con,sink_key,plan_version)
+    if current["imported"]:
+        if current["status"] not in {"history_staged","ready"}:
+            raise RuntimeError("imported generation has invalid staged status")
+        return current
+    if current["status"] == "ready" and current["source_pin_released"]:
+        return current
+    if current["status"] not in {"building","history_staged","ready"}:
+        raise RuntimeError(
+            "cannot finalize history from generation status "
+            + current["status"])
+    pin_id = current["source_pin_id"]
+    if not pin_id:
+        raise RuntimeError("fixed-W generation has no durable source pin")
+    now = time.time()
+    with transaction(con):
+        pin = con.execute("""
+            SELECT watermark FROM source_pins WHERE pin_id=?
+        """, (pin_id,)).fetchone()
+        if pin is not None and int(pin[0]) != int(current["fixed_w"]):
+            raise RuntimeError(
+                "fixed-W source pin watermark changed before release")
+        # A missing pin is acceptable only when a prior atomic finalize already
+        # committed. If metadata still says unreleased, fail closed rather than
+        # silently acquiring a different W.
+        if pin is None and not current["source_pin_released"]:
+            raise RuntimeError(
+                "fixed-W source pin disappeared before atomic generation finalize")
+        con.execute("DELETE FROM source_pins WHERE pin_id=?", (pin_id,))
+        con.execute("""
+            UPDATE task_generations
+            SET status=CASE
+                    WHEN status='building' THEN 'history_staged'
+                    ELSE status
+                END,
+                history_staged_at=COALESCE(history_staged_at,?),
+                source_pin_released=1,
+                updated=?
+            WHERE sink_key=? AND plan_version=?
+        """, (now,now,str(sink_key),int(plan_version)))
+    return info(con,sink_key,plan_version)
+
+
 def mark_ready_if_exists(con, sink_key, plan_version):
     current = maybe_info(con,sink_key,plan_version)
     if current is None:

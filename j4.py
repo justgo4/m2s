@@ -7806,14 +7806,18 @@ def shared_snapshot_worker(mapping, cfg, runtime):
                 generation = task_generation.import_existing(
                     con,table,int(mapping.get("_plan_version",0)),relation,
                     "ready" if state[3] else "history_staged")
-            row = con.execute(
-                "SELECT pin_id FROM source_pins WHERE owner=?",(owner,)
-            ).fetchone()
-            if row:
-                source_state.release_pin(con,row[0])
-            if not generation["source_pin_released"]:
-                task_generation.mark_pin_released(
+            if (
+                not generation["imported"]
+                and not generation["source_pin_released"]
+            ):
+                task_generation.finalize_history_and_release_pin(
                     con,table,int(mapping.get("_plan_version",0)))
+            else:
+                row = con.execute(
+                    "SELECT pin_id FROM source_pins WHERE owner=?",(owner,)
+                ).fetchone()
+                if row:
+                    source_state.release_pin(con,row[0])
             if state[3]:
                 task_generation.mark_ready_if_exists(
                     con,table,int(mapping.get("_plan_version",0)))
@@ -7860,10 +7864,7 @@ def shared_snapshot_worker(mapping, cfg, runtime):
                     f"last={int(is_last)}")
             cursor = next_cursor
             if is_last:
-                task_generation.mark_history_staged(
-                    con,table,int(mapping.get("_plan_version",0)))
-                source_state.release_pin(con,pin["pin_id"])
-                task_generation.mark_pin_released(
+                task_generation.finalize_history_and_release_pin(
                     con,table,int(mapping.get("_plan_version",0)))
                 pin = None
                 return
