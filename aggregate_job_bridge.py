@@ -6,10 +6,13 @@ identity mapping. It reuses j4 Arrow routing/lane partitioning and writes normal
 CDC jobs plus a sidecar link. acknowledge_delivery() advances the aggregate
 outbox frontier only after all jobs for one source_seq are retired.
 """
+import datetime
+import decimal
 import tempfile
 import time
 
 import duckdb
+import pyarrow as pa
 
 import aggregate_outbox
 import j4
@@ -22,13 +25,52 @@ def _text(value,name):
     return value
 
 
-def _mutations(con,consumer_id,source_seq):
+def _delete_placeholder(dtype):
+    if pa.types.is_boolean(dtype):
+        return False
+    if pa.types.is_integer(dtype):
+        return 0
+    if pa.types.is_floating(dtype):
+        return 0.0
+    if pa.types.is_decimal(dtype):
+        return decimal.Decimal(0)
+    if pa.types.is_string(dtype) or pa.types.is_large_string(dtype):
+        return ""
+    if pa.types.is_binary(dtype) or pa.types.is_large_binary(dtype):
+        return b""
+    if pa.types.is_date(dtype):
+        return datetime.date(1970,1,1)
+    if pa.types.is_timestamp(dtype):
+        return datetime.datetime(1970,1,1)
+    raise ValueError(
+        "aggregate delete cannot synthesize required target value for "
+        +str(dtype))
+
+
+def _delete_wire_row(mapping,row):
+    result=dict(row)
+    keys=set(j4.pk_columns(mapping))
+    target_schema=mapping.get("_target_schema",{})
+    for name,dtype in mapping["_schema"]:
+        if name in result or name in keys:
+            continue
+        target=target_schema.get(name,{})
+        nullable=bool(target.get("nullable",True))
+        result[name]=None if nullable else _delete_placeholder(dtype)
+    return result
+
+
+def _mutations(con,consumer_id,source_seq,mapping):
     rows=aggregate_outbox.commit_rows(
         con,consumer_id,source_seq)
-    return [
-        (int(item["op"]),dict(item["row"]))
-        for item in rows
-    ]
+    result=[]
+    for item in rows:
+        op=int(item["op"])
+        row=dict(item["row"])
+        if op==1:
+            row=_delete_wire_row(mapping,row)
+        result.append((op,row))
+    return result
 
 
 def _already_staged(con,consumer_id,source_seq):
@@ -58,7 +100,7 @@ def stage_commit(con,consumer_id,source_seq,mapping,cfg,engine=None):
             visible=False,job_ids=existing)
 
     mutations=_mutations(
-        con,consumer_id,source_seq)
+        con,consumer_id,source_seq,mapping)
     if not mutations:
         aggregate_outbox.mark_visible(
             con,consumer_id,source_seq)
