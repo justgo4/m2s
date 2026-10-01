@@ -84,7 +84,9 @@ generation 更替须证明旧的在途请求不能覆盖新结果。停止本地
 
 语义 identity 后续还需覆盖 source instance/epoch、稳定 relation identity、类型/精度、时区、NULL/bag 语义、collation 及宏/UDF 定义版本；watermark、路径、refcount 属于实例状态。物理复用另检查 backend/encoding/ABI、健康、pin/追赶与恢复能力。以上扩展**尚未全部在当前合同模块实现**。
 
-最小共享接口只需先支持：获取/构建状态、fixed-version read、change subscription、retain/release、持久进度与安全 GC。第一个正确 JOIN 不等待通用优化器，但也不能只凭 refcount 或相同 hash 回收/复用状态。
+最小共享接口只需先支持：获取/构建状态、fixed-version read、change subscription、retain/release、持久进度与安全 GC。当前 `source_state.py` 已有 fixed-W pin/read、版本/changelog GC，并新增 durable consumer watermark；consumer 可跨“零输出事务”单调推进，GC 自动受最慢 consumer/pin 约束。第一个正确 JOIN 不等待通用优化器，但也不能只凭 refcount 或相同 hash 回收/复用状态。
+
+shared 模式下内部 `source_commits.seq` 现在继续写入 durable `jobs.source_seq`，目标确认 VISIBLE 后推进 `applied.source_seq`（per lane ordered domain）。lane FIFO 仍是第一道顺序保证，ack 额外拒绝 source_seq 回退，避免损坏状态或未来并发改造让旧写覆盖新写。
 
 ## 5. SQL、规划与性能路线
 
@@ -92,13 +94,14 @@ generation 更替须证明旧的在途请求不能覆盖新结果。停止本地
 
 DuckDB、DBSP/OpenIVM、DataFusion、现有 C 内核和自研算子均只是候选；选择依据是语义覆盖、可恢复状态接口和实测总成本。语言或 FFI 本身不是性能结论，只有 profile 与 A/B 收益支持时才下沉热点。
 
-规划策略包括复用、增量构建、局部重算和全量重算。**先按语义、恢复能力、资源/SLO 过滤，再优化整个共享 DAG 的长期成本，而不是只选“当前这个任务最便宜”的计划。**
+规划策略包括复用、增量构建、局部重算和全量重算。**P6/P7 首版只使用成本向量、资源硬约束和可解释规则；P9 再优化整个共享 DAG 的长期成本。** 时间、字节、放大率等量纲不同，下面只是成本项，不能直接相加成一个无单位分数。
 
 ```text
-total_cost ≈ bootstrap + catchup + shared_state_creation
-           + expected_future_maintenance + storage_retention
-           + recovery + downstream_delta_amplification
-           + GC/compaction_debt
+cost_vector = {
+  bootstrap, catchup, shared_state_creation,
+  future_maintenance, storage_retention, recovery,
+  downstream_delta_amplification, GC/compaction_debt
+}
 ```
 
 约束至少包括已有任务 SLO、新任务 `time_to_ready`、CPU/内存/磁盘/网络预算和恢复正确性。成本模型记录峰值 RSS、唯一状态字节、source/base read、CPU、网络/磁盘写入、spill/compaction、恢复时间、输出放大和目标未可见队列；加入运行反馈与切换滞后，避免策略振荡。高 fan-out JOIN 不能只按“源 50 行/秒”估算能力，预计无法追上的任务必须拒绝或等待。
@@ -112,8 +115,8 @@ total_cost ≈ bootstrap + catchup + shared_state_creation
 | 阶段 | 下一步与通过标准 |
 |---|---|
 | P0–P3 / P10 | 保持现有差分/故障测试；定义上述事务、水位、完整性、未知请求和代际协议；跨目标原子性未证明则明确不承诺 |
-| **P6A/P6B** | 选择一个可行放置方案接入源镜像；base/log/cursor 形成可证明的 durable commit boundary，跨引擎时使用可重放协调协议；版本、schema、tombstone 与日志共同保留。构建过半强退，继续源 UPDATE/DELETE 并执行 compaction/GC 后重启，仍从同一 W 正确续建；测试 W 获取/pin 与 GC 竞态、空间耗尽和 schema epoch 变化 |
-| **P6C 最小接口 + P7** | daemon 接入共享状态，先让单源投影 hot-add 不回源；镜像完整后 MySQL 历史 SELECT 次数为 0，不默认复制 base。并发新增/取消/替换至少 10 个 generation，故意延迟旧请求、乱序完成输出并在发布前后强退；逐字段 oracle 正确且 visible 水位不越洞 |
+| **P6A/P6B** | **SQLite correctness-first 路径已接 daemon 并通过真实 E2E**：authoritative log durable 与 base applied 分离、fixed-W pin/read、版本 GC、crash replay 已工作；本次继续加入 durable consumer frontier。尚未完成 50M 规模存储选型、schema epoch 在线迁移、空间耗尽/compaction 长跑 |
+| **P6C 最小接口 + P7** | **shared 模式的单源投影 hot-add 已不再回源历史 SELECT，并通过 GTID ON/OFF × transaction/merge_async 真实 E2E、构建中强退和重启续建。** 仍需 10+ generation 并发取消/替换、旧 generation 远端 fence、更多 source scope/DDL 场景 |
 | **P8A/P8B** | 受限增量 IR、COUNT/SUM/AVG、INNER JOIN；至少 10,000 次带多表同事务、UPDATE/DELETE、重复值、NULL、复合键和 skew 的随机操作，对照独立完整查询；跨构建/计算/outbox 崩溃点恢复后保持一致，再扩展其他算子 |
 | **P9A/P9B/P9C** | 共享 arrangement/subview、整图策略、统计反馈与 GC；1/10/100 个语义相同/部分共享任务，验证只维护所需共享状态、慢任务取消后安全回收；比较共享开/关、固定 IVM/自适应、不同放置，其他语义与耐久性保持一致 |
 | P4–P5 | 按 profile 插入 event/transaction batching、布局融合、native socket/snapshot；同 raw binlog 差分先通过，再重复 Python/native A/B，报告两进程总 CPU/RSS 和 IPC 成本 |
@@ -156,15 +159,18 @@ total_cost ≈ bootstrap + catchup + shared_state_creation
 
 ## 9. 运行现有基线
 
-Linux x86_64、Python 3.12/3.14、C11、CMake ≥ 3.20。
+Linux x86_64、Python 3.12/3.14、C11、CMake ≥ 3.20。Python 保持函数式/下划线命名，不引入 typing/logging，运行日志使用 `print(..., flush=True)`。
 
 ```bash
 python -m pip install -r requirements.txt
 cmake -S native -B build/native -DCMAKE_BUILD_TYPE=Release && cmake --build build/native --parallel 2
 python native/native_abi_selftest.py
 python j4.py selftest
+cp setup.sql.example setup.sql
+# 修改 setup.sql 中的本地连接配置
 python j4.py                  # daemon
 python j4.py sql setup.sql    # 另一终端部署
+python j4.py cli              # 或交互部署
 ```
 
 公开仓库只提交通用代码、合成配置/数据和公开测量；真实凭据、地址、业务数据、生产日志、SQLite/WAL 和 metrics 不得提交。

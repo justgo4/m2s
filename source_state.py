@@ -103,6 +103,17 @@ def install(con):
         CREATE UNIQUE INDEX IF NOT EXISTS source_pins_owner
             ON source_pins(owner);
 
+        CREATE TABLE IF NOT EXISTS source_consumers(
+            consumer_id TEXT PRIMARY KEY,
+            watermark INTEGER NOT NULL,
+            owner TEXT NOT NULL,
+            metadata_json TEXT NOT NULL,
+            created REAL NOT NULL,
+            updated REAL NOT NULL);
+
+        CREATE INDEX IF NOT EXISTS source_consumers_watermark
+            ON source_consumers(watermark);
+
         CREATE TABLE IF NOT EXISTS source_touched(
             table_name TEXT NOT NULL,
             pk BLOB NOT NULL,
@@ -661,13 +672,110 @@ def read_commits(con, after_seq, through_seq=None, limit=100):
     return commits
 
 
+def consumer_info(con, consumer_id):
+    row = con.execute("""
+        SELECT consumer_id,watermark,owner,metadata_json,created,updated
+        FROM source_consumers WHERE consumer_id=?
+    """, (str(consumer_id),)).fetchone()
+    if not row:
+        raise KeyError("source-state consumer does not exist")
+    return dict(
+        consumer_id=str(row[0]),
+        watermark=int(row[1]),
+        owner=str(row[2]),
+        metadata=json.loads(row[3]),
+        created=float(row[4]),
+        updated=float(row[5]),
+    )
+
+
+def register_consumer(
+        con, consumer_id, watermark, owner=None, metadata=None
+):
+    consumer_id = str(consumer_id or "").strip()
+    owner = str(owner or consumer_id).strip()
+    if not consumer_id or not owner:
+        raise ValueError("consumer_id and owner are required")
+    watermark = int(watermark)
+    applied = base_applied_seq(con)
+    if watermark < 0 or watermark > applied:
+        raise ValueError("consumer watermark is outside applied source history")
+    metadata_json = json.dumps(
+        metadata or {}, ensure_ascii=False, sort_keys=True,
+        separators=(",", ":"))
+    now = time.time()
+    with transaction(con):
+        row = con.execute("""
+            SELECT watermark,owner,metadata_json
+            FROM source_consumers WHERE consumer_id=?
+        """, (consumer_id,)).fetchone()
+        if row:
+            if str(row[1]) != owner or str(row[2]) != metadata_json:
+                raise RuntimeError(
+                    "source-state consumer identity changed; remove or migrate "
+                    "the existing consumer explicitly"
+                )
+            if int(row[0]) != watermark:
+                raise RuntimeError(
+                    "source-state consumer already exists at a different "
+                    "watermark; use advance_consumer"
+                )
+            return consumer_info(con, consumer_id)
+        con.execute("""
+            INSERT INTO source_consumers(
+                consumer_id,watermark,owner,metadata_json,created,updated)
+            VALUES(?,?,?,?,?,?)
+        """, (
+            consumer_id,watermark,owner,metadata_json,now,now,
+        ))
+    return consumer_info(con, consumer_id)
+
+
+def advance_consumer(con, consumer_id, watermark):
+    consumer_id = str(consumer_id)
+    watermark = int(watermark)
+    with transaction(con):
+        row = con.execute("""
+            SELECT watermark FROM source_consumers WHERE consumer_id=?
+        """, (consumer_id,)).fetchone()
+        if not row:
+            raise KeyError("source-state consumer does not exist")
+        current = int(row[0])
+        if watermark < current:
+            raise ValueError(
+                "source-state consumer watermark cannot move backwards")
+        applied = base_applied_seq(con)
+        if watermark > applied:
+            raise ValueError(
+                "source-state consumer cannot advance beyond applied base")
+        if watermark != current:
+            con.execute("""
+                UPDATE source_consumers
+                SET watermark=?,updated=?
+                WHERE consumer_id=?
+            """, (watermark,time.time(),consumer_id))
+    return consumer_info(con, consumer_id)
+
+
+def remove_consumer(con, consumer_id):
+    with transaction(con):
+        con.execute(
+            "DELETE FROM source_consumers WHERE consumer_id=?",
+            (str(consumer_id),))
+
+
 def retention_floor(con, consumer_watermarks=()):
-    values = [base_applied_seq(con)]
+    applied = base_applied_seq(con)
+    values = [applied]
     values.extend(int(value) for value in consumer_watermarks or ())
     values.extend(
         int(row[0]) for row in con.execute("SELECT watermark FROM source_pins")
     )
-    if any(value < 0 or value > base_applied_seq(con) for value in values):
+    values.extend(
+        int(row[0]) for row in con.execute(
+            "SELECT watermark FROM source_consumers")
+    )
+    if any(value < 0 or value > applied for value in values):
         raise ValueError("retention watermark is outside applied source history")
     return min(values)
 
@@ -703,10 +811,19 @@ def status(con):
             "SELECT pin_id,watermark,owner FROM source_pins ORDER BY created,pin_id"
         )
     ]
+    consumers = [
+        dict(consumer_id=row[0], watermark=int(row[1]), owner=row[2])
+        for row in con.execute("""
+            SELECT consumer_id,watermark,owner
+            FROM source_consumers ORDER BY consumer_id
+        """)
+    ]
     return dict(
         log_durable_seq=log_durable_seq(con),
         base_applied_seq=base_applied_seq(con),
         snapshot_safe_seq=None if incomplete else base_applied_seq(con),
+        retention_floor=retention_floor(con),
         incomplete_relations=incomplete,
         pins=pins,
+        consumers=consumers,
     )

@@ -57,6 +57,7 @@ jobs:
           python tools/catalog_config_test.py
           python tools/incremental_contract_test.py
           python tools/source_state_protocol_test.py
+          python tools/source_seq_frontier_test.py
           python tools/resource_startup_test.py
           python tools/merge_quarantine_test.py
       - name: Verify bundled native ABI and offline recovery

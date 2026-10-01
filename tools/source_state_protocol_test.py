@@ -173,6 +173,46 @@ def main():
         assert pin4["watermark"] == 4
         snapshot_values(con, pin4, {2: "b", 3: "c", 4: "d"})
         source_state.release_pin(con, pin4["pin_id"])
+
+        # Durable consumers, unlike build pins, represent changelog readers.
+        # They advance even across zero-output commits and bound GC after restart.
+        consumer = source_state.register_consumer(
+            con, "task-q1", 2, owner="task:q1",
+            metadata={"plan_version": 7})
+        assert consumer["watermark"] == 2
+        assert source_state.retention_floor(con) == 2
+        assert source_state.gc(con)["floor"] == 2
+        assert [c["seq"] for c in source_state.read_commits(con, 0)] == [2, 3, 4]
+
+        consumer = source_state.advance_consumer(con, "task-q1", 3)
+        assert consumer["watermark"] == 3
+        assert source_state.gc(con)["floor"] == 3
+        assert [c["seq"] for c in source_state.read_commits(con, 0)] == [3, 4]
+
+        # Commit 4 has no row event, but computation can still advance through it.
+        consumer = source_state.advance_consumer(con, "task-q1", 4)
+        assert consumer["watermark"] == 4
+        try:
+            source_state.advance_consumer(con, "task-q1", 3)
+            raise AssertionError("consumer watermark regression was accepted")
+        except ValueError:
+            pass
+        try:
+            source_state.advance_consumer(con, "task-q1", 5)
+            raise AssertionError("consumer advanced beyond applied base")
+        except ValueError:
+            pass
+        con.close()
+
+        con = open_db(path)
+        persisted = source_state.consumer_info(con, "task-q1")
+        assert persisted["watermark"] == 4
+        assert persisted["metadata"] == {"plan_version": 7}
+        assert source_state.status(con)["consumers"] == [
+            dict(consumer_id="task-q1", watermark=4, owner="task:q1")
+        ]
+        source_state.remove_consumer(con, "task-q1")
+        assert source_state.status(con)["consumers"] == []
         con.close()
 
     print("source_state_protocol_test ok", flush=True)

@@ -1449,8 +1449,9 @@ def init_state(path):
             payload BLOB NOT NULL, nrows INTEGER NOT NULL,
             logical_bytes INTEGER NOT NULL DEFAULT 0,
             plan_version INTEGER NOT NULL DEFAULT 0,
-            source_file TEXT, source_pos INTEGER, source_time REAL,
-            created REAL NOT NULL, group_id TEXT, delivery_id TEXT);
+            source_file TEXT, source_pos INTEGER, source_seq INTEGER,
+            source_time REAL, created REAL NOT NULL,
+            group_id TEXT, delivery_id TEXT);
         CREATE INDEX IF NOT EXISTS jobs_lane ON jobs(table_name,lane,id);
         CREATE INDEX IF NOT EXISTS jobs_group ON jobs(group_id);
         CREATE INDEX IF NOT EXISTS jobs_table ON jobs(table_name,id);
@@ -1486,7 +1487,7 @@ def init_state(path):
             PRIMARY KEY(delivery_id,part));
         CREATE TABLE IF NOT EXISTS applied(
             table_name TEXT NOT NULL, lane INTEGER NOT NULL,
-            source_file TEXT, source_pos INTEGER,
+            source_file TEXT, source_pos INTEGER, source_seq INTEGER,
             PRIMARY KEY(table_name,lane));
         CREATE TABLE IF NOT EXISTS load_transactions(
             delivery_id TEXT PRIMARY KEY REFERENCES deliveries(id),
@@ -1598,6 +1599,14 @@ def init_state(path):
     if "plan_version" not in job_columns:
         with state_transaction(con):
             con.execute("ALTER TABLE jobs ADD COLUMN plan_version INTEGER NOT NULL DEFAULT 0")
+    if "source_seq" not in job_columns:
+        with state_transaction(con):
+            con.execute("ALTER TABLE jobs ADD COLUMN source_seq INTEGER")
+    applied_columns = {
+        row[1] for row in con.execute("PRAGMA table_info(applied)").fetchall()}
+    if "source_seq" not in applied_columns:
+        with state_transaction(con):
+            con.execute("ALTER TABLE applied ADD COLUMN source_seq INTEGER")
     overflow_columns = {
         row[1] for row in con.execute("PRAGMA table_info(field_overflow)").fetchall()}
     if "value_pruned" not in overflow_columns:
@@ -2260,6 +2269,12 @@ def commit_spool(
         if position_ge(old, position):
             return set()
         total, changed_tables = 0, set()
+        source_seq = None
+        if source_parts is not None:
+            if not source_epoch:
+                raise RuntimeError("source-state logging requires a source epoch")
+            source_seq = source_state.log_commit_tx(
+                con,source_epoch,position,gtid,source_parts)
         while True:
             record = read_spool_record(spool)
             if record is None:
@@ -2270,10 +2285,10 @@ def commit_spool(
             con.execute("""
                 INSERT INTO jobs(
                     table_name,lane,kind,payload,nrows,logical_bytes,plan_version,
-                    source_file,source_pos,source_time,created)
-                VALUES(?,?,'cdc',?,?,?,?,?,?,?,?)
+                    source_file,source_pos,source_seq,source_time,created)
+                VALUES(?,?,'cdc',?,?,?,?,?,?,?,?,?)
             """,(table,lane,payload,count,logical_bytes,int(plan_version),
-                 position[0],position[1],source_time,now))
+                 position[0],position[1],source_seq,source_time,now))
             total += logical_bytes
             changed_tables.add(table)
             if not con.execute("SELECT snapshot_done FROM table_state WHERE name=?", (table,)).fetchone()[0]:
@@ -2281,11 +2296,6 @@ def commit_spool(
                 insert_touched_column(
                     con,table,arrow_job_table(mapping,payload).column("_sync_key"))
         meta_set(con, "pending_bytes", meta_get(con, "pending_bytes", 0) + total)
-        if source_parts is not None:
-            if not source_epoch:
-                raise RuntimeError("source-state logging requires a source epoch")
-            source_state.log_commit_tx(
-                con,source_epoch,position,gtid,source_parts)
         cursor_advance(con, position)
         if gtid is not None:
             current = meta_get(con,"gtid_set")
@@ -2934,15 +2944,32 @@ def acknowledge_delivery(con, delivery):
             FROM active_jobs j JOIN job_assignments a ON a.job_id=j.id
             WHERE a.delivery_id=? AND j.group_id IS NOT NULL
         """,(delivery,))]
-        for table,lane,file_name,pos in con.execute("""
-            SELECT j.table_name,j.lane,j.source_file,j.source_pos
+        for table,lane,file_name,pos,source_seq in con.execute("""
+            SELECT j.table_name,j.lane,j.source_file,j.source_pos,j.source_seq
             FROM active_jobs j JOIN job_assignments a ON a.job_id=j.id
             WHERE a.delivery_id=? AND j.kind='cdc' ORDER BY j.id
         """, (delivery,)).fetchall():
+            previous = con.execute("""
+                SELECT source_seq FROM applied
+                WHERE table_name=? AND lane=?
+            """, (table,lane)).fetchone()
+            if (
+                previous and previous[0] is not None
+                and source_seq is not None
+                and int(source_seq) < int(previous[0])
+            ):
+                raise RuntimeError(
+                    f"visible source sequence regression table={table} "
+                    f"lane={lane} previous={previous[0]} next={source_seq}")
             con.execute("""
-                INSERT INTO applied VALUES(?,?,?,?) ON CONFLICT(table_name,lane)
-                DO UPDATE SET source_file=excluded.source_file,source_pos=excluded.source_pos
-            """, (table,lane,file_name,pos))
+                INSERT INTO applied(
+                    table_name,lane,source_file,source_pos,source_seq)
+                VALUES(?,?,?,?,?)
+                ON CONFLICT(table_name,lane) DO UPDATE SET
+                    source_file=excluded.source_file,
+                    source_pos=excluded.source_pos,
+                    source_seq=COALESCE(excluded.source_seq,applied.source_seq)
+            """, (table,lane,file_name,pos,source_seq))
         size = con.execute("""
             SELECT COALESCE(SUM(j.logical_bytes),0)
             FROM active_jobs j JOIN job_assignments a ON a.job_id=j.id
@@ -2958,6 +2985,21 @@ def acknowledge_delivery(con, delivery):
         meta_set(con, "pending_bytes", max(0, meta_get(con,"pending_bytes",0)-size))
         for group in groups:
             finish_snapshot_group(con, group)
+
+
+def visible_frontiers(con, table):
+    return [
+        dict(
+            lane=int(row[0]),
+            source_file=row[1],
+            source_pos=None if row[2] is None else int(row[2]),
+            source_seq=None if row[3] is None else int(row[3]),
+        )
+        for row in con.execute("""
+            SELECT lane,source_file,source_pos,source_seq
+            FROM applied WHERE table_name=? ORDER BY lane
+        """, (str(table),))
+    ]
 
 
 NATIVE_ARROW_I8 = 1
