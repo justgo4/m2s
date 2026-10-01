@@ -5275,10 +5275,25 @@ def runtime_add_sink(mapping, cfg, runtime):
     executor = runtime.get("snapshot_executor")
     if executor is None:
         raise RuntimeError("snapshot executor is unavailable during online sink add")
-    executor.submit(guarded_worker,snapshot_worker,runtime,mapping,cfg)
+    if cfg.get("shared_source_state",False):
+        probe = open_state(cfg["state"])
+        try:
+            source_state.relation_info(probe,source_relation_key(cfg,mapping))
+        except KeyError as exc:
+            raise RuntimeError(
+                "hot-add source relation is outside the mirrored source scope; "
+                "restart/rebuild is required to expand source scope"
+            ) from exc
+        finally:
+            probe.close()
+        executor.submit(guarded_worker,shared_snapshot_worker,runtime,mapping,cfg)
+        snapshot_mode = "shared_fixed_w"
+    else:
+        executor.submit(guarded_worker,snapshot_worker,runtime,mapping,cfg)
+        snapshot_mode = "mysql"
     log(
         f"HOT ADD WORKERS sink={key} source={mapping['src_table']} "
-        f"target={mapping['sr_table']} writer_cap={cap} snapshot=started")
+        f"target={mapping['sr_table']} writer_cap={cap} snapshot={snapshot_mode}")
     return True
 
 
@@ -6042,6 +6057,18 @@ def state_gc_worker(cfg, runtime):
                             DELETE FROM field_overflow
                             WHERE action='null' AND created<?
                         """,(metadata_cutoff,))
+                    if cfg.get("shared_source_state",False):
+                        incomplete = source_state.status(con)["incomplete_relations"]
+                        if not incomplete:
+                            source_gc = source_state.gc(con)
+                            if (
+                                cfg.get("detail_logs",False)
+                                and (source_gc["versions"] or source_gc["commits"])
+                            ):
+                                log(
+                                    f"SOURCE GC floor={source_gc['floor']} "
+                                    f"versions={source_gc['versions']} "
+                                    f"commits={source_gc['commits']}")
                     # Partial/offline runtimes (notably the release scale
                     # fixture) intentionally omit plan-manager state. Retired
                     # job GC must remain independent of optional catalog GC.
@@ -7495,6 +7522,165 @@ def capture_binlog(cfg, prepared, runtime):
     return capture_binlog_native(cfg,prepared,runtime)
 
 
+def source_state_snapshot_worker(mapping, cfg, runtime):
+    con = open_state(cfg["state"])
+    source = None
+    decoder = None
+    stop = runtime["stop"]
+    relation = source_relation_key(cfg,mapping)
+    count = min(int(cfg["snapshot_rows"]),1024)
+    source_index = mapping.get("_source_index") or {
+        name:index for index,(name,_) in enumerate(mapping["_schema"])}
+    key_indexes = [source_index[name] for name in pk_columns(mapping)]
+    try:
+        while not stop.is_set():
+            info = source_state.relation_info(con,relation)
+            if info["complete_seq"] is not None:
+                return
+            if not runtime["reader_ready"].wait(0.1):
+                continue
+            if source is None:
+                source = mysql_connect(cfg)
+            if decoder is None:
+                decoder = native_start(cfg,[mapping])
+            if not info["snapshot_upper_set"]:
+                upper = snapshot_upper(source,mapping)
+                source_state.snapshot_set_upper(con,relation,upper)
+            else:
+                upper = info["snapshot_upper"]
+            cursor = info["snapshot_cursor"]
+
+            started = time.monotonic()
+            rows,fetch_info = fetch_snapshot(
+                source,mapping,cursor,upper,count,cfg,decoder)
+            high = binlog_position(source)
+            row_count = rows.num_rows if isinstance(rows,pa.Table) else len(rows)
+            if row_count and isinstance(rows,pa.Table):
+                next_cursor = tuple(
+                    rows.column(name)[row_count-1].as_py()
+                    for name in pk_columns(mapping))
+            else:
+                next_cursor = (
+                    tuple(rows[-1][index] for index in key_indexes)
+                    if row_count else cursor)
+            is_last = (
+                not fetch_info["budget_limited"]
+                and int(fetch_info["source_rows"]) < count)
+
+            while not stop.is_set():
+                if not position_ge(meta_get(con,"read_position"),high):
+                    stop.wait(0.02)
+                    continue
+                source_state.apply_pending(con)
+                try:
+                    source_state.stage_snapshot_batch(
+                        con,relation,
+                        rows if isinstance(rows,pa.Table) else snapshot_arrow(mapping,rows),
+                        next_cursor,is_last=is_last)
+                    break
+                except RuntimeError as exc:
+                    if (
+                        is_last
+                        and "base apply lags log" in str(exc)
+                    ):
+                        stop.wait(0.02)
+                        continue
+                    raise
+            if stop.is_set():
+                return
+            elapsed = time.monotonic()-started
+            rate = row_count/elapsed if elapsed else 0
+            if cfg.get("detail_logs",False) or is_last:
+                state = source_state.status(con)
+                log(
+                    f"SOURCE MIRROR table={relation} rows={row_count} "
+                    f"cursor={next_cursor!r} barrier={high[0]}:{high[1]} "
+                    f"last={int(is_last)} rows_per_second={rate:.1f} "
+                    f"log_durable={state['log_durable_seq']} "
+                    f"base_applied={state['base_applied_seq']}")
+            count = snapshot_next_row_limit(
+                count,row_count,
+                int(fetch_info["retained_bytes"]) if isinstance(rows,pa.Table) else 0,
+                elapsed,cfg)
+            if is_last:
+                return
+    finally:
+        if source is not None:
+            with contextlib.suppress(Exception):
+                source.close()
+        native_stop(decoder)
+        con.close()
+
+
+def shared_snapshot_worker(mapping, cfg, runtime):
+    con = open_state(cfg["state"])
+    stop = runtime["stop"]
+    table = mapping_key(mapping)
+    relation = source_relation_key(cfg,mapping)
+    pin = None
+    try:
+        state = con.execute("""
+            SELECT cursor,staged_cursor,staged_done
+            FROM table_state WHERE name=?
+        """,(table,)).fetchone()
+        if state is None:
+            raise RuntimeError("shared snapshot sink lacks durable table_state")
+        owner = "sink:%s:plan:%d" % (
+            table,int(mapping.get("_plan_version",0)))
+        if state[2]:
+            row = con.execute(
+                "SELECT pin_id FROM source_pins WHERE owner=?",(owner,)
+            ).fetchone()
+            if row:
+                source_state.release_pin(con,row[0])
+            return
+
+        while not stop.is_set():
+            info = source_state.relation_info(con,relation)
+            if info["complete_seq"] is not None:
+                break
+            stop.wait(0.05)
+        if stop.is_set():
+            return
+
+        pin = source_state.acquire_or_resume_pin(con,owner,[relation])
+        cursor_blob = state[1] if state[1] is not None else state[0]
+        cursor = unpack(cursor_blob) if cursor_blob is not None else None
+        count = min(int(cfg["snapshot_rows"]),4096)
+
+        while not stop.is_set():
+            rows,next_cursor = source_state.read_snapshot_batch(
+                con,pin["pin_id"],relation,cursor,limit=count)
+            is_last = rows.num_rows < count
+            if rows.num_rows == 0:
+                next_cursor = cursor
+                is_last = True
+            high = meta_get(con,"read_position")
+            while not stop.is_set():
+                if stage_snapshot(
+                        con,mapping,rows,next_cursor,is_last,high,cfg):
+                    wake_loaders(runtime,table)
+                    break
+                stop.wait(0.02)
+            if stop.is_set():
+                return
+            if cfg.get("detail_logs",False) or is_last:
+                log(
+                    f"SHARED BACKFILL sink={table} source={relation} "
+                    f"fixed_w={pin['watermark']} rows={rows.num_rows} "
+                    f"cursor_bytes={0 if next_cursor is None else len(next_cursor)} "
+                    f"last={int(is_last)}")
+            cursor = next_cursor
+            if is_last:
+                source_state.release_pin(con,pin["pin_id"])
+                pin = None
+                return
+    finally:
+        # Keep the pin across crashes/cancellation so the same W remains
+        # resumable. It is released only after the final source batch is staged.
+        con.close()
+
+
 def snapshot_upper(source, mapping):
     keys = pk_columns(mapping)
     columns = ",".join(sql_name(k,True) for k in keys)
@@ -8057,10 +8243,17 @@ def run_cdc(
             executor = ThreadPoolExecutor(
                 max_workers=cfg["snapshot_workers"],thread_name_prefix="backfill")
             runtime["snapshot_executor"] = executor
-            futures = [
+            futures = []
+            if cfg.get("shared_source_state",False):
+                futures.extend(
+                    executor.submit(
+                        guarded_worker,source_state_snapshot_worker,
+                        runtime,mapping,cfg)
+                    for mapping in active_plan["source_prepared"])
+            futures.extend(
                 executor.submit(
                     guarded_worker,snapshot_worker,runtime,mapping,cfg)
-                for mapping in prepared]
+                for mapping in prepared)
             began = time.monotonic()
             next_status = began + cfg["status_seconds"]
             if cfg["load_mode"] == "merge_async":

@@ -100,6 +100,8 @@ def install(con):
 
         CREATE INDEX IF NOT EXISTS source_pins_watermark
             ON source_pins(watermark);
+        CREATE UNIQUE INDEX IF NOT EXISTS source_pins_owner
+            ON source_pins(owner);
 
         CREATE TABLE IF NOT EXISTS source_touched(
             table_name TEXT NOT NULL,
@@ -556,6 +558,27 @@ def acquire_pin(con, owner, table_names):
             VALUES(?,?,?,?)
         """, (pin_id, int(watermark), owner, time.time()))
     return dict(pin_id=pin_id, watermark=int(watermark))
+
+
+def acquire_or_resume_pin(con, owner, table_names):
+    owner = str(owner or "").strip()
+    if not owner:
+        raise ValueError("pin owner is required")
+    row = con.execute("""
+        SELECT pin_id,watermark FROM source_pins WHERE owner=?
+    """, (owner,)).fetchone()
+    if row:
+        watermark = int(row[1])
+        for table_name in table_names:
+            info = relation_info(con, table_name)
+            if info["complete_seq"] is None or info["complete_seq"] > watermark:
+                raise RuntimeError(
+                    "durable source-state pin predates relation completeness"
+                )
+        if watermark > base_applied_seq(con):
+            raise RuntimeError("durable source-state pin is ahead of applied base")
+        return dict(pin_id=str(row[0]), watermark=watermark)
+    return acquire_pin(con, owner, table_names)
 
 
 def release_pin(con, pin_id):
