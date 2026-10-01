@@ -196,9 +196,7 @@ def live(proc,log):
     text=log.read_text(errors="replace") if log.exists() else ""
     raise RuntimeError(
         "stateful daemon exited rc=%d diagnostics=%s"
-        % (proc.returncode,(text[:2500]+"
-...
-"+text[-5000:])))
+        % (proc.returncode,(text[:2500]+"\\n...\\n"+text[-5000:])))
 
 
 def state(path):
