@@ -149,6 +149,38 @@ def stage_absent_retirements(con,compiled,frontier):
     return staged
 
 
+def prepare_startup_retirements(
+        con,cfg,compiled,frontier
+):
+    """Recover catalog removals without inventing a new retirement frontier.
+
+    Active/ready tasks receive a durable frontier and resume catch-up. A task
+    that never reached active publication may be abandoned immediately because
+    it has no completed result contract to preserve.
+    """
+    current={
+        (item["kind"],item["task"]["task_id"])
+        for item in compiled or ()
+    }
+    staged=[]
+    abandoned=[]
+    for kind,task in _all_durable_tasks(con):
+        if (kind,task["task_id"]) in current:
+            continue
+        if task["status"] in {"retired","failed"}:
+            continue
+        if task["status"]=="candidate":
+            abandoned.append(
+                retire_task(con,cfg,kind,task))
+            continue
+        staged.append(
+            stage_retirement(
+                con,kind,task,frontier))
+    return dict(
+        staged=staged,abandoned=abandoned)
+
+
+
 def _text(value,name):
     value=str(value or "").strip()
     if not value:
