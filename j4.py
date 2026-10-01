@@ -1327,6 +1327,12 @@ def sync_source_base_catalog(con):
             generation=1,
             health="ready" if complete is not None else "building",
             metadata=metadata,instance_id=instance_id)
+        # Re-sync/restart must never move the persisted physical history
+        # frontier backwards, even when the backing source store still retains
+        # more history than the catalog promises to consumers.
+        minimum = max(
+            int(minimum),
+            int(state["min_readable_watermark"]))
         state = physical_state_catalog.advance_state(
             con,instance_id,applied,
             min_readable_watermark=minimum)
