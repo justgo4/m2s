@@ -13,6 +13,7 @@ sys.path.insert(0,str(ROOT))
 import aggregate_generation
 import aggregate_ir
 import aggregate_log_consumer
+import aggregate_outbox
 import aggregate_state
 import physical_state_catalog
 import source_state
@@ -71,6 +72,7 @@ def open_db(path):
     con.execute("PRAGMA foreign_keys=ON")
     source_state.install(con)
     aggregate_state.install(con)
+    aggregate_outbox.install(con)
     task_generation.install(con)
     physical_state_catalog.install(con)
     return con
