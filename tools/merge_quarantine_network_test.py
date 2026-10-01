@@ -41,7 +41,8 @@ def proxy():
             port = 8040 if path.startswith('/be/') else 8030
             if port == 8040:
                 path = path[3:]
-            if not path.startswith('/api/'+e2e.DATABASE+'/') or not path.endswith('/_stream_load'):
+            endpoint = urlsplit(path).path
+            if not endpoint.startswith('/api/'+e2e.DATABASE+'/') or not endpoint.endswith('/_stream_load'):
                 raise ValueError('isolated proxy path is outside disposable stream-load endpoint')
             stage = 'headers'
             headers = {}
@@ -56,7 +57,7 @@ def proxy():
             length = int(headers.get('content-length','-1'))
             if not 0 <= length <= 4*1024**2:
                 raise ValueError('bounded content-length required')
-            if headers.pop('expect','').lower()=='100-continue':
+            if headers.get('expect','').lower()=='100-continue':
                 client.sendall(b'HTTP/1.1 100 Continue\r\n\r\n')
             stage = 'body'
             body = stream.read(length)
@@ -100,7 +101,7 @@ def proxy():
                     location = urlsplit(value)
                     if location.port!=8040 or not location.path.startswith('/api/'+e2e.DATABASE+'/'):
                         raise ValueError('unexpected isolated BE redirect')
-                    value = 'http://127.0.0.1:'+str(server.server_address[1])+'/be'+location.path
+                    value = 'http://127.0.0.1:'+str(server.server_address[1])+'/be'+location.path+('?' + location.query if location.query else '')
                 outgoing.append(name+': '+value+'\r\n')
             head = ('HTTP/1.1 '+str(response.status)+' '+response.reason+'\r\n'+
                     ''.join(outgoing)+'Content-Length: '+str(len(payload))+'\r\nConnection: close\r\n\r\n')
@@ -185,7 +186,13 @@ def main():
                 e2e.wait_equal(proc,directory,source,cfg)
             except Exception:
                 print('SYNTHETIC PROXY DIAGNOSTICS '+json.dumps(dict(errors=outcome['errors'],dropped=outcome['dropped'])),flush=True)
-                print((directory/'daemon-1.log').read_text(errors='replace')[-12000:],flush=True)
+                con = sqlite3.connect('file:'+str(directory/'state.sqlite3')+'?mode=ro',uri=True)
+                try:
+                    print('SYNTHETIC UNKNOWN REASONS '+json.dumps(con.execute('SELECT reason FROM merge_uncertain').fetchall()),flush=True)
+                finally:
+                    con.close()
+                logs = (directory/'daemon-1.log').read_text(errors='replace')
+                print(logs[:8000]+'\n...\n'+logs[-4000:],flush=True)
                 raise
             deployment = directory/'extra.sql'
             deployment.write_text('CREATE TABLE starrocks.events_extra AS SELECT id,part,v,note,amount FROM mysql.events WHERE active=1 AND v>=0;')
