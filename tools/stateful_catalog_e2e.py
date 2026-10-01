@@ -198,6 +198,28 @@ def stop(proc,handle,kill=False):
             "stateful daemon graceful stop rc=%d" % proc.returncode)
 
 
+def run_catalog_sql(directory,env,name,sql):
+    path=directory/(str(name)+".sql")
+    path.write_text(str(sql).rstrip()+"\n",encoding="utf-8")
+    result=subprocess.run(
+        [sys.executable,str(ROOT/"j4.py"),"sql",str(path)],
+        env=env,capture_output=True,timeout=120)
+    try:
+        response=json.loads(result.stdout.decode())
+    except Exception as exc:
+        raise RuntimeError(
+            "catalog SQL returned invalid JSON rc=%d output=%s"
+            % (
+                result.returncode,
+                result.stdout.decode(errors="replace")[-3000:],
+            )
+        ) from exc
+    activation=(
+        ((response.get("result") or {}).get("publish") or {})
+        .get("activation") or {})
+    return result,response,activation
+
+
 def live(proc,log):
     if proc.poll() is None:
         return
@@ -385,6 +407,57 @@ def wait_ready_exact(proc,log,directory,source,cfg,timeout=240):
         "stateful catalog daemon did not reach exact ready state "
         "state=%r result=%r" % (
             state(directory/"state.sqlite3"),last))
+
+
+def wait_hot_aggregate_exact(
+        proc,log,directory,source,cfg,
+        sink="starrocks.agg_hot",table="agg_hot",timeout=240
+):
+    deadline=time.monotonic()+timeout
+    last=None
+    while time.monotonic()<deadline:
+        live(proc,log)
+        current=state(directory/"state.sqlite3")
+        if current is not None:
+            tasks=dict(current.get("aggregate_tasks",()))
+            if (
+                tasks.get(sink)=="active"
+                and current["pending"]==0
+                and current["deliveries"]==0
+            ):
+                expected=aggregate_expected(source)
+                actual=aggregate_actual(cfg,table)
+                if expected==actual:
+                    return current,dict(
+                        expected=expected,actual=actual)
+                last=dict(expected=expected,actual=actual)
+        time.sleep(.2)
+    raise AssertionError(
+        "hot aggregate did not become exact state=%r result=%r"
+        % (state(directory/"state.sqlite3"),last))
+
+
+def wait_stateful_retired(
+        proc,log,directory,sink,kind="aggregate",timeout=180
+):
+    deadline=time.monotonic()+timeout
+    while time.monotonic()<deadline:
+        live(proc,log)
+        current=state(directory/"state.sqlite3")
+        if current is not None:
+            tasks=dict(current[
+                "aggregate_tasks" if kind=="aggregate"
+                else "join_tasks"])
+            if (
+                tasks.get(sink)=="retired"
+                and current["pending"]==0
+                and current["deliveries"]==0
+            ):
+                return current
+        time.sleep(.2)
+    raise AssertionError(
+        "stateful task did not retire online sink=%s state=%r"
+        % (sink,state(directory/"state.sqlite3")))
 
 
 def mutate(source):
