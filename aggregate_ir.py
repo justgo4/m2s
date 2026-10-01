@@ -162,7 +162,9 @@ def compile_sql(
         "" if where is None
         else _normalized_filter(where.this.sql(dialect="duckdb"),"duckdb")
     )
-    source_filter=_normalized_filter(source_filter,"mysql")
+    # Match j4.validate_mapping(): full_filter is parsed as MySQL once
+    # during preflight, then persisted as normalized DuckDB _filter_sql.
+    source_filter=_normalized_filter(source_filter,"duckdb")
     ir=dict(
         format_version=FORMAT_VERSION,
         kind="group_aggregate",
