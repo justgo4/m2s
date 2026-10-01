@@ -60,10 +60,10 @@ def main():
         current = rows_by_group(con)
         assert current["a"] == dict(
             category="a",n=3,nn=2,total=Decimal("30.00"),
-            mean=Decimal("15.00"),_row_count=3)
+            mean=15.0,_row_count=3)
         assert current["b"] == dict(
             category="b",n=1,nn=1,total=Decimal("5.00"),
-            mean=Decimal("5.00"),_row_count=1)
+            mean=5.0,_row_count=1)
 
         assert aggregate_state.apply_transaction(con,"agg",12,[
             dict(category="a",amount=Decimal("10.00"),_sync_op=1),
@@ -72,10 +72,10 @@ def main():
         current = rows_by_group(con)
         assert current["a"] == dict(
             category="a",n=2,nn=1,total=Decimal("20.00"),
-            mean=Decimal("20.00"),_row_count=2)
+            mean=20.0,_row_count=2)
         assert current["b"] == dict(
             category="b",n=2,nn=2,total=Decimal("35.00"),
-            mean=Decimal("17.50"),_row_count=2)
+            mean=17.5,_row_count=2)
 
         assert aggregate_state.apply_transaction(con,"agg",13,[
             dict(category="a",amount=Decimal("20.00"),_sync_op=1),
@@ -130,7 +130,7 @@ def main():
         assert aggregate_state.state_info(con,"agg")["watermark"] == 16
         assert rows_by_group(con)["c"] == dict(
             category="c",n=1,nn=1,total=Decimal("2.00"),
-            mean=Decimal("2.00"),_row_count=1)
+            mean=2.0,_row_count=1)
         expect_error(
             lambda: aggregate_state.ensure_state(
                 con,"agg",
