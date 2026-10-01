@@ -172,6 +172,21 @@ def prepare_startup_retirements(
             abandoned.append(
                 retire_task(con,cfg,kind,task))
             continue
+        try:
+            existing=retirement_info(
+                con,task["task_id"])
+        except KeyError:
+            existing=None
+        if existing is not None:
+            if (
+                existing["kind"]!=kind
+                or existing["sink_key"]!=task["sink_key"]
+            ):
+                raise RuntimeError(
+                    "durable stateful retirement identity changed for "
+                    +task["task_id"])
+            staged.append(existing)
+            continue
         staged.append(
             stage_retirement(
                 con,kind,task,frontier))
