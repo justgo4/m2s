@@ -96,6 +96,32 @@ def main():
         lambda: tg.mark_ready_if_exists(con,"sink-a",7),
         RuntimeError,
     )
+
+    # A crash-resumable build cannot be terminalled accidentally because that
+    # would either leak or incorrectly release its fixed-W retention.
+    pending = tg.ensure_build(
+        con,"sink-cancel",8,"db.orders",180,"pin-cancel")
+    con.execute(
+        "INSERT INTO source_pins VALUES("
+        "'pin-cancel',180,'sink:sink-cancel:plan:8',0)")
+    expect_error(
+        lambda: tg.set_terminal(con,"sink-cancel",8,"failed"),
+        RuntimeError,
+    )
+    assert tg.info(con,"sink-cancel",8)["status"] == "building"
+    assert con.execute(
+        "SELECT 1 FROM source_pins WHERE pin_id='pin-cancel'").fetchone()
+
+    abandoned = tg.abandon(con,"sink-cancel",8,"failed")
+    assert abandoned["status"] == "failed"
+    assert abandoned["source_pin_released"]
+    assert con.execute(
+        "SELECT 1 FROM source_pins WHERE pin_id='pin-cancel'").fetchone() is None
+    expect_error(
+        lambda: tg.ensure_build(
+            con,"sink-cancel",8,"db.orders",180,"pin-cancel"),
+        RuntimeError,
+    )
     con.close()
     print("task_generation_test ok", flush=True)
 

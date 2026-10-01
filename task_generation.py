@@ -273,6 +273,44 @@ def mark_ready_if_exists(con, sink_key, plan_version):
     return info(con,sink_key,plan_version)
 
 
+def abandon(con, sink_key, plan_version, status="failed"):
+    """Explicitly give up recovery and release this generation's fixed-W pin.
+
+    Normal crash/restart must never call this: an unfinished generation keeps
+    its original pin so it can resume the same W.  Cancellation/removal may call
+    abandon only when the caller intentionally discards that generation.
+    """
+    status = str(status)
+    if status not in {"failed","retired"}:
+        raise ValueError("abandoned generation status must be failed or retired")
+    current = info(con,sink_key,plan_version)
+    if current["status"] in {"failed","retired"}:
+        return current
+    now = time.time()
+    with transaction(con):
+        if not current["source_pin_released"] and not current["imported"]:
+            pin_id = current["source_pin_id"]
+            if not pin_id:
+                raise RuntimeError(
+                    "unreleased fixed-W generation has no source pin id")
+            pin = con.execute("""
+                SELECT watermark FROM source_pins WHERE pin_id=?
+            """, (pin_id,)).fetchone()
+            if pin is None:
+                raise RuntimeError(
+                    "fixed-W source pin disappeared before explicit abandon")
+            if int(pin[0]) != int(current["fixed_w"]):
+                raise RuntimeError(
+                    "fixed-W source pin watermark changed before abandon")
+            con.execute("DELETE FROM source_pins WHERE pin_id=?", (pin_id,))
+        con.execute("""
+            UPDATE task_generations
+            SET status=?,source_pin_released=1,updated=?
+            WHERE sink_key=? AND plan_version=?
+        """, (status,now,str(sink_key),int(plan_version)))
+    return info(con,sink_key,plan_version)
+
+
 def set_terminal(con, sink_key, plan_version, status):
     status = str(status)
     if status not in {"failed","retired"}:
@@ -280,6 +318,10 @@ def set_terminal(con, sink_key, plan_version, status):
     current = info(con,sink_key,plan_version)
     if current["status"] == status:
         return current
+    if not current["source_pin_released"]:
+        raise RuntimeError(
+            "cannot terminate a generation with an unreleased fixed-W pin; "
+            "resume it or explicitly abandon it")
     with transaction(con):
         con.execute("""
             UPDATE task_generations SET status=?,updated=?

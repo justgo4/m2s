@@ -5174,6 +5174,22 @@ def validate_hot_catalog_plan(cfg, runtime, publish_result):
             reason=str(exc),added_sinks=hot_add_sinks)
     con = open_state(cfg["state"])
     try:
+        if change["added"]:
+            marks = ",".join("?" for _ in change["added"])
+            prior_state = [
+                row[0] for row in con.execute(
+                    f"SELECT name FROM table_state "
+                    f"WHERE name IN ({marks})",
+                    list(change["added"])).fetchall()
+            ]
+            if prior_state:
+                return dict(
+                    status="rebuild_required",version=version,
+                    reason=(
+                        "re-adding a sink with durable prior table_state is "
+                        "not yet an online-safe operation; explicit generation "
+                        "reset/rebuild is required: " + ",".join(sorted(prior_state))),
+                    added_sinks=list(change["added"]))
         current_tables = sorted(current["by_table"])
         if current_tables:
             marks = ",".join("?" for _ in current_tables)
@@ -5463,6 +5479,7 @@ def activate_pending_plan(con, decoder, cfg, runtime, position):
         current = runtime["plans"][int(runtime["active_plan_version"])]
     change = runtime_plan_topology(current,candidate)
     added = list(change["added"])
+    dropped = list(change["dropped"])
     if added:
         # Recheck immediately before durable cutover. A target that was filled
         # by an external process after catalog validation must never be merged
@@ -5475,6 +5492,13 @@ def activate_pending_plan(con, decoder, cfg, runtime, position):
                 raise RuntimeError(
                     f"hot-add sink {key} already has durable table_state before cutover")
             con.execute("INSERT INTO table_state(name) VALUES(?)",(key,))
+        for key in dropped:
+            prior = current["by_table"][key]
+            generation = task_generation.maybe_info(
+                con,key,int(prior.get("_plan_version",0)))
+            if generation is not None:
+                task_generation.set_terminal(
+                    con,key,int(prior.get("_plan_version",0)),"retired")
         meta_set(con,"active_plan_version",version)
         meta_set(con,"fingerprint",candidate["fingerprint"])
         meta_set(con,"plan_cutover_position",position)
@@ -5492,7 +5516,8 @@ def activate_pending_plan(con, decoder, cfg, runtime, position):
     wake_loaders(runtime)
     log(
         f"PLAN ACTIVE version={version} cutover={position[0]}:{position[1]} "
-        f"added_sinks={added} old durable jobs continue on stamped plan_version")
+        f"added_sinks={added} dropped_sinks={dropped} "
+        "old durable jobs continue on stamped plan_version")
     return candidate
 
 def check_initial_targets(cfg, prepared):
