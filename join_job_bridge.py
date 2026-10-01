@@ -2,11 +2,10 @@
 """Bridge INNER JOIN outbox commits into the proven j4 durable job pipeline.
 
 JOIN bag semantics require a stable row identity even when projected values are
-identical. The bridge therefore materializes the exact durable pair_id as an
-internal base64 text column named _j4_pair_id. Writer mappings for JOIN targets
+identical. The bridge therefore materializes the stream-versioned durable target identity
+as an internal text column named _j4_pair_id. Writer mappings for JOIN targets
 must use that column as their sole Primary Key.
 """
-import base64
 import tempfile
 import time
 
@@ -24,9 +23,11 @@ def _text(value,name):
     return value
 
 
-def _pair_text(pair_id):
-    return base64.urlsafe_b64encode(
-        bytes(pair_id)).decode("ascii")
+def _pair_text(
+        pair_id,identity_format=join_outbox.DEFAULT_IDENTITY_FORMAT
+):
+    return join_outbox.target_id(
+        pair_id,identity_format)
 
 
 def validate_mapping(mapping):
@@ -47,8 +48,8 @@ def _mutations(con,consumer_id,source_seq,mapping):
         con,consumer_id,source_seq
     ):
         row=dict(item["row"])
-        row[PAIR_COLUMN]=_pair_text(
-            item["pair_id"])
+        row[PAIR_COLUMN]=join_outbox.target_id_for_pair(
+            con,consumer_id,item["pair_id"])
         result.append((int(item["op"]),row))
     return result
 
