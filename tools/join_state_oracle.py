@@ -203,17 +203,25 @@ def main():
         if mode==0:
             # Source commit unrelated to either input.
             pass
-        elif mode<4:
-            changes+=mutate_one(
-                rng,"left",left,LEFT_KEYS)
-            changes+=mutate_one(
-                rng,"right",right,RIGHT_KEYS)
-        elif mode<8:
-            changes+=mutate_one(
-                rng,"left",left,LEFT_KEYS)
         else:
-            changes+=mutate_one(
-                rng,"right",right,RIGHT_KEYS)
+            # A source transaction may contain several ordered row-events,
+            # including repeated mutations of the same source PK and changes
+            # on both sides. Build changes against the progressively updated
+            # reference state so every before-image is transaction-valid.
+            event_groups=1+rng.randrange(4)
+            for _ in range(event_groups):
+                if mode<4:
+                    side=rng.choice(["left","right"])
+                elif mode<8:
+                    side="left"
+                else:
+                    side="right"
+                if side=="left":
+                    changes+=mutate_one(
+                        rng,"left",left,LEFT_KEYS)
+                else:
+                    changes+=mutate_one(
+                        rng,"right",right,RIGHT_KEYS)
 
         result=join_state.apply_transaction(
             db,"join",seq,changes)
