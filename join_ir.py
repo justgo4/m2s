@@ -314,6 +314,8 @@ def validate_ir(ir):
 def state_spec(ir):
     validate_ir(ir)
     return dict(
+        format_version=1,
+        kind="inner_join_state",
         sources={
             side:dict(
                 relation=ir["sources"][side]["relation"],
@@ -324,7 +326,7 @@ def state_spec(ir):
             )
             for side in ("left","right")
         },
-        projections=list(ir["projections"]),
+        projections=[dict(item) for item in ir["projections"]],
         semantics=dict(ir["semantics"]),
     )
 
