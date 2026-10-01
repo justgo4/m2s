@@ -116,7 +116,14 @@ def state_handle(spec, watermark, backend=None, metadata=None):
 def state_compatible(existing, requested_spec, minimum_watermark=None):
     if not isinstance(existing, dict):
         return False
-    if existing.get("identity") != state_identity(requested_spec):
+    try:
+        existing_spec = existing["spec"]
+        existing_identity = str(existing["identity"])
+        if existing_identity != state_identity(existing_spec):
+            return False
+        if existing_identity != state_identity(requested_spec):
+            return False
+    except (KeyError, TypeError, ValueError):
         return False
     if minimum_watermark is not None:
         try:
