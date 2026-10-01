@@ -5323,6 +5323,51 @@ def validate_hot_catalog_plan(cfg, runtime, publish_result):
                 % (stateful_changed,)),
             stateful_changed_sinks=stateful_changed)
 
+    if stateful_dropped:
+        live_by_sink=stateful_catalog_runtime.compiled_by_sink(
+            runtime.get("stateful_tasks",()))
+        probe=open_state(cfg["state"])
+        try:
+            for sink in stateful_dropped:
+                item=live_by_sink.get(sink)
+                if item is None:
+                    return dict(
+                        status="restart_required",version=version,
+                        reason=(
+                            "stateful drop cannot bind the live durable task: "
+                            +sink),
+                        stateful_dropped_sinks=stateful_dropped)
+                durable=stateful_durable_task(
+                    probe,item["kind"],item["task"]["task_id"])
+                generation=task_generation.maybe_info(
+                    probe,durable["sink_key"],
+                    durable["plan_version"])
+                if (
+                    durable["status"]!="active"
+                    or generation is None
+                    or generation["status"]!="ready"
+                    or not generation["source_pin_released"]
+                ):
+                    return dict(
+                        status="restart_required",version=version,
+                        reason=(
+                            "stateful drop is online-safe only after the "
+                            "generation is active/ready; retry after readiness "
+                            "or restart: "+sink),
+                        stateful_dropped_sinks=stateful_dropped)
+                try:
+                    source_state.consumer_info(
+                        probe,durable["consumer_id"])
+                except KeyError:
+                    return dict(
+                        status="restart_required",version=version,
+                        reason=(
+                            "stateful drop has no durable source consumer: "
+                            +sink),
+                        stateful_dropped_sinks=stateful_dropped)
+        finally:
+            probe.close()
+
     candidate_config_revision = int(
         publish_result.get(
             "config_revision",
