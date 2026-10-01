@@ -108,12 +108,16 @@ jobs:
       - name: Aggregate fixed-W runtime to real StarRocks 4.1.1
         if: matrix.gtid == 'ON' && matrix.shared == 'ON'
         run: python tools/aggregate_starrocks_contract.py --isolated --load-mode "$TEST_PROTOCOL"
+      - name: INNER JOIN runtime to real StarRocks 4.1.1
+        if: matrix.gtid == 'ON' && matrix.shared == 'ON'
+        run: python tools/join_starrocks_contract.py --isolated --load-mode "$TEST_PROTOCOL"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: e2e-${{ matrix.protocol }}-gtid-${{ matrix.gtid }}-shared-${{ matrix.shared }}
           path: |
             benchmark-results/e2e-contract.json
             benchmark-results/aggregate-starrocks-contract.json
+            benchmark-results/join-starrocks-contract.json
             benchmark-results/merge-quarantine.json
           if-no-files-found: error
           retention-days: 14
