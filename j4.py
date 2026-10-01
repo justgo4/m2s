@@ -8656,6 +8656,12 @@ def run_cdc(
             else []
         )
         con = init_state(cfg["state"])
+        migrated_stateful_writer_versions=(
+            stateful_catalog_runtime.migrate_writer_versions(con))
+        if migrated_stateful_writer_versions:
+            log(
+                "STATEFUL WRITER VERSION MIGRATION rows=%d"
+                % int(migrated_stateful_writer_versions))
         stored_fingerprint = meta_get(con,"fingerprint")
         fresh_state = stored_fingerprint is None
         if stored_fingerprint is None:
