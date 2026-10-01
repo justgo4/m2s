@@ -8685,7 +8685,31 @@ def run_cdc(
             int(cfg.get("catalog_version",0)),prepared,
             cfg.get("catalog_macros",()),cfg.get("catalog_udfs",()),fingerprint)
         recovered_plans = {int(active_plan["version"]):active_plan}
+        stateful_mappings={}
+        current_stateful_keys=set()
+        for item in compiled_stateful:
+            mapping=item["mapping"]
+            key=mapping_key(mapping)
+            version=int(item["task"]["plan_version"])
+            identity=(version,key)
+            if identity in stateful_mappings:
+                raise RuntimeError(
+                    "duplicate stateful writer identity: %r" % (identity,))
+            if key in active_plan["by_table"]:
+                raise RuntimeError(
+                    "stateful/stateless sink identity collision: "+key)
+            stateful_mappings[identity]=mapping
+            current_stateful_keys.add(key)
+
         worker_by_table = dict(active_plan["by_table"])
+        for mapping in stateful_mappings.values():
+            key=mapping_key(mapping)
+            previous=worker_by_table.get(key)
+            if previous is not None and previous is not mapping:
+                raise RuntimeError(
+                    "multiple active writer mappings for sink "+key)
+            worker_by_table[key]=mapping
+
         durable_versions = con.execute("""
             SELECT DISTINCT table_name,plan_version FROM active_jobs
             UNION
@@ -8693,6 +8717,10 @@ def run_cdc(
         """).fetchall()
         for table,version in durable_versions:
             version = int(version)
+            stateful=stateful_mappings.get((version,str(table)))
+            if stateful is not None:
+                worker_by_table.setdefault(str(table),stateful)
+                continue
             if version not in recovered_plans:
                 historical = prepare_runtime_catalog_plan(
                     cfg,cdc_catalog.load_plan_version(cfg["catalog"],version))
@@ -8703,12 +8731,17 @@ def run_cdc(
                     f"durable job table {table} is absent from catalog plan {version}")
             worker_by_table.setdefault(table,mapping)
         worker_mappings = list(worker_by_table.values())
-        if len(worker_mappings) != len(prepared):
+        draining_tables=sorted(
+            set(worker_by_table)
+            -set(active_plan["by_table"])
+            -current_stateful_keys)
+        if draining_tables:
             log(
-                "PLAN RECOVERY active_tables=%d draining_tables=%s"
+                "PLAN RECOVERY active_tables=%d stateful_tables=%d "
+                "draining_tables=%s"
                 % (
-                    len(prepared),
-                    sorted(set(worker_by_table)-set(active_plan["by_table"])),
+                    len(prepared),len(current_stateful_keys),
+                    draining_tables,
                 )
             )
         enforce_resource_config(cfg,len(worker_mappings))
@@ -8738,7 +8771,11 @@ def run_cdc(
                 (mapping_key(mapping),0):threading.Event() for mapping in worker_mappings}
 
         now = time.time()
-        startup_retiring = set(worker_by_table)-set(active_plan["by_table"])
+        startup_retiring = (
+            set(worker_by_table)
+            -set(active_plan["by_table"])
+            -current_stateful_keys
+        )
         runtime = dict(stop=control["stop"],reader_ready=threading.Event(),errors=[],
                        error_lock=threading.Lock(),stream=None,source_uuid=str(source_uuid),source_seen=now,
                        source_data_seen=now,heartbeat_count=0,cdc_transactions=0,
@@ -8766,6 +8803,9 @@ def run_cdc(
                        active_plan_version=int(cfg.get("catalog_version",0)),
                        catalog_activation=dict(status="active",version=int(cfg.get("catalog_version",0))),
                        plans=recovered_plans,
+                       stateful_mappings=stateful_mappings,
+                       stateful_tasks=list(compiled_stateful),
+                       stateful_source_mappings=list(stateful_source_mappings),
                        pending_plan=None,deferred_plan=None,
                        validated_catalog_plans={},
                        worker_mappings=worker_mappings,
