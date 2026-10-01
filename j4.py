@@ -5543,6 +5543,91 @@ def ensure_hot_add_targets(cfg, candidate, added_sinks):
                     f"primary_key={pk_columns(mapping)}")
 
 
+def prepare_hot_stateful_additions(cfg, runtime, candidate):
+    additions=list(candidate.get("stateful_additions",()) or ())
+    if not additions:
+        return []
+    manifests=list(candidate.get("stateful_added_manifests",()) or ())
+    metadata=dict(candidate.get("stateful_source_metadata",{}) or {})
+    compiled=stateful_catalog_runtime.compile_catalog_tasks(
+        cfg,int(candidate["version"]),manifests,metadata,
+        create_missing=True,allow_missing=False)
+    expected={
+        item["task"]["sink_key"]:item["task"]["descriptor_hash"]
+        for item in additions
+    }
+    actual={
+        item["task"]["sink_key"]:item["task"]["descriptor_hash"]
+        for item in compiled
+    }
+    if actual!=expected:
+        raise RuntimeError(
+            "stateful hot-add target binding changed after CREATE/verify "
+            "expected=%r actual=%r" % (expected,actual))
+    con=open_state(cfg["state"])
+    try:
+        stateful_catalog_runtime.ensure_registration_safe(
+            con,cfg,compiled)
+        registered=stateful_catalog_runtime.register_compiled(
+            con,compiled)
+    finally:
+        con.close()
+    candidate["stateful_additions"]=registered
+    return registered
+
+
+def activate_stateful_additions(cfg, runtime, candidate):
+    additions=list(candidate.get("stateful_additions",()) or ())
+    if not additions:
+        return []
+    activated=[]
+    for item in additions:
+        task=item["task"]
+        mapping=item["mapping"]
+        key=mapping_key(mapping)
+        version=stateful_task_plan.writer_plan_version(
+            task["plan_version"])
+        identity=(version,key)
+        with runtime["plan_lock"]:
+            previous=runtime.setdefault(
+                "stateful_mappings",{}).get(identity)
+            if previous is not None and (
+                previous.get("_output_columns")!=mapping.get("_output_columns")
+                or previous.get("sr_table")!=mapping.get("sr_table")
+            ):
+                raise RuntimeError(
+                    "stateful hot-add writer identity changed: %r"
+                    % (identity,))
+            runtime["stateful_mappings"][identity]=mapping
+            runtime.setdefault(
+                "stateful_active_task_ids",set()).add(
+                    task["task_id"])
+            existing={
+                entry["task"]["task_id"]
+                for entry in runtime.setdefault(
+                    "stateful_tasks",[])
+            }
+            if task["task_id"] not in existing:
+                runtime["stateful_tasks"].append(item)
+
+        runtime_add_sink(
+            mapping,cfg,runtime,historical_snapshot=False)
+        thread=threading.Thread(
+            target=guarded_worker,
+            args=(stateful_task_worker,runtime,item,cfg),
+            name="stateful-"+str(item["kind"])+"-"+key)
+        runtime_thread_register(runtime,thread)
+        with runtime["plan_lock"]:
+            runtime.setdefault(
+                "stateful_worker_threads",{})[
+                    task["task_id"]]=thread
+        activated.append(task["task_id"])
+        log(
+            "STATEFUL HOT ADD ACTIVE task=%s sink=%s writer_version=%d"
+            % (task["task_id"],key,version))
+    return activated
+
+
 def catalog_activation_record(runtime, validation):
     record = {name:validation[name] for name in
               (
