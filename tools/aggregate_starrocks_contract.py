@@ -4,8 +4,8 @@
 The MySQL/binlog -> shared source-state boundary is already exercised by the
 daemon matrix. This focused contract starts at the durable source-state API and
 proves the new P8B path through fixed-W bootstrap, catch-up, aggregate outbox,
-ordinary j4 durable jobs, transaction Stream Load, VISIBLE acknowledgement,
-SQLite restart, and continued maintenance after ready.
+ordinary j4 durable jobs, either supported output protocol, VISIBLE
+acknowledgement, SQLite restart, and continued maintenance after ready.
 
 Only disposable isolated services are allowed.
 """
@@ -109,14 +109,16 @@ def descriptor_schema():
     ]
 
 
-def config(path):
+def config(path,load_mode):
     cfg=configuration()
     cfg["sr"]["database"]=DATABASE
     cfg.update(
         state=str(path),
+        load_mode=str(load_mode),
         key_partitions=4,
         batch_rows=10000,
         batch_bytes=1024*1024,
+        batch_ms=0,
         max_row_bytes=1024*1024,
         txn_rows=10000,
         txn_bytes=8*1024*1024,
@@ -128,10 +130,18 @@ def config(path):
         retry_max=6,
         pressure_max_seconds=30,
         commit_interval_ms=200,
+        writer_min=1,
+        writer_initial=1,
+        writer_max=1,
+        rowset_yellow=600,
+        rowset_red=900,
+        version_recovery_checks=2,
         duckdb_memory="64MB",
         catalog_macros=(),
         catalog_udfs=(),
     )
+    if cfg["load_mode"] not in {"transaction","merge_async"}:
+        raise ValueError("unsupported aggregate contract load mode")
     return cfg
 
 
@@ -196,44 +206,95 @@ def register_descriptor(con,ir):
         STATE_ID,CONSUMER_ID,descriptor_schema())
 
 
-def drain_target(con,mapping,cfg):
-    table=j4.mapping_key(mapping)
+def _target_runtime(table,cfg):
     stop=threading.Event()
-    runtime=dict(
+    now=time.time()
+    return dict(
         stop=stop,
+        control_lock=threading.RLock(),
         pressure_until={table:0},
         table_interval={table:cfg["commit_interval_ms"]/1000},
+        active_writers={table:1},
+        last_pressure={table:now},
+        last_scale={table:now},
+        version_recovery={table:False},
+        version_recovery_good={table:0},
+        resource_writer_cap=1,
+        quarantined_tables={},
+        load_events={table:threading.Event()},
     )
+
+
+def _drain_transaction(con,engine,handle,mapping,cfg,runtime):
+    table=j4.mapping_key(mapping)
+    delivery=j4.claim_table_delivery(con,table,cfg)
+    if delivery is None:
+        return False
+    if not j4.prepare_delivery(
+        con,engine,mapping,delivery,cfg):
+        raise RuntimeError(
+            "aggregate transaction could not reserve deterministic payload")
+    j4.load_transaction(
+        handle,con,mapping,delivery,cfg,runtime)
+    invisible=con.execute(
+        "SELECT COUNT(*) FROM load_parts "
+        "WHERE delivery_id=? AND visible=0",
+        (delivery,)).fetchone()[0]
+    if int(invisible):
+        raise RuntimeError(
+            "aggregate transaction returned before every part was VISIBLE")
+    j4.acknowledge_delivery(con,delivery)
+    return True
+
+
+def _drain_merge_async(con,engine,handle,mapping,cfg,runtime):
+    table=j4.mapping_key(mapping)
+    for lane in j4.merge_candidate_lanes(con,table):
+        delivery=j4.claim_cdc_bundle(
+            con,table,int(lane),cfg,runtime)
+        if delivery is None:
+            continue
+        if not j4.prepare_delivery(
+            con,engine,mapping,delivery,cfg):
+            raise RuntimeError(
+                "aggregate merge delivery could not reserve deterministic payload")
+        j4.merge_async_delivery(
+            handle,con,mapping,delivery,cfg,runtime)
+        invisible=con.execute(
+            "SELECT COUNT(*) FROM load_parts "
+            "WHERE delivery_id=? AND visible=0",
+            (delivery,)).fetchone()[0]
+        if int(invisible):
+            raise RuntimeError(
+                "aggregate merge returned before every part was VISIBLE")
+        j4.acknowledge_delivery(con,delivery)
+        return True
+    return False
+
+
+def drain_target(con,mapping,cfg):
+    table=j4.mapping_key(mapping)
+    runtime=_target_runtime(table,cfg)
     engine=j4.transform_engine(cfg)
     handle=j4.pycurl.Curl()
     deliveries=0
     try:
+        drain=(
+            _drain_merge_async
+            if cfg["load_mode"]=="merge_async"
+            else _drain_transaction)
         while True:
-            delivery=j4.claim_table_delivery(
-                con,table,cfg)
-            if delivery is None:
-                pending=con.execute(
-                    "SELECT COUNT(*) FROM active_jobs WHERE table_name=?",
-                    (table,)).fetchone()[0]
-                if not int(pending):
-                    break
-                raise RuntimeError(
-                    "aggregate target has pending jobs but no claimable delivery")
-            if not j4.prepare_delivery(
-                con,engine,mapping,delivery,cfg):
-                raise RuntimeError(
-                    "aggregate delivery could not reserve deterministic payload")
-            j4.load_transaction(
-                handle,con,mapping,delivery,cfg,runtime)
-            invisible=con.execute(
-                "SELECT COUNT(*) FROM load_parts "
-                "WHERE delivery_id=? AND visible=0",
-                (delivery,)).fetchone()[0]
-            if int(invisible):
-                raise RuntimeError(
-                    "aggregate transaction returned before every part was VISIBLE")
-            j4.acknowledge_delivery(con,delivery)
-            deliveries+=1
+            if drain(
+                con,engine,handle,mapping,cfg,runtime):
+                deliveries+=1
+                continue
+            pending=con.execute(
+                "SELECT COUNT(*) FROM active_jobs WHERE table_name=?",
+                (table,)).fetchone()[0]
+            if not int(pending):
+                break
+            raise RuntimeError(
+                "aggregate target has pending jobs but no claimable delivery")
     finally:
         handle.close()
         engine.close()
@@ -264,11 +325,11 @@ def assert_target(cfg,expected):
     return actual
 
 
-def run_contract(output):
+def run_contract(output,load_mode):
     with tempfile.TemporaryDirectory(
         prefix="m2s-aggregate-starrocks-") as td:
         path=Path(td)/"state.sqlite3"
-        cfg=config(path)
+        cfg=config(path,load_mode)
         create_target(cfg)
         mapping=bind_mapping(cfg)
         ir=plan()
@@ -452,7 +513,7 @@ def run_contract(output):
             format_version=1,
             kind="aggregate_starrocks_contract",
             starrocks_version=str(wait_ready(cfg)),
-            protocol="transaction",
+            protocol=cfg["load_mode"],
             fixed_w=fixed_w,
             generation_id=status["generation"]["generation_id"],
             descriptor_hash=descriptor["descriptor_hash"],
@@ -490,6 +551,10 @@ def main():
         "--isolated",action="store_true",
         help="required acknowledgement that services are disposable")
     parser.add_argument(
+        "--load-mode",choices=("transaction","merge_async"),
+        default="transaction",
+        help="StarRocks output protocol exercised by the aggregate contract")
+    parser.add_argument(
         "--output",type=Path,
         default=Path(
             "benchmark-results/aggregate-starrocks-contract.json"))
@@ -497,7 +562,7 @@ def main():
     if not args.isolated:
         raise SystemExit(
             "refuse to run aggregate StarRocks contract without --isolated")
-    run_contract(args.output)
+    run_contract(args.output,args.load_mode)
 
 
 if __name__=="__main__":
