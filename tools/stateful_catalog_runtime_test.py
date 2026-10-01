@@ -1,0 +1,149 @@
+#!/usr/bin/env python3
+from pathlib import Path
+import os
+import tempfile
+from unittest.mock import patch
+import sys
+
+import pyarrow as pa
+
+ROOT=Path(__file__).resolve().parents[1]
+sys.path.insert(0,str(ROOT))
+
+import j4
+import stateful_catalog_runtime
+import stateful_task_plan
+
+
+ORDERS_SIG=[
+    ("id","bigint","bigint","NO",None,""),
+    ("category","varchar","varchar(32)","NO","utf8mb4_bin",""),
+    ("amount","bigint","bigint","YES",None,""),
+]
+CUSTOMERS_SIG=[
+    ("id","bigint","bigint","NO",None,""),
+    ("name","varchar","varchar(64)","YES","utf8mb4_bin",""),
+]
+
+
+def checked_mapping():
+    return dict(
+        src_table="orders",
+        primary_key="id",
+        _schema=[
+            ("id",pa.int64()),
+            ("category",pa.large_string()),
+            ("amount",pa.int64()),
+        ],
+        _schema_signature=list(ORDERS_SIG),
+        _source_name_set=frozenset(
+            {"id","category","amount"}),
+        _source_index={
+            "id":0,"category":1,"amount":2},
+        _json_columns=set(),
+        _source_table_comment="",
+        _source_column_comments={},
+    )
+
+
+def hidden_customer():
+    return dict(
+        src_table="customers",
+        primary_key="id",
+        _source_only=True,
+        _schema=[
+            ("id",pa.int64()),
+            ("name",pa.large_string()),
+        ],
+        _schema_signature=list(CUSTOMERS_SIG),
+        _source_name_set=frozenset({"id","name"}),
+        _source_index={"id":0,"name":1},
+        _json_columns=set(),
+        _source_table_comment="",
+        _source_column_comments={},
+    )
+
+
+def main():
+    manifests=[
+        dict(
+            kind="aggregate",
+            sink="starrocks.agg",
+            target_table="agg",
+            source_relations=["orders"],
+            task_version=5,
+            sql=(
+                "SELECT category, COUNT(*) AS n "
+                "FROM mysql.orders GROUP BY category")),
+        dict(
+            kind="inner_join",
+            sink="starrocks.joined",
+            target_table="joined",
+            source_relations=["orders","customers"],
+            task_version=6,
+            sql=(
+                "SELECT o.amount AS amount,c.name AS name "
+                "FROM mysql.orders o JOIN mysql.customers c "
+                "ON o.id=c.id")),
+    ]
+    with patch.object(
+        stateful_catalog_runtime,
+        "_probe_source_mapping",
+        side_effect=lambda cfg,table: hidden_customer()
+    ) as probe:
+        scope=stateful_catalog_runtime.source_scope(
+            {},manifests,[checked_mapping()])
+    assert scope["required_sources"]==[
+        "orders","customers"]
+    assert [item["src_table"] for item in scope[
+        "capture_mappings"]]==["customers","orders"]
+    assert scope["source_metadata"]["orders"][
+        "primary_key"]==["id"]
+    assert scope["source_metadata"]["customers"][
+        "schema_signature"]==CUSTOMERS_SIG
+    assert probe.call_count==1
+
+    metadata=scope["source_metadata"]
+    aggregate_manifest=manifests[0]
+    aggregate_target=[
+        dict(
+            name="category",type="VARCHAR(32)",
+            nullable=False,key=True),
+        dict(
+            name="n",type="BIGINT",
+            nullable=False,key=False),
+    ]
+    compiled=stateful_task_plan.compile_task(
+        aggregate_manifest,11,"db",
+        metadata,aggregate_target)
+
+    with tempfile.TemporaryDirectory(
+        prefix="m2s-stateful-runtime-"
+    ) as td:
+        con=j4.init_state(
+            os.path.join(td,"state.sqlite3"))
+        registered=stateful_catalog_runtime.register_compiled(
+            con,[compiled])
+        assert registered[0]["task"]["status"]=="candidate"
+        durable=stateful_catalog_runtime.durable_mappings(con)
+        identity=(
+            compiled["task"]["plan_version"],
+            compiled["task"]["sink_key"])
+        assert identity in durable
+        retired=stateful_catalog_runtime.retire_absent(
+            con,{},[])
+        assert len(retired)==1
+        assert retired[0]["task"]["status"]=="retired"
+        assert stateful_catalog_runtime.durable_mappings(
+            con)[identity]["sr_table"]=="agg"
+        con.close()
+
+    print(
+        "stateful_catalog_runtime_test ok source_scope hidden_source "
+        "descriptor_register durable_mapping drop_retire",
+        flush=True,
+    )
+
+
+if __name__=="__main__":
+    main()
