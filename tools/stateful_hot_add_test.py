@@ -119,14 +119,11 @@ def main():
         stateful_dropped_sinks=["starrocks.drop"],
         stateful_additions=[],
     )
-    retired_calls=[]
+    drop_runtime["stateful_retire_frontiers"]={}
+    drop_runtime["stateful_retire_items"]={}
     with patch.object(
-        stateful_catalog_runtime,"retire_absent",
-        return_value=[drop]
-    ) as retire, patch.object(
-        j4,"runtime_mark_sink_retiring",
-        side_effect=lambda runtime,key,cfg:
-            retired_calls.append(key) or True
+        j4.source_state,"base_applied_seq",
+        return_value=37
     ), patch.object(
         j4,"activate_stateful_additions",
         return_value=[]
@@ -135,12 +132,63 @@ def main():
             None,{},drop_runtime,drop_candidate)
     assert cutover==dict(
         added=[],retired=["task-drop"])
-    assert drop_runtime["stateful_active_task_ids"]=={"task-keep"}
+    # The dropped task remains runnable only until its frozen W=37 frontier is
+    # target-visible. It is not retired at catalog cutover.
+    assert drop_runtime["stateful_active_task_ids"]=={
+        "task-keep","task-drop"}
     assert [entry["task"]["task_id"]
             for entry in drop_runtime["stateful_tasks"]]==["task-keep"]
-    assert retired_calls==["starrocks.drop"]
-    retire.assert_called_once_with(
-        None,{},[keep])
+    assert drop_runtime["stateful_retire_frontiers"]=={
+        "task-drop":37}
+    assert drop_runtime["stateful_retire_items"][
+        "task-drop"] is drop
+
+    drop["task"]["consumer_id"]="consumer-drop"
+    retire_calls=[]
+    with patch.object(
+        j4.source_state,"consumer_info",
+        return_value=dict(watermark=37)
+    ), patch.object(
+        j4,"stateful_stage_pending"
+    ), patch.object(
+        j4,"stateful_output_frontier",
+        return_value=36
+    ), patch.object(
+        stateful_catalog_runtime,"retire_task"
+    ) as retire, patch.object(
+        j4,"runtime_mark_sink_retiring"
+    ):
+        assert not j4.stateful_finish_retirement(
+            None,"aggregate",drop["task"],drop["mapping"],
+            {},drop_runtime,37)
+        retire.assert_not_called()
+
+    with patch.object(
+        j4.source_state,"consumer_info",
+        return_value=dict(watermark=37)
+    ), patch.object(
+        j4,"stateful_stage_pending"
+    ), patch.object(
+        j4,"stateful_output_frontier",
+        return_value=37
+    ), patch.object(
+        j4,"stateful_durable_task",
+        return_value=drop["task"]
+    ), patch.object(
+        stateful_catalog_runtime,"retire_task",
+        side_effect=lambda con,cfg,kind,task:
+            retire_calls.append((kind,task["task_id"]))
+    ), patch.object(
+        j4,"runtime_mark_sink_retiring",
+        return_value=True
+    ):
+        assert j4.stateful_finish_retirement(
+            None,"aggregate",drop["task"],drop["mapping"],
+            {},drop_runtime,37)
+    assert retire_calls==[("aggregate","task-drop")]
+    assert drop_runtime["stateful_active_task_ids"]=={"task-keep"}
+    assert drop_runtime["stateful_retire_frontiers"]=={}
+    assert drop_runtime["stateful_retire_items"]=={}
 
     generous=dict(
         load_mode="transaction",
@@ -170,7 +218,7 @@ def main():
 
     print(
         "stateful_hot_add_test ok transition writer_only_activation "
-        "online_drop_retirement namespaced_mapping resource_fence",
+        "online_drop_fixed_visible_frontier namespaced_mapping resource_fence",
         flush=True,
     )
 
