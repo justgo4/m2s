@@ -4,7 +4,7 @@
 
 目标：一次捕获源数据，已有任务持续更新；运行期间新增 SQL 和下游表，完成历史构建后持续增量维护。共享源镜像完整后，新任务正常情况下不再扫描 MySQL，也不默认复制整份基础数据。未来 MCP 自然语言入口复用同一套 SQL 校验与部署协议。
 
-**当前是可运行的 CDC/动态投影基线，目标中的共享源状态与有状态 SQL 引擎尚未完成。** 本文区分已有证据、待实现协议和研究候选；不宣称已达到物理极限、生产就绪或全面超过其他引擎。
+**当前已是可运行的 CDC + shared fixed-W 动态投影基线；有状态 SQL 引擎尚未完成。** shared 模式已经接入 authoritative source log/base、fixed-W hot-add、generation 生命周期和 drop/drain；legacy 模式仍保留 MySQL snapshot 路径。本文区分已有证据、待实现协议和研究候选；不宣称已达到物理极限、生产就绪或全面超过其他引擎。
 
 ## 1. 场景与待验证假说
 
@@ -18,10 +18,13 @@
 
 ## 2. 当前代码与证据
 
-- [j4.py](j4.py)、[cdc_catalog.py](cdc_catalog.py)：daemon、SQL catalog、动态部署。当前支持确定性的单源投影、过滤、宏和模型视图链；拒绝有状态 JOIN、聚合、窗口及跨源计划。**当前 hot-add 历史初始化仍启动 MySQL `snapshot_worker`。**
+- [j4.py](j4.py)、[cdc_catalog.py](cdc_catalog.py)：daemon、SQL catalog、动态部署。当前支持确定性的单源投影、过滤、宏和模型视图链；拒绝有状态 JOIN、聚合、窗口及跨源计划。`CDC_SHARED_SOURCE_STATE=1` 时，新 sink 历史从 shared fixed-W state 构建；legacy 模式仍使用 MySQL `snapshot_worker`。
+- hot-add / drop 已有持久 generation 生命周期：`building → history_staged → ready/retired`；drop 会先 drain 旧 durable jobs，再退出 worker。同名 sink re-add 与 retained sink SQL/filter/macro/UDF 语义变化目前 fail-closed，要求显式 rebuild/new generation。
 - 当前组件包括 Python 控制/恢复、C 解码/批处理、Arrow、DuckDB 和 SQLite。native 路径仍含 Python 网络/协议与 IPC 成本，不等于完整 C replication client 或零拷贝；是否替换组件由 profile 决定。
-- [incremental_contract.py](incremental_contract.py)：state identity / retention / Pareto 合同。\n- [source_state.py](source_state.py)：P6A/P6B correctness-first SQLite 协议实现，显式区分 authoritative log durable 与 base applied，提供 fixed-W pin/read/GC；**尚未接入 daemon 数据路径。**
-- [native/](native/)、[tools/](tools/)、[cdc_selftest.py](cdc_selftest.py)：解码差分、恢复、协议、故障注入和候选性能测量。
+- [incremental_contract.py](incremental_contract.py)：state identity / retention / Pareto 合同；[physical_state_catalog.py](physical_state_catalog.py) 持久化 semantic/backend/format/generation/readable-range/health/refs/pins，fixed-W pin 已按 state+owner 做重启幂等。
+- [source_state.py](source_state.py)：P6A/P6B correctness-first SQLite authoritative source state，已接入 daemon，显式区分 log durable 与 base applied，提供 fixed-W pin/read、durable consumer 和 GC。
+- [relational_ir.py](relational_ir.py)、[incremental_ir.py](incremental_ir.py)：当前 stateless SQL 的 canonical relational IR 和 delete/upsert retract IR；执行器仍沿用现有路径。
+- [native/](native/)、[tools/](tools/)、[cdc_selftest.py](cdc_selftest.py)：解码差分、恢复、协议、故障注入、randomized oracle 和候选性能测量。
 
 | 已验证范围 | 可核查证据 | 证据边界 |
 |---|---|---|
@@ -116,8 +119,8 @@ cost_vector = {
 |---|---|
 | P0–P3 / P10 | 保持现有差分/故障测试；定义上述事务、水位、完整性、未知请求和代际协议；跨目标原子性未证明则明确不承诺 |
 | **P6A/P6B** | **SQLite correctness-first 路径已接 daemon 并通过真实 E2E**：authoritative log durable 与 base applied 分离、fixed-W pin/read、版本 GC、crash replay 已工作；本次继续加入 durable consumer frontier。尚未完成 50M 规模存储选型、schema epoch 在线迁移、空间耗尽/compaction 长跑 |
-| **P6C 最小接口 + P7** | **shared 模式的单源投影 hot-add 已不再回源历史 SELECT，并通过 GTID ON/OFF × transaction/merge_async 真实 E2E、构建中强退和重启续建。** 仍需 10+ generation 并发取消/替换、旧 generation 远端 fence、更多 source scope/DDL 场景 |
-| **P8A/P8B** | **P8A 已有最小闭环：单源投影/过滤生成 canonical relational IR 与 stateless incremental IR；宏/UDF 版本进入语义依赖，delete/upsert + before-image 的 filter/projection retract 已有 NULL/DECIMAL/update 转换 oracle。执行器仍走现有路径。** 下一步做随机状态 oracle，再进入 COUNT/SUM/AVG、INNER JOIN |
+| **P6C 最小接口 + P7** | **shared 模式的单源投影 hot-add 已不再回源历史 SELECT，并通过 GTID ON/OFF × transaction/merge_async 真实 E2E、构建中强退和重启续建。** generation 的 fixed-W/pin 生命周期、drop/drain/retire、同名 re-add fail-closed、retained semantic-change rebuild gate 已进入主线。仍需 10+ generation 并发取消/替换、真正的在线 rebuild/new-generation、旧 generation 远端 fence、更多 source scope/DDL 场景 |
+| **P8A/P8B** | **P8A 已有最小闭环：单源投影/过滤生成 canonical relational IR 与 stateless incremental IR；宏/UDF 版本进入语义依赖，delete/upsert + before-image 的 filter/projection retract 已有 NULL/DECIMAL/update oracle，并新增固定 seed 的 5000-op randomized incremental/full-state oracle。执行器仍走现有路径。** 下一步进入 COUNT/SUM/AVG，再做 INNER JOIN |
 | **P9A/P9B/P9C** | 共享 arrangement/subview、整图策略、统计反馈与 GC；1/10/100 个语义相同/部分共享任务，验证只维护所需共享状态、慢任务取消后安全回收；比较共享开/关、固定 IVM/自适应、不同放置，其他语义与耐久性保持一致 |
 | P4–P5 | 按 profile 插入 event/transaction batching、布局融合、native socket/snapshot；同 raw binlog 差分先通过，再重复 Python/native A/B，报告两进程总 CPU/RSS 和 IPC 成本 |
 | **P11** | 固定机器 50M 初始行 + 50 rows/s，72h 并动态新增任务/注入故障；报告健康区间 P95/P99、违规数、恢复区间、time-to-ready、空间与版本债务；每个部署给可完成的预算，超预算明确拒绝/等待 |
