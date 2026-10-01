@@ -5632,7 +5632,8 @@ def catalog_activation_record(runtime, validation):
     record = {name:validation[name] for name in
               (
                   'status','version','reason','added_sinks','dropped_sinks',
-                  'history_mode'
+                  'stateful_added_sinks','stateful_dropped_sinks',
+                  'stateful_changed_sinks','history_mode'
               ) if name in validation}
     with runtime['plan_lock']:
         runtime['catalog_activation'] = record
@@ -5983,7 +5984,9 @@ def activate_pending_plan(con, decoder, cfg, runtime, position):
         meta_set(con,"plan_cutover_time",time.time())
         meta_set(
             con,"plan_history_mode",
-            "snapshot_plus_live_cdc" if added else "forward")
+            "snapshot_plus_live_cdc" if added else
+            "stateful_fixed_w" if candidate.get("stateful_additions")
+            else "forward")
     with runtime["plan_lock"]:
         runtime["active_plan_version"] = version
         runtime["pending_plan"] = None
@@ -5994,11 +5997,20 @@ def activate_pending_plan(con, decoder, cfg, runtime, position):
         runtime_capture_sources(runtime,candidate)[0])
     for key in added:
         runtime_add_sink(candidate["by_table"][key],cfg,runtime)
-    catalog_activation_record(runtime,dict(status="active",version=version))
+    stateful_activated=activate_stateful_additions(
+        cfg,runtime,candidate)
+    catalog_activation_record(
+        runtime,dict(
+            status="active",version=version,
+            stateful_added_sinks=[
+                item["task"]["sink_key"]
+                for item in candidate.get("stateful_additions",())
+            ]))
     wake_loaders(runtime)
     log(
         f"PLAN ACTIVE version={version} cutover={position[0]}:{position[1]} "
         f"added_sinks={added} dropped_sinks={dropped} "
+        f"stateful_added={stateful_activated} "
         "old durable jobs continue on stamped plan_version")
     return candidate
 
