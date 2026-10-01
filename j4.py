@@ -6956,6 +6956,17 @@ def state_gc_worker(cfg, runtime):
                             DELETE FROM field_overflow
                             WHERE action='null' AND created<?
                         """,(metadata_cutoff,))
+                    stateful_gc=stateful_physical_registry.gc_retired(
+                        con,limit=64)
+                    if stateful_gc and cfg.get("detail_logs",False):
+                        log(
+                            "STATEFUL PHYSICAL GC count=%d tasks=%s"
+                            % (
+                                len(stateful_gc),
+                                ",".join(
+                                    item["task_id"]
+                                    for item in stateful_gc),
+                            ))
                     if cfg.get("shared_source_state",False):
                         incomplete = source_state.status(con)["incomplete_relations"]
                         if not incomplete:
@@ -9043,6 +9054,8 @@ def stateful_finish_retirement(
         con,cfg,kind,durable)
     stateful_catalog_runtime.clear_retirement(
         con,task["task_id"])
+    reclaimed=stateful_physical_registry.gc_retired(
+        con,limit=16)
     key=mapping_key(mapping)
     with runtime["plan_lock"]:
         runtime.get(
@@ -9058,9 +9071,10 @@ def stateful_finish_retirement(
         runtime,key,cfg)
     log(
         "STATEFUL HOT DROP RETIRED task=%s sink=%s source_seq=%d "
-        "visible_frontier=%d target_preserved=1"
+        "visible_frontier=%d target_preserved=1 reclaimed_state=%d"
         % (
             task["task_id"],key,int(frontier),visible,
+            len(reclaimed),
         ))
     return True
 
