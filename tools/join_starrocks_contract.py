@@ -20,7 +20,7 @@ import pyarrow as pa
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 
-import aggregate_target_mapping
+import join_target_mapping
 import j4
 import join_job_bridge
 import join_outbox
@@ -71,7 +71,7 @@ def spec():
 def public_schema():
     return pa.schema([
         pa.field(
-            join_job_bridge.PAIR_COLUMN,
+            join_target_mapping.PAIR_COLUMN,
             pa.string(),nullable=False),
         pa.field(
             "customer_name",pa.string()),
@@ -128,14 +128,14 @@ def create_target(cfg):
         +DATABASE+"."+TARGET_TABLE)
     ddl=(
         "CREATE TABLE "+DATABASE+"."+TARGET_TABLE+"("
-        +join_job_bridge.PAIR_COLUMN
+        +join_target_mapping.PAIR_COLUMN
         +" VARCHAR(1024) NOT NULL,"
         "customer_name VARCHAR(64) NULL,"
         "amount BIGINT NULL"
         ") PRIMARY KEY("
-        +join_job_bridge.PAIR_COLUMN+") "
+        +join_target_mapping.PAIR_COLUMN+") "
         "DISTRIBUTED BY HASH("
-        +join_job_bridge.PAIR_COLUMN+") BUCKETS 1 "
+        +join_target_mapping.PAIR_COLUMN+") BUCKETS 1 "
         'PROPERTIES("replication_num"="1")'
     )
     deadline=time.monotonic()+90
@@ -154,14 +154,17 @@ def create_target(cfg):
 
 
 def bind_mapping(cfg):
-    mapping=aggregate_target_mapping.build(
-        SINK_KEY,TARGET_TABLE,public_schema(),
-        join_job_bridge.PAIR_COLUMN,
+    mapping=join_target_mapping.build(
+        SINK_KEY,TARGET_TABLE,
+        pa.schema([
+            pa.field("customer_name",pa.string()),
+            pa.field("amount",pa.int64()),
+        ]),
         plan_version=PLAN_VERSION)
     rows,_=execute(
         cfg,"SHOW COLUMNS FROM "
         +DATABASE+"."+TARGET_TABLE)
-    mapping=aggregate_target_mapping.bind_target(
+    mapping=join_target_mapping.bind_target(
         mapping,{str(row[0]):row for row in rows})
     return join_job_bridge.validate_mapping(
         mapping)
@@ -293,11 +296,11 @@ def target_rows(cfg):
     rows,_=execute(
         cfg,
         "SELECT "
-        +join_job_bridge.PAIR_COLUMN
+        +join_target_mapping.PAIR_COLUMN
         +",customer_name,amount FROM "
         +DATABASE+"."+TARGET_TABLE
         +" ORDER BY "
-        +join_job_bridge.PAIR_COLUMN)
+        +join_target_mapping.PAIR_COLUMN)
     result=[
         dict(
             pair_id=str(row[0]),
@@ -510,7 +513,7 @@ def run_contract(output,load_mode):
             kind="join_starrocks_contract",
             starrocks_version=str(wait_ready(cfg)),
             protocol=cfg["load_mode"],
-            pair_key_column=join_job_bridge.PAIR_COLUMN,
+            pair_key_column=join_target_mapping.PAIR_COLUMN,
             bootstrap_deliveries=bootstrap_deliveries,
             update_deliveries=update_deliveries,
             delete_deliveries=delete_deliveries,
