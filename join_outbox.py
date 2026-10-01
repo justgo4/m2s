@@ -6,12 +6,18 @@ Each source_seq has a marker even when it produces no output delta. Pair identit
 is the stable (left source PK, right source PK) identity from join_state, so
 duplicate projected rows remain independently retractable.
 """
+import base64
 import contextlib
 import hashlib
 import pickle
 import time
 
 import join_state
+
+
+IDENTITY_FORMAT_LEGACY="pair-base64-v1"
+IDENTITY_FORMAT_HASH="sha256-hex-checked-v1"
+DEFAULT_IDENTITY_FORMAT=IDENTITY_FORMAT_HASH
 
 
 @contextlib.contextmanager
@@ -39,6 +45,7 @@ def install(con):
             plan_version INTEGER NOT NULL,
             generation_id TEXT NOT NULL,
             fixed_w INTEGER NOT NULL,
+            identity_format TEXT NOT NULL DEFAULT 'sha256-hex-checked-v1',
             visible_seq INTEGER NOT NULL,
             created REAL NOT NULL,
             updated REAL NOT NULL);
@@ -66,15 +73,45 @@ def install(con):
                 ON DELETE CASCADE);
         CREATE INDEX IF NOT EXISTS join_output_pending
             ON join_output_commits(consumer_id,visible,source_seq);
+        CREATE TABLE IF NOT EXISTS join_output_identities(
+            consumer_id TEXT NOT NULL
+                REFERENCES join_output_streams(consumer_id)
+                ON DELETE CASCADE,
+            target_id TEXT NOT NULL,
+            pair_id BLOB NOT NULL,
+            created REAL NOT NULL,
+            PRIMARY KEY(consumer_id,target_id),
+            UNIQUE(consumer_id,pair_id));
     """)
+    columns={
+        str(row[1]) for row in con.execute(
+            "PRAGMA table_info(join_output_streams)").fetchall()
+    }
+    if "identity_format" not in columns:
+        con.execute(
+            "ALTER TABLE join_output_streams "
+            "ADD COLUMN identity_format TEXT NOT NULL "
+            "DEFAULT 'pair-base64-v1'")
 
 
 def ensure_installed(con):
-    if con.execute("""
+    stream=con.execute("""
         SELECT 1 FROM sqlite_master
         WHERE type='table' AND name='join_output_streams'
-    """).fetchone():
+    """).fetchone()
+    identities=con.execute("""
+        SELECT 1 FROM sqlite_master
+        WHERE type='table' AND name='join_output_identities'
+    """).fetchone()
+    columns={
+        str(row[1]) for row in con.execute(
+            "PRAGMA table_info(join_output_streams)").fetchall()
+    } if stream else set()
+    if stream and identities and "identity_format" in columns:
         return
+    if con.in_transaction:
+        raise RuntimeError(
+            "JOIN outbox schema migration is required before transactional use")
     install(con)
 
 
@@ -88,7 +125,7 @@ def _text(value,name):
 def stream_info(con,consumer_id):
     row=con.execute("""
         SELECT state_id,plan_version,generation_id,fixed_w,
-               visible_seq,created,updated
+               identity_format,visible_seq,created,updated
         FROM join_output_streams
         WHERE consumer_id=?
     """,(_text(consumer_id,"consumer_id"),)).fetchone()
@@ -100,9 +137,10 @@ def stream_info(con,consumer_id):
         plan_version=int(row[1]),
         generation_id=str(row[2]),
         fixed_w=int(row[3]),
-        visible_seq=int(row[4]),
-        created=float(row[5]),
-        updated=float(row[6]),
+        identity_format=str(row[4]),
+        visible_seq=int(row[5]),
+        created=float(row[6]),
+        updated=float(row[7]),
     )
 
 
@@ -124,11 +162,11 @@ def ensure_stream(
             con.execute("""
                 INSERT INTO join_output_streams(
                     consumer_id,state_id,plan_version,generation_id,
-                    fixed_w,visible_seq,created,updated)
-                VALUES(?,?,?,?,?,?,?,?)
+                    fixed_w,identity_format,visible_seq,created,updated)
+                VALUES(?,?,?,?,?,?,?,?,?)
             """,(
                 consumer_id,state_id,plan_version,generation_id,
-                fixed_w,fixed_w-1,now,now))
+                fixed_w,DEFAULT_IDENTITY_FORMAT,fixed_w-1,now,now))
         return stream_info(con,consumer_id)
     expected=(state_id,plan_version,generation_id,fixed_w)
     actual=(
@@ -138,6 +176,61 @@ def ensure_stream(
         raise RuntimeError(
             "JOIN output stream identity changed across restart")
     return current
+
+
+def target_id(pair_id,identity_format=DEFAULT_IDENTITY_FORMAT):
+    pair_id=bytes(pair_id)
+    identity_format=str(identity_format)
+    if identity_format==IDENTITY_FORMAT_LEGACY:
+        return base64.urlsafe_b64encode(pair_id).decode("ascii")
+    if identity_format==IDENTITY_FORMAT_HASH:
+        return hashlib.sha256(pair_id).hexdigest()
+    raise RuntimeError(
+        "unsupported JOIN target identity format: "+identity_format)
+
+
+def _register_pair_identity_locked(con,consumer_id,pair_id):
+    consumer_id=_text(consumer_id,"consumer_id")
+    pair_id=bytes(pair_id)
+    stream=stream_info(con,consumer_id)
+    identity_format=stream["identity_format"]
+    value=target_id(pair_id,identity_format)
+    if identity_format==IDENTITY_FORMAT_LEGACY:
+        return value
+    row=con.execute("""
+        SELECT pair_id FROM join_output_identities
+        WHERE consumer_id=? AND target_id=?
+    """,(consumer_id,value)).fetchone()
+    if row is not None:
+        if bytes(row[0])!=pair_id:
+            raise RuntimeError(
+                "JOIN target identity collision; exact pair identity differs "
+                "for target_id="+value)
+        return value
+    con.execute("""
+        INSERT INTO join_output_identities(
+            consumer_id,target_id,pair_id,created)
+        VALUES(?,?,?,?)
+    """,(consumer_id,value,pair_id,time.time()))
+    return value
+
+
+def target_id_for_pair(con,consumer_id,pair_id):
+    consumer_id=_text(consumer_id,"consumer_id")
+    pair_id=bytes(pair_id)
+    stream=stream_info(con,consumer_id)
+    value=target_id(pair_id,stream["identity_format"])
+    if stream["identity_format"]==IDENTITY_FORMAT_LEGACY:
+        return value
+    row=con.execute("""
+        SELECT pair_id FROM join_output_identities
+        WHERE consumer_id=? AND target_id=?
+    """,(consumer_id,value)).fetchone()
+    if row is None or bytes(row[0])!=pair_id:
+        raise RuntimeError(
+            "JOIN target identity registry is missing or inconsistent "
+            "for target_id="+value)
+    return value
 
 
 def _digest(kind,rows):
@@ -212,6 +305,9 @@ def seed_bootstrap(
         for item in join_state.read_pairs(con,state_id)
     ]
     with transaction(con):
+        for pair_id,_,_ in rows:
+            _register_pair_identity_locked(
+                con,consumer_id,pair_id)
         _insert_commit(
             con,consumer_id,int(fixed_w),
             "bootstrap",rows)
@@ -247,6 +343,9 @@ def enqueue_incremental(
             pickle.dumps(row,protocol=5),
         ))
     with transaction(con):
+        for pair_id,_,_ in rows:
+            _register_pair_identity_locked(
+                con,consumer_id,pair_id)
         _insert_commit(
             con,consumer_id,int(source_seq),
             "incremental",rows)
