@@ -264,6 +264,13 @@ def acquire_reusable_state(
             if not physically_reusable(
                     state, backend=backend, format_tag=format_tag):
                 continue
+            if state.get("metadata",{}).get(
+                "version_model"
+            )=="current_only":
+                # A logical catalog pin cannot retain bytes in a mutable
+                # current-only backing store. Such backends must expose an
+                # atomic copy/clone primitive instead.
+                continue
             chosen = state
             break
         if chosen is None:
@@ -389,6 +396,12 @@ def state_refs(con, instance_id):
 
 def pin_state(con, instance_id, owner, watermark):
     state = state_info(con, instance_id)
+    if state.get("metadata",{}).get(
+        "version_model"
+    )=="current_only":
+        raise RuntimeError(
+            "current-only physical state cannot satisfy a durable fixed-W pin; "
+            "use the backend atomic clone/copy primitive")
     instance_id = str(instance_id)
     owner = _text(owner, "owner")
     watermark = int(watermark)
