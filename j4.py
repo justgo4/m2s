@@ -5769,7 +5769,7 @@ def runtime_retiring_worker_done(runtime, table, cfg):
     return finalized
 
 
-def runtime_add_sink(mapping, cfg, runtime):
+def runtime_add_sink(mapping, cfg, runtime, historical_snapshot=True):
     key = mapping_key(mapping)
     now = time.time()
     with runtime["control_lock"]:
@@ -5835,27 +5835,36 @@ def runtime_add_sink(mapping, cfg, runtime):
                 args=(table_delivery_worker,runtime,mapping,cfg),
                 name=f"load-{key}"))
 
-    executor = runtime.get("snapshot_executor")
-    if executor is None:
-        raise RuntimeError("snapshot executor is unavailable during online sink add")
-    if cfg.get("shared_source_state",False):
-        probe = open_state(cfg["state"])
-        try:
-            source_state.relation_info(probe,source_relation_key(cfg,mapping))
-        except KeyError as exc:
+    if historical_snapshot:
+        executor = runtime.get("snapshot_executor")
+        if executor is None:
             raise RuntimeError(
-                "hot-add source relation is outside the mirrored source scope; "
-                "restart/rebuild is required to expand source scope"
-            ) from exc
-        finally:
-            probe.close()
-        executor.submit(guarded_worker,shared_snapshot_worker,runtime,mapping,cfg)
-        snapshot_mode = "shared_fixed_w"
+                "snapshot executor is unavailable during online sink add")
+        if cfg.get("shared_source_state",False):
+            probe = open_state(cfg["state"])
+            try:
+                source_state.relation_info(
+                    probe,source_relation_key(cfg,mapping))
+            except KeyError as exc:
+                raise RuntimeError(
+                    "hot-add source relation is outside the mirrored source "
+                    "scope; restart/rebuild is required to expand source scope"
+                ) from exc
+            finally:
+                probe.close()
+            executor.submit(
+                guarded_worker,shared_snapshot_worker,
+                runtime,mapping,cfg)
+            snapshot_mode = "shared_fixed_w"
+        else:
+            executor.submit(
+                guarded_worker,snapshot_worker,
+                runtime,mapping,cfg)
+            snapshot_mode = "mysql"
     else:
-        executor.submit(guarded_worker,snapshot_worker,runtime,mapping,cfg)
-        snapshot_mode = "mysql"
+        snapshot_mode = "stateful_generation"
     log(
-        f"HOT ADD WORKERS sink={key} source={mapping['src_table']} "
+        f"HOT ADD WORKERS sink={key} source={mapping.get('src_table','stateful')} "
         f"target={mapping['sr_table']} writer_cap={cap} snapshot={snapshot_mode}")
     return True
 
