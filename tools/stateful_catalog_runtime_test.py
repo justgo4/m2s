@@ -27,6 +27,17 @@ CUSTOMERS_SIG=[
 ]
 
 
+def expect_error(function,error=Exception,contains=None):
+    try:
+        function()
+    except error as exc:
+        if contains is not None and contains not in str(exc):
+            raise AssertionError(
+                "error does not contain %r: %s" % (contains,exc))
+        return
+    raise AssertionError("expected "+error.__name__)
+
+
 def checked_mapping():
     return dict(
         src_table="orders",
@@ -192,11 +203,24 @@ def main():
         assert retired[0]["task"]["status"]=="retired"
         assert stateful_catalog_runtime.durable_mappings(
             con)[identity]["sr_table"]=="agg"
+        expect_error(
+            lambda: stateful_catalog_runtime.ensure_registration_safe(
+                con,{},[compiled]),
+            RuntimeError,
+            "terminal stateful task cannot be revived")
+        corrupt=dict(compiled)
+        corrupt["task"]=dict(
+            compiled["task"],descriptor_hash="corrupt")
+        expect_error(
+            lambda: stateful_catalog_runtime.ensure_registration_safe(
+                con,{},[corrupt]),
+            RuntimeError,
+            "different semantics")
         con.close()
 
     print(
         "stateful_catalog_runtime_test ok source_scope hidden_source "
-        "target_inference monotonic_source_scope descriptor_register durable_mapping drop_retire",
+        "target_inference monotonic_source_scope descriptor_register durable_mapping drop_retire terminal_fence",
         flush=True,
     )
 
