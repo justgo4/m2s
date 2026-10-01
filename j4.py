@@ -1299,50 +1299,53 @@ def source_base_catalog_instance_id(info):
 
 
 def sync_source_base_catalog(con):
-    applied = source_state.base_applied_seq(con)
-    physical_min = source_state.min_readable_seq(con)
     result = []
-    tables = [
-        row[0] for row in con.execute(
-            "SELECT table_name FROM source_relations ORDER BY table_name")
-    ]
-    for table_name in tables:
-        info = source_state.relation_info(con,table_name)
-        complete = info["complete_seq"]
-        minimum = (
-            applied if complete is None
-            else max(int(complete),int(physical_min))
-        )
-        spec = source_base_catalog_spec(info)
-        instance_id = source_base_catalog_instance_id(info)
-        metadata = dict(
-            source_relation=str(table_name),
-            source_epoch=str(info["source_epoch"]),
-            schema_hash=str(info["schema_hash"]),
-            pin_authority="source_state",
-        )
-        state = physical_state_catalog.ensure_state(
-            con,spec,"sqlite-source-state","source-state-v1",
-            applied,min_readable_watermark=minimum,
-            generation=1,
-            health="ready" if complete is not None else "building",
-            metadata=metadata,instance_id=instance_id)
-        # Re-sync/restart must never move the persisted physical history
-        # frontier backwards, even when the backing source store still retains
-        # more history than the catalog promises to consumers.
-        minimum = max(
-            int(minimum),
-            int(state["min_readable_watermark"]))
-        state = physical_state_catalog.advance_state(
-            con,instance_id,applied,
-            min_readable_watermark=minimum)
-        desired = "ready" if complete is not None else "building"
-        if state["health"] != desired:
-            state = physical_state_catalog.set_health(
-                con,instance_id,desired)
-        physical_state_catalog.retain_state(
-            con,instance_id,"source-state:"+str(table_name),"owner")
-        result.append(state)
+    # Multiple shared snapshot workers can call this concurrently through
+    # separate SQLite connections. Keep source watermarks, existing physical
+    # frontiers, monotonic advancement, health and owner refs in one IMMEDIATE
+    # transaction so no worker can advance the physical frontier between
+    # another worker's read and write.
+    with physical_state_catalog.transaction(con):
+        applied = source_state.base_applied_seq(con)
+        physical_min = source_state.min_readable_seq(con)
+        tables = [
+            row[0] for row in con.execute(
+                "SELECT table_name FROM source_relations ORDER BY table_name")
+        ]
+        for table_name in tables:
+            info = source_state.relation_info(con,table_name)
+            complete = info["complete_seq"]
+            minimum = (
+                applied if complete is None
+                else max(int(complete),int(physical_min))
+            )
+            spec = source_base_catalog_spec(info)
+            instance_id = source_base_catalog_instance_id(info)
+            metadata = dict(
+                source_relation=str(table_name),
+                source_epoch=str(info["source_epoch"]),
+                schema_hash=str(info["schema_hash"]),
+                pin_authority="source_state",
+            )
+            state = physical_state_catalog.ensure_state(
+                con,spec,"sqlite-source-state","source-state-v1",
+                applied,min_readable_watermark=minimum,
+                generation=1,
+                health="ready" if complete is not None else "building",
+                metadata=metadata,instance_id=instance_id)
+            minimum = max(
+                int(minimum),
+                int(state["min_readable_watermark"]))
+            state = physical_state_catalog.advance_state(
+                con,instance_id,applied,
+                min_readable_watermark=minimum)
+            desired = "ready" if complete is not None else "building"
+            if state["health"] != desired:
+                state = physical_state_catalog.set_health(
+                    con,instance_id,desired)
+            physical_state_catalog.retain_state(
+                con,instance_id,"source-state:"+str(table_name),"owner")
+            result.append(state)
     return result
 
 
