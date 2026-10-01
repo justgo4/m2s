@@ -5639,12 +5639,37 @@ def ensure_hot_add_targets(cfg, candidate, added_sinks):
                     f"primary_key={pk_columns(mapping)}")
 
 
+def ensure_stateful_hot_add_targets_empty(cfg, additions, allow_missing=False):
+    additions=list(additions or ())
+    if not additions:
+        return
+    with mysql_connect(cfg,target=True) as target:
+        with target.cursor() as cur:
+            for item in additions:
+                task=item["task"]
+                table=str(task["target_table"])
+                if not target_table_exists(cur,cfg,table):
+                    if allow_missing:
+                        continue
+                    raise RuntimeError(
+                        "stateful hot-add target disappeared before activation: "
+                        +table)
+                cur.execute(
+                    "SELECT 1 FROM "+sql_name(table,True)+" LIMIT 1")
+                if cur.fetchone():
+                    raise RuntimeError(
+                        "stateful hot-add target is non-empty; refuse to merge "
+                        "unknown history: "+table)
+
+
 def prepare_hot_stateful_additions(cfg, runtime, candidate):
     additions=list(candidate.get("stateful_additions",()) or ())
     if not additions:
         return []
     manifests=list(candidate.get("stateful_added_manifests",()) or ())
     metadata=dict(candidate.get("stateful_source_metadata",{}) or {})
+    ensure_stateful_hot_add_targets_empty(
+        cfg,additions,allow_missing=True)
     compiled=stateful_catalog_runtime.compile_catalog_tasks(
         cfg,int(candidate["version"]),manifests,metadata,
         create_missing=True,allow_missing=False)
@@ -5660,6 +5685,8 @@ def prepare_hot_stateful_additions(cfg, runtime, candidate):
         raise RuntimeError(
             "stateful hot-add target binding changed after CREATE/verify "
             "expected=%r actual=%r" % (expected,actual))
+    ensure_stateful_hot_add_targets_empty(
+        cfg,compiled,allow_missing=False)
     con=open_state(cfg["state"])
     try:
         stateful_catalog_runtime.ensure_registration_safe(
@@ -5684,6 +5711,8 @@ def activate_stateful_additions(cfg, runtime, candidate):
     additions=list(candidate.get("stateful_additions",()) or ())
     if not additions:
         return []
+    ensure_stateful_hot_add_targets_empty(
+        cfg,additions,allow_missing=False)
     activated=[]
     for item in additions:
         task=item["task"]
