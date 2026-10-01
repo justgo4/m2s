@@ -6,6 +6,7 @@ Each side scans the pinned relation independently with its own durable cursor;
 JOIN output becomes readable only after both sides are complete.
 """
 import join_ir
+import join_log_consumer
 import join_state
 import source_state
 
@@ -96,3 +97,41 @@ def process_next_chunk(
         nrows=int(table.num_rows),
         cursor=updated[side+"_cursor"],
     )
+
+
+def activate_consumer(
+        con,consumer_id,plan_version,ir,state_id,pin_id,
+        generation_id=None
+):
+    join_ir.validate_ir(ir)
+    consumer_id=_text(consumer_id,"consumer_id")
+    state_id=_text(state_id,"state_id")
+    pin_id=_text(pin_id,"pin_id")
+    fixed_w=source_state.pin_watermark(con,pin_id)
+    state=join_state.state_info(con,state_id)
+    if not state["bootstrap_complete"]:
+        raise RuntimeError(
+            "cannot activate JOIN consumer before bootstrap completes")
+    if int(state["watermark"])!=int(fixed_w):
+        raise RuntimeError(
+            "JOIN state watermark differs from fixed-W pin")
+    if state["spec_hash"]!=join_state.semantic_id(
+        join_ir.state_spec(ir)
+    ):
+        raise RuntimeError(
+            "JOIN state semantics differ before consumer activation")
+
+    con.execute("BEGIN IMMEDIATE")
+    try:
+        if int(source_state.pin_watermark(con,pin_id))!=int(fixed_w):
+            raise RuntimeError(
+                "JOIN fixed-W pin changed before consumer activation")
+        consumer=join_log_consumer.ensure_consumer(
+            con,consumer_id,plan_version,ir,state_id,fixed_w,
+            generation_id=generation_id)
+        source_state.release_pin(con,pin_id)
+        con.execute("COMMIT")
+    except BaseException:
+        con.execute("ROLLBACK")
+        raise
+    return consumer
