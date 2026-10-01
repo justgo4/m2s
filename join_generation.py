@@ -10,6 +10,7 @@ import join_bootstrap
 import join_ir
 import join_log_consumer
 import join_outbox
+import join_physical_state
 import join_state
 import source_state
 import task_generation
@@ -47,6 +48,21 @@ def _validate_existing_consumer(
         raise RuntimeError(
             "JOIN generation consumer moved behind fixed-W")
     return consumer
+
+
+def _build_or_clone(con,state_id,ir,pin):
+    try:
+        join_state.state_info(
+            con,state_id)
+    except KeyError:
+        reused=join_physical_state.clone_reusable_current(
+            con,state_id,ir,int(pin["watermark"]),
+            generation=1)
+        if reused is not None:
+            return reused["state"],True
+    state=join_bootstrap.ensure_build(
+        con,state_id,ir,pin["pin_id"])
+    return state,False
 
 
 def begin(
@@ -97,11 +113,12 @@ def begin(
         ):
             raise RuntimeError(
                 "JOIN generation source pin changed across restart")
-        state=join_bootstrap.ensure_build(
-            con,state_id,ir,pin["pin_id"])
+        state,reused=_build_or_clone(
+            con,state_id,ir,pin)
         return dict(
             generation=existing,pin=pin,state=state,
-            phase="bootstrap")
+            phase="bootstrap",
+            reused_physical=bool(reused))
 
     owner=task_generation.generation_id(
         sink_key,plan_version)
@@ -110,8 +127,8 @@ def begin(
     generation=task_generation.ensure_build_multi(
         con,sink_key,plan_version,relations,
         pin["watermark"],pin["pin_id"])
-    state=join_bootstrap.ensure_build(
-        con,state_id,ir,pin["pin_id"])
+    state,reused=_build_or_clone(
+        con,state_id,ir,pin)
     if int(state["watermark"])!=int(
         generation["fixed_w"]
     ):
@@ -119,7 +136,8 @@ def begin(
             "JOIN state fixed-W differs from task generation")
     return dict(
         generation=generation,pin=pin,state=state,
-        phase="bootstrap")
+        phase="bootstrap",
+        reused_physical=bool(reused))
 
 
 def process_next_chunk(
