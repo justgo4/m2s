@@ -189,6 +189,9 @@ def main():
     ), patch.object(
         stateful_catalog_runtime,"clear_retirement"
     ) as cleared, patch.object(
+        j4.stateful_physical_registry,"gc_retired",
+        return_value=[]
+    ), patch.object(
         j4,"runtime_mark_sink_retiring",
         return_value=True
     ):
