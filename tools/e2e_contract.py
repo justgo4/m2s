@@ -664,15 +664,23 @@ def main():
             readded = subprocess.run(
                 [sys.executable, str(ROOT / 'j4.py'), 'sql', str(readd_file)],
                 env=env, capture_output=True, timeout=120)
-            if readded.returncode:
+            try:
+                readd_response = json.loads(readded.stdout.decode())
+            except Exception as exc:
                 raise RuntimeError(
-                    're-add validation command failed unexpectedly; status='
-                    + str(readded.returncode) + ' diagnostic='
-                    + readded.stdout.decode(errors='replace')[-3000:])
-            readd_response = json.loads(readded.stdout.decode())
+                    're-add validation did not return JSON; status='
+                    + str(readded.returncode) + ' stdout='
+                    + readded.stdout.decode(errors='replace')[-3000:]
+                    + ' stderr='
+                    + readded.stderr.decode(errors='replace')[-3000:]
+                ) from exc
             readd_activation = (
                 ((readd_response.get('result') or {}).get('publish') or {})
                 .get('activation') or {})
+            if readded.returncode == 0:
+                raise AssertionError(
+                    'same-name sink re-add unexpectedly returned success: '
+                    + json.dumps(readd_response, sort_keys=True))
             if (
                 readd_activation.get('status') != 'rebuild_required'
                 or 'durable prior table_state'
