@@ -36,7 +36,7 @@ def compile_query(sql=None):
             'AVG("amount") AS "mean" '
             'FROM arrow_batch WHERE "active"=1 GROUP BY "category"'
         ),
-        source_filter='"amount">-1000',
+        source_filter='"amount" IS NULL OR "amount">-1000',
     )
 
 

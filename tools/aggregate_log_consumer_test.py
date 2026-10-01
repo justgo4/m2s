@@ -62,7 +62,7 @@ def ir():
         'COUNT("amount") AS "nn",SUM("amount") AS "total",'
         'AVG("amount") AS "mean" '
         'FROM arrow_batch WHERE "active"=1 GROUP BY "category"',
-        source_filter='"amount">-1000',
+        source_filter='"amount" IS NULL OR "amount">-1000',
     )
 
 
@@ -168,7 +168,7 @@ def main():
             "db.orders",SCHEMA_SIG,
             'SELECT "category",COUNT(*) AS "n" '
             'FROM arrow_batch GROUP BY "category"',
-            source_filter='"amount">-1000',
+            source_filter='"amount" IS NULL OR "amount">-1000',
         )
         try:
             aggregate_log_consumer.ensure_consumer(
