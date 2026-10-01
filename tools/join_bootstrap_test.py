@@ -13,6 +13,7 @@ sys.path.insert(0,str(ROOT))
 import join_bootstrap
 import join_ir
 import join_log_consumer
+import join_outbox
 import join_state
 import source_state
 
@@ -205,6 +206,12 @@ def main():
             con,"join-consumer",21,ir,"join-state",
             pin["pin_id"],generation_id="join-generation-21")
         assert consumer["watermark"]==1
+        bootstrap_commit=join_outbox.commit_info(
+            con,"join-consumer",1)
+        assert bootstrap_commit["kind"]=="bootstrap"
+        assert bootstrap_commit["nrows"]==2
+        assert join_outbox.visible_frontier(
+            con,"join-consumer")==0
         try:
             source_state.pin_watermark(
                 pin_id=pin["pin_id"],con=con)
@@ -227,6 +234,13 @@ def main():
             con,"join-state")["watermark"]==1
         assert source_state.consumer_info(
             con,"join-consumer")["watermark"]==1
+        try:
+            join_outbox.commit_info(
+                con,"join-consumer",2)
+            raise AssertionError(
+                "JOIN outbox survived rolled-back catchup")
+        except KeyError:
+            pass
         assert rows(con)==[
             ("alice",6),("bob",9)]
 
@@ -238,6 +252,8 @@ def main():
         assert caught["deltas"][0]["op"]==0
         assert caught["deltas"][0]["row"]==dict(
             customer_name="alicia",amount=6)
+        assert caught["output_commit"]["source_seq"]==2
+        assert caught["output_commit"]["nrows"]==1
         assert rows(con)==[
             ("alicia",6),("bob",9)]
 
@@ -248,6 +264,24 @@ def main():
         assert empty["source_seq"]==3
         assert empty["nchanges"]==0
         assert empty["deltas"]==[]
+        assert empty["output_commit"]["nrows"]==0
+        assert [
+            item["source_seq"]
+            for item in join_outbox.pending_commits(
+                con,"join-consumer")
+        ]==[1,2,3]
+        join_outbox.mark_visible(
+            con,"join-consumer",2)
+        assert join_outbox.visible_frontier(
+            con,"join-consumer")==0
+        join_outbox.mark_visible(
+            con,"join-consumer",1)
+        assert join_outbox.visible_frontier(
+            con,"join-consumer")==2
+        join_outbox.mark_visible(
+            con,"join-consumer",3)
+        assert join_outbox.visible_frontier(
+            con,"join-consumer")==3
         assert join_state.state_info(
             con,"join-state")["watermark"]==3
         assert source_state.consumer_info(
