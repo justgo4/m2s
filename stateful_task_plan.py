@@ -67,27 +67,20 @@ def _rewrite_join(sql):
     return tree.sql(dialect="duckdb")
 
 
-def compile_task(
-        manifest,plan_version,mysql_database,
-        source_metadata,target_schema
+def compile_ir(
+        manifest,mysql_database,source_metadata
 ):
     if not isinstance(manifest,dict):
         raise ValueError("stateful manifest must be a dict")
     kind=str(manifest.get("kind") or "")
     if kind not in {"aggregate","inner_join"}:
         raise ValueError("unsupported stateful manifest kind: "+kind)
-    sink=_text(manifest.get("sink"),"sink")
-    target_table=_text(
-        manifest.get("target_table"),"target_table")
     sources=[
         _text(value,"source relation")
         for value in manifest.get("source_relations",())
     ]
     mysql_database=_text(mysql_database,"mysql_database")
     metadata=dict(source_metadata or {})
-    task_version=int(manifest.get("task_version",plan_version))
-    ids=_task_ids(sink,task_version)
-
     for source in sources:
         if source not in metadata:
             raise ValueError(
@@ -106,16 +99,10 @@ def compile_task(
                 "aggregate manifest requires one source relation")
         source=sources[0]
         entry=metadata[source]
-        relation=mysql_database+"."+source
         ir=aggregate_ir.compile_sql(
-            relation,entry["schema_signature"],
+            mysql_database+"."+source,
+            entry["schema_signature"],
             _rewrite_aggregate(manifest.get("sql")))
-        task=aggregate_task_catalog.descriptor(
-            ids["task_id"],ids["sink_key"],task_version,
-            ir,target_table,ids["state_id"],ids["consumer_id"],
-            target_schema)
-        mapping=aggregate_target_mapping.mapping_from_descriptor(
-            task)
     else:
         if len(sources)!=2:
             raise ValueError(
@@ -129,6 +116,36 @@ def compile_task(
             mysql_database+"."+right,
             right_meta["schema_signature"],right_meta["primary_key"],
             _rewrite_join(manifest.get("sql")))
+    return dict(
+        kind=kind,
+        source_relations=list(sources),
+        ir=ir,
+    )
+
+
+def compile_task(
+        manifest,plan_version,mysql_database,
+        source_metadata,target_schema
+):
+    compiled=compile_ir(
+        manifest,mysql_database,source_metadata)
+    kind=compiled["kind"]
+    sources=compiled["source_relations"]
+    ir=compiled["ir"]
+    sink=_text(manifest.get("sink"),"sink")
+    target_table=_text(
+        manifest.get("target_table"),"target_table")
+    task_version=int(manifest.get("task_version",plan_version))
+    ids=_task_ids(sink,task_version)
+
+    if kind=="aggregate":
+        task=aggregate_task_catalog.descriptor(
+            ids["task_id"],ids["sink_key"],task_version,
+            ir,target_table,ids["state_id"],ids["consumer_id"],
+            target_schema)
+        mapping=aggregate_target_mapping.mapping_from_descriptor(
+            task)
+    else:
         task=join_task_catalog.descriptor(
             ids["task_id"],ids["sink_key"],task_version,
             ir,target_table,ids["state_id"],ids["consumer_id"],
