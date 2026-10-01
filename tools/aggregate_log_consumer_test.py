@@ -12,7 +12,9 @@ ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 import aggregate_ir
 import aggregate_log_consumer
+import aggregate_physical_state
 import aggregate_state
+import physical_state_catalog
 import source_state
 
 
@@ -154,6 +156,11 @@ def main():
             con,"agg-state")["watermark"]==3
         assert source_state.consumer_info(
             con,"agg-task")["watermark"]==3
+        physical=physical_state_catalog.state_info(
+            con,aggregate_physical_state.instance_id("agg-state"))
+        assert physical["watermark"]==3
+        assert physical["min_readable_watermark"]==3
+        assert physical["health"]=="ready"
         assert aggregate_log_consumer.process_next(
             con,"agg-task",plan) is None
         assert source_state.retention_floor(con)==3

@@ -320,34 +320,35 @@ def set_health(con, instance_id, health):
 def advance_state(
         con, instance_id, watermark, min_readable_watermark=None
 ):
-    instance = state_info(con, instance_id)
+    instance_id = str(instance_id)
     watermark = int(watermark)
-    minimum = (
-        instance["min_readable_watermark"]
-        if min_readable_watermark is None
-        else int(min_readable_watermark)
-    )
-    if watermark < instance["watermark"]:
-        raise ValueError("physical state watermark cannot move backwards")
-    if minimum < instance["min_readable_watermark"]:
-        raise ValueError(
-            "physical state minimum readable watermark cannot move backwards; "
-            "create a new generation if older history is rebuilt")
-    if minimum > watermark:
-        raise ValueError("minimum readable watermark exceeds state watermark")
-    pin = con.execute("""
-        SELECT MIN(watermark) FROM physical_state_pins
-        WHERE instance_id=?
-    """, (str(instance_id),)).fetchone()[0]
-    if pin is not None and minimum > int(pin):
-        raise RuntimeError(
-            "physical state compaction would cross an active fixed-W pin")
     with transaction(con):
+        instance = state_info(con, instance_id)
+        minimum = (
+            instance["min_readable_watermark"]
+            if min_readable_watermark is None
+            else int(min_readable_watermark)
+        )
+        if watermark < instance["watermark"]:
+            raise ValueError("physical state watermark cannot move backwards")
+        if minimum < instance["min_readable_watermark"]:
+            raise ValueError(
+                "physical state minimum readable watermark cannot move backwards; "
+                "create a new generation if older history is rebuilt")
+        if minimum > watermark:
+            raise ValueError("minimum readable watermark exceeds state watermark")
+        pin = con.execute("""
+            SELECT MIN(watermark) FROM physical_state_pins
+            WHERE instance_id=?
+        """, (instance_id,)).fetchone()[0]
+        if pin is not None and minimum > int(pin):
+            raise RuntimeError(
+                "physical state compaction would cross an active fixed-W pin")
         con.execute("""
             UPDATE physical_states
             SET min_readable_watermark=?,watermark=?,updated=?
             WHERE instance_id=?
-        """, (minimum,watermark,time.time(),str(instance_id)))
+        """, (minimum,watermark,time.time(),instance_id))
     return state_info(con, instance_id)
 
 

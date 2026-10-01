@@ -11,6 +11,7 @@ import time
 import duckdb
 
 import aggregate_ir
+import aggregate_physical_state
 import aggregate_state
 import source_state
 
@@ -165,6 +166,8 @@ def process_next(
                 "aggregate state unexpectedly treated next source seq as retry")
         if fault_after_state is not None:
             fault_after_state(seq)
+        aggregate_physical_state.sync_instance(
+            con,state_id,ir,generation=1)
         updated=con.execute("""
             UPDATE source_consumers
             SET watermark=?,updated=?

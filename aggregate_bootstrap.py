@@ -12,6 +12,7 @@ import duckdb
 
 import aggregate_ir
 import aggregate_log_consumer
+import aggregate_physical_state
 import aggregate_state
 import source_state
 
@@ -42,8 +43,11 @@ def ensure_build(con,state_id,ir,pin_id):
             "aggregate fixed-W predates complete source relation")
     state=aggregate_state.begin_bootstrap(
         con,state_id,aggregate_ir.state_spec(ir),fixed_w)
-    return aggregate_state.bind_input_semantics(
+    state=aggregate_state.bind_input_semantics(
         con,state_id,aggregate_ir.semantic_id(ir))
+    aggregate_physical_state.sync_instance(
+        con,state_id,ir,generation=1)
+    return state
 
 
 def _transform_snapshot(table,ir,engine=None):
@@ -101,6 +105,8 @@ def process_next_chunk(
         con,state_id,fixed_w,changes,next_cursor,is_last,
         fault_after_changes=fault_after_changes)
     updated=aggregate_state.state_info(con,state_id)
+    aggregate_physical_state.sync_instance(
+        con,state_id,ir,generation=1)
     return dict(
         state_id=state_id,fixed_w=fixed_w,
         done=updated["bootstrap_complete"],

@@ -13,7 +13,9 @@ sys.path.insert(0,str(ROOT))
 import aggregate_bootstrap
 import aggregate_ir
 import aggregate_log_consumer
+import aggregate_physical_state
 import aggregate_state
+import physical_state_catalog
 import source_state
 
 
@@ -130,6 +132,11 @@ def main():
         assert build["watermark"]==2
         assert not build["bootstrap_complete"]
         assert build["input_semantic_id"]==aggregate_ir.semantic_id(ir)
+        physical=physical_state_catalog.state_info(
+            con,aggregate_physical_state.instance_id("agg-state"))
+        assert physical["health"]=="building"
+        assert physical["watermark"]==2
+        assert physical["min_readable_watermark"]==2
 
         def crash():
             raise RuntimeError("synthetic bootstrap crash")
@@ -169,11 +176,36 @@ def main():
             con,"agg-task","db.orders",11,ir,
             "agg-state",pin["pin_id"])
         assert consumer["watermark"]==2
+        physical=physical_state_catalog.state_info(
+            con,aggregate_physical_state.instance_id("agg-state"))
+        assert physical["health"]=="ready"
+        assert physical["watermark"]==2
+        assert physical["min_readable_watermark"]==2
         try:
             source_state.pin_watermark(con,pin["pin_id"])
             raise AssertionError("aggregate bootstrap pin leaked")
         except KeyError:
             pass
+
+        acquired=aggregate_physical_state.acquire_current(
+            con,"agg-state",ir,"reuse-test")
+        assert acquired["pin"]["watermark"]==2
+        try:
+            aggregate_log_consumer.process_next(
+                con,"agg-task",ir)
+            raise AssertionError(
+                "current-only physical pin did not block aggregate advance")
+        except RuntimeError as exc:
+            assert "active fixed-W pin" in str(exc)
+        assert aggregate_state.state_info(
+            con,"agg-state")["watermark"]==2
+        assert source_state.consumer_info(
+            con,"agg-task")["watermark"]==2
+        physical_state_catalog.release_state(
+            con,acquired["state"]["instance_id"],
+            "reuse-test","consumer")
+        physical_state_catalog.release_pin(
+            con,acquired["pin"]["pin_id"])
 
         next_commit=aggregate_log_consumer.process_next(
             con,"agg-task",ir)
@@ -191,6 +223,10 @@ def main():
             con,"agg-state")["watermark"]==3
         assert source_state.consumer_info(
             con,"agg-task")["watermark"]==3
+        physical=physical_state_catalog.state_info(
+            con,aggregate_physical_state.instance_id("agg-state"))
+        assert physical["watermark"]==3
+        assert physical["min_readable_watermark"]==3
         con.close()
 
     print(
