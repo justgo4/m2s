@@ -129,8 +129,11 @@ def main():
         first_out=aggregate_outbox.commit_info(
             con,"agg-task",1)
         assert first_out["nrows"]==1
-        assert aggregate_outbox.commit_rows(
-            con,"agg-task",1)[0]["row"]["category"]=="a"
+        first_row=aggregate_outbox.commit_rows(
+            con,"agg-task",1)[0]["row"]
+        assert first_row["category"]=="a"
+        assert "_row_count" not in first_row
+        assert set(first_row)=={"category","n","nn","total","mean"}
 
         def crash(seq):
             assert seq==2
