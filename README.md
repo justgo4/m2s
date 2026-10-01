@@ -8,6 +8,7 @@
 
 - `j4.py`：基线主程序，默认启动 daemon；全量回填与增量捕获并发运行。
 - `cdc_catalog.py`：持久化 SQL catalog、部署文件、REPL、运行中任务发布。
+- `incremental_contract.py`：共享物理状态 identity、fixed-W 日志保留与多候选计划 Pareto 成本合同；当前是架构护栏，不代表 P6/P8/P9 已接入生产 runtime。
 - `cdc_selftest.py`：离线故障、状态恢复和数据正确性回归。
 - `native/`：原生行事件解码器、Arrow IPC、稳定计数分区、JSON 编码、ABI 测试和可复现构建源码。
 - `setup.sql.example`：使用保留的 `.invalid` 域名、占位密码和合成表结构的配置示例。
@@ -72,6 +73,10 @@ python j4.py cli
 
 目标数据流：一次源捕获 → 带事务边界的变化日志与共享源状态 → 有各自水位的 SQL 任务 → 持久化 outbox → StarRocks 可见性确认。源状态支持按键更新和批量扫描；CDC 不应为每个下游再次解析或捕获同一份源数据。Arrow 用于批量计算/交换，索引和稀疏更新可采用专用行布局，不要求所有状态都转成 Arrow。
 
+P6 不预设“RocksDB 再保存一份完整 MySQL”就是最终答案。必须实测三类 authoritative base：本地版本化状态、StarRocks 基础镜像、以及“StarRocks 列式基底 + 本地 key/index/delta”的混合方案。选择依据包括一致 fixed-W 读取、故障恢复、扫描吞吐、更新放大、磁盘占用、compaction 和对源/目标的额外压力。若目标端无法提供与 W 绑定且跨重启可恢复的一致快照，就不能把“查询当前 StarRocks”冒充版本化 source state。
+
+共享 base 与任务私有状态严格分开：新任务可以拥有自己的 generation、算子 delta、outbox 和构建进度，但不得默认复制整份 source base。多个任务需要相同 key/projection/predicate/schema epoch/collation 时，优先复用同一 arrangement/materialized subview；只有测量证明隔离更优或语义不兼容时才复制。源捕获最终必须 source-centric：decoder 将一个源事务原子提交到共享 state/changelog 后，任务从该提交序列消费；不能把“已有多少 sink”继续作为源日志持久化的基本结构。
+
 先用当前 Python/C/DuckDB 基线贯通功能，定义稳定的事务批、状态、算子与输出接口；一次只替换一个被测量证明的瓶颈。原生运行时可以逐步接管数据路径，最终 Python/REPL/MCP 以控制为主。不会同时维护两个功能完整的生产运行时，也不为了消除所有 Python 调用而重复实现成熟协议。
 
 | 组件/技术 | 当前决策 | 引入或替换条件 |
@@ -98,9 +103,24 @@ python j4.py cli
 5. **输出协议**：Merge Commit async 和 transaction 保留为独立路径。已测 4.1.1 的组合 header 不能证明双机制叠加，不再将叠加作为交付目标。提交接受、事务完成、查询可见三者分别记录；未知事务先查可用历史证据，再进入有界对账/修复。没有证据时不得静默标成功，也不得无限重试阻塞全部任务；将受影响有序分区隔离，其他独立任务在保留预算内继续。每次请求还须核对接受/过滤/错误行，不能只用共享 TxnId 的完成状态掩盖该请求的数据错误。每目标键或其有序分区禁止旧请求晚于新值覆盖；不确定请求未收敛前不能仅靠主键 upsert 就宣称幂等。删除修复须有 tombstone 或可验证差集，不能只重发当前存在的行。
 6. **资源和保留**：统一预算源状态、索引、changelog、任务构建基底、outbox、事务 spill、compaction 及临时文件。由最慢有效消费者/初始化 pin 决定回收边界；设定最大落后量、磁盘低水位、任务暂停/取消/重建政策，不能静默删仍需重放的数据。满盘时停止推进相应水位并诊断；源 binlog 保留不足时受控重建。调度保证 CDC 优先，同时给回填可测的非零剩余预算，避免永久饥饿；无剩余容量时报告容量不足而非承诺同时满足所有目标。
 
+## 增量架构护栏（2026-10-01）
+
+为了避免 P6 做成“每任务复制 base”、P8 做成“一类 SQL 一个手写 handler”、P9 再返工共享状态，后续实现先遵守以下稳定接口；这些是合同，不是当前生产能力声明。
+
+1. **Physical state identity**：共享状态必须由规范化 identity 描述，至少包含 kind、normalized relations、key/value expressions、predicate、schema epoch、collation 与 semantics version。只有 identity 完全兼容的状态才能直接共享；watermark 只描述实例进度，不参与语义 identity。`incremental_contract.py` 已提供确定性 identity/handle 原型。
+2. **Base/arrangement/task state 分层**：authoritative base 保存可重建当前关系所需的信息；arrangement/materialized subview 是可共享派生状态；task generation 只保存该任务私有的增量、构建和输出状态。禁止为了创建任务默认复制完整 base。
+3. **Bounded changelog retention**：GC 下界由最慢有效 consumer watermark 与所有 fixed-W pin 共同决定；没有消费者/pin 时才允许回收到 source durable watermark。容量不足时拒绝/暂停新 build，而不是删除仍被 pin 的历史。
+4. **SQL → normalized relational IR → incremental IR → physical candidates**：P8 不直接把 SQL 绑定到手写 COUNT/SUM/JOIN worker。DBSP/differential semantics、OpenIVM SQL-to-SQL、自研算子都只能作为 incremental IR/physical lowering 候选，并持续以全量 oracle 校验。
+5. **多策略而非唯一 IVM**：一个新任务至少允许产生 reuse existing state、incremental build、partial recompute、full recompute 等候选。优化器先做 Pareto 淘汰，再由明确的资源/SLO policy 选择；不能用隐藏常数把所有 workload 固定成一种策略。`incremental_contract.py` 先固定非支配候选接口，后续再接真实统计信息。
+6. **Shared arrangements 必须早于通用 JOIN**：在 P8B 开放 JOIN 前，P6C 的 arrangement identity、引用计数、水位、schema epoch、retention/GC 接口必须可用，否则相同 join/group key 会为每个任务重复建状态。
+7. **可重用物化状态进入 catalog**：后续 physical-state catalog 需要记录 identity、storage backend、watermark、bytes、owners/users、schema epoch、build generation、健康状态与 GC pin。当前 `cdc_catalog.py` 仍只承担控制目录，未提前修改持久格式。
+8. **成本模型可证伪**：time-to-ready、source/base read bytes、state bytes、steady-state CPU、write amplification、catch-up lag 均需可观测。没有实测统计时保留多个候选并报告不确定性，不能把论文或微基准常数直接写死成生产规则。
+
+当前 `tools/state_layout_benchmark.py` 的 fixed-W task copy 仅用于正确性/存储候选验证。RocksDB checkpoint 的 hardlink/SST 共享可以降低原型复制成本，但不能据此宣称多任务长期零额外空间；后续 compaction、COW、索引和 task delta 都必须计量。
+
 ## 分阶段任务与验收标准
 
-保留 P0–P13 编号供实施记录引用，编号不再代表严格串行顺序。下一条交付主线是 **P1/P2/P3 + P10 最小闭环 → P6 → P7 → P8**；P4/P5 只在测出瓶颈后插入，P9 在已有多任务数据后推进。P13 的控制协议尽早定义、MCP 在动态任务稳定后接入，P11 长跑在可用闭环上逐步扩容，P12 公平对标最后执行。每阶段都交付实现、测试、命令和公开合成结果，不用测试用例数量代替故障边界覆盖。
+保留 P0–P13 编号供实施记录引用，P6/P8/P9 拆成子阶段且不代表严格串行顺序。下一条交付主线是 **P1/P2/P3 + P10 最小闭环 → P6A/P6B/P6C → P7 → P8A/P8B → P9A/P9B/P9C**；其中 P6C 的共享 arrangement 接口必须在开放通用 JOIN 前稳定。P4/P5 只在测出瓶颈后插入。P13 的控制协议尽早定义、MCP 在动态任务稳定后接入，P11 长跑在可用闭环上逐步扩容，P12 公平对标最后执行。每阶段都交付实现、测试、命令和公开合成结果，不用测试用例数量代替故障边界覆盖。
 
 | 阶段 | 接下来做什么 | 完成必须达到的标准 | 当前状态 |
 | --- | --- | --- | --- |
@@ -110,10 +130,15 @@ python j4.py cli
 | P3 测量平台 | 补实际 snapshot 和 MySQL COMMIT→目标查询四层测量 | 保留 decoder/local；增加生产 reader 对照，独立 Python oracle 不能代表生产 Python 性能；同时记录 source/sink、本地 CPU、RSS、spill、磁盘实际写入与空间、积压斜率及延迟 | 部分完成：decoder/local A/B、真实 COMMIT→查询短测已有；完整性能 profile 未完成 |
 | P4 原生接入与批处理 | 按 profile 决定 socket、snapshot、组批是否下沉 | P1/P2 无回退；认证/TLS/GTID/取消/巨型事务支持明确；相同耐久性下 source-bound 与端到端验证收益，小事务不能等待不确定时长才发批；没有收益则不替换默认 | 部分完成：有界组批候选已实现；原生 socket 未实现，非 P6/P7 前置 |
 | P5 布局和融合 | 去掉有证据的重复解码、复制、分区和编码 | 窄/宽行、稀疏/密集变化均测；公布复制分配、内存和总 CPU；单核收益不得掩盖全路径回退，按性能合同晋升默认 | 计划，按瓶颈插入 |
-| P6 共享源状态 | 源捕获与任务解耦；全允许列镜像、changelog、schema、可扫描持久状态 | 源状态+源水位原子提交；任务状态+任务水位+outbox 原子提交；内存预算内恢复；源表增加/移除、DDL、日志保留和一致初始化可诊断；状态引擎经更新/扫描/恢复比较后选择 | 候选布局、原子恢复及固定 W 原型已有；尚未接入 daemon |
-| P7 动态新增下游 | 先完成单源投影/过滤的 W→构建→追赶→发布→取消闭环 | 10 次交错部署/更新/删除/重启场景；旧任务继续运行；新目标最终逐键逐字段等于 oracle；构建进度可恢复、旧 generation 被隔离，最新行不被历史覆盖；登记 completeness 和 time-to-ready | 基线在线新增下游通过四组真实数据库测试；本地状态 W/generation 闭环仍依赖 P6 |
-| P8 增量 SQL | 先 COUNT/SUM/AVG 及索引 INNER JOIN，再 LEFT JOIN、MIN/MAX、DISTINCT | 至少 10,000 组有重复/NULL/撤回/跨表同事务的随机用例；SQL 三值逻辑、空分组、匹配数归零及输出主键正确；状态/输出放大可界定；每类算子单独验收，窗口不隐含支持 | 计划，逐算子开放 |
-| P9 共享执行与策略 | 多任务共享扫描/索引/子图，必要时增量与重算切换 | 1/10/100 任务真实成本对照；持久基底/索引可共享但不强求零构建成本；热点/fanout/策略维护计入；切换可恢复且结果等价 | 计划，等待多任务 profile |
+| P6A 权威基底选择 | 对比 local versioned state、StarRocks base mirror、hybrid base+local delta/index；源 capture 与 sink/task 拓扑解耦 | 相同语义/耐久性下比较 50M 扫描、按键更新、fixed-W 可恢复读取、磁盘与写放大；选定方案必须能证明 W 绑定，不能用“当前查询结果”代替 snapshot；源事务只持久化一次 | RocksDB/SQLite/DuckDB 候选布局已有；StarRocks/hybrid 尚未同合同验证，未选最终 backend |
+| P6B 共享 changelog 与版本 | commit sequence、schema epoch、fixed-W pin、有限日志与 GC；base/state/watermark 原子边界 | 最慢 consumer 与所有 W pin 决定 retention floor；进程 kill/满盘/日志回收均不破坏 pin；初次 50M 初始化与 CDC 并行且有一致完成边界 | fixed-W checkpoint/replay 原型已有；在线 retention/pin 尚未接 daemon |
+| P6C 共享物理状态 | 定义 arrangement/materialized-subview identity、引用/水位/健康/GC 接口；任务默认引用共享 base 而非复制 | 相同 identity 的 1/10/100 任务只维护一份共享状态；schema epoch/collation/predicate/key 不兼容时拒绝误复用；共享状态故障和回收可恢复 | `incremental_contract.py` 已固定 identity/retention/Pareto 最小合同；physical catalog/runtime 尚未实现 |
+| P7 动态新增下游 | 先完成单源投影/过滤的 W→构建→追赶→发布→取消闭环，bootstrap 从 P6 authoritative/shared state 读取 | 10 次交错部署/更新/删除/重启场景；旧任务继续运行；新目标最终逐键逐字段等于 oracle；构建进度可恢复、旧 generation 被隔离，最新行不被历史覆盖；正常 hot-add 不重新扫 MySQL | 基线在线新增下游通过四组真实数据库测试，但当前仍启动 MySQL `snapshot_worker`；本地 W/generation 闭环依赖 P6A-C |
+| P8A 增量 IR | SQL 先规范化为 relational IR，再生成带 insert/delete/retract 语义的 incremental IR；比较 DBSP/OpenIVM/自研 lowering | 同一 SQL 的 full oracle 与 delta plan 在随机事务、NULL、键改变、过滤翻转、DDL epoch 上结果一致；IR 不绑定具体 state backend | 计划；当前 catalog 仍拒绝 stateful JOIN/聚合 |
+| P8B 增量算子 | 在 P6C arrangement 接口上开放 COUNT/SUM/AVG、索引 INNER JOIN，再 LEFT JOIN、MIN/MAX、DISTINCT | 至少 10,000 组重复/NULL/撤回/跨表同事务随机用例；共享 key 不重复建等价索引；状态/输出放大可界定；窗口不隐含支持 | 计划，待 P6C/P8A |
+| P9A 共享执行 | 复用 arrangements、materialized subviews、公共扫描/子图；维护 physical-state catalog | 1/10/100 任务真实成本对照；共享状态 refcount/watermark/schema epoch/GC 正确；热点与 fanout 计入 | 计划，接口前置到 P6C |
+| P9B 成本驱动策略 | 为 reuse/incremental/partial recompute/full recompute 产生候选，先 Pareto 淘汰再按 SLO/资源策略选择 | 估算和实测都记录 time-to-ready、read bytes、state bytes、steady CPU、write amplification、catch-up lag；策略切换可恢复且结果等价 | `incremental_contract.py` 已有 backend-neutral Pareto 原型；真实统计与执行器未接入 |
+| P9C 自动物化与回收 | 根据长期 workload 决定哪些 arrangement/subview 值得创建、保留或淘汰 | 物化收益必须覆盖维护/存储成本；GC 不删除仍被任务/W pin 使用的状态；策略有审计记录并可禁用 | 计划，等待 P9A/B 多任务 profile |
 | P10 输出与回填调度 | 前置最小可用输出：顺序、可见性、未知状态恢复、预算；后续再编码优化 | 默认 SR 服务参数下回填可限速也可恢复；同键旧请求不覆盖新数据；不丢 delete；积压有界且回填不永久饥饿；merge/2PC 分开验收，不承诺消除 compaction | 四组短时端到端及真实未知响应隔离/重启通过；完整压力故障矩阵仍待验收 |
 | P11 目标规模与长跑 | 从小规模持续测试扩到 50M + 50 行/s，并动态建任务 | 固定资源连续至少 72 小时；基础镜像及已就绪任务正常时段 P95 <= 5 秒、P99 <= 10 秒；记录最大延迟和违约率，故障期单报；排空后逐键字段正确；测 time-to-ready、回填总时长和容量余量；默认 SR 参数 | 计划；机器/行宽/任务数与资源预算须固定 |
 | P12 硬件参考与对标 | 分层瓶颈上界与七系统相同语义比较 | 同资源/版本/耐久性/正确性、至少 5 次重复及区间；不支持项单列；复制、状态计算、目标导入分开比较，禁止用微基准宣称全面领先；低负载测延迟，高负载扫描饱和点及持续积压，50 行/s 本身不能证明吞吐极限 | 计划，不作为首个可用版本的阻塞条件 |
@@ -122,9 +147,9 @@ python j4.py cli
 ### 下一轮具体交付顺序
 
 1. 补真实端到端 harness：基础表 snapshot 与 CDC 同时运行，验证更新、删除、回填覆盖、输出未知事务和压力恢复；记录可见延迟及最终状态。用现有管线建立可用基准，先小规模后放大。
-2. 写清并验证 P6 的事务批/水位/存储合同，做有限的状态布局比较，选定一个权威数据状态引擎；复用已有解码器，避免同时更换网络、存储和 SQL 三层。初次源镜像必须有完整度和一致性标记。
-3. 实现 P7 的单源动态任务闭环及 generation 恢复；随后逐类开放 P8 的聚合和 JOIN。控制 API 与部署状态机同时形成，MCP 复用它。
-4. 在上述真实负载 profile 指向瓶颈时推进 P4/P5/P9；固定生产候选后完成目标规模长跑、升级回滚和公平对标。保留基线到状态迁移验收通过，不能把旧状态目录直接交给不兼容的新运行时。
+2. 先完成 P6A/P6B：用同一合同比较 local、StarRocks base mirror、hybrid 三种 authoritative base，验证 fixed-W、50M 扫描、更新/磁盘放大、故障恢复和有限 changelog retention；未完成比较前不把 RocksDB 写死为最终 backend。
+3. 完成 P6C 的 shared arrangement/physical-state identity 与 catalog/runtime 接口，再把 P7 hot-add 的历史初始化从 MySQL `snapshot_worker` 切换到 authoritative/shared state；验证正常新增任务不产生新的 MySQL snapshot 读取。
+4. 先建立 P8A normalized/incremental IR 和 full oracle，再开放 P8B 算子；同时推进 P9A 的状态共享。随后用 P9B/P9C 做 Pareto 成本选择、自动物化/GC。只有真实 profile 指向瓶颈时才推进 P4/P5；固定生产候选后完成 50M/72h、升级回滚和公平对标。
 
 ## 性能合同
 
@@ -300,3 +325,9 @@ status 和 summary 显示 `health=degraded`、`quarantined_tables` 及原因。�
 同一实现的 [Python 3.12/3.14 离线回归](https://github.com/justgo4/m2s/actions/runs/36795348655) 与 [真实 MySQL/StarRocks、sanitizer、snapshot A/B](https://github.com/justgo4/m2s/actions/runs/36795348569) 全部通过。测试代理保留 `Expect` 与重定向查询参数，不主动制造非目标网络故障。独立协议 runner 清理未使用工具链来腾出磁盘，不修改 StarRocks 磁盘阈值或服务参数。
 
 本轮仅完成未知响应的安全隔离验收，未完成自动对账或目标重建；共享源状态接入 daemon（P6）、本地 W/generation 动态任务（P7）、增量聚合/JOIN（P8）、50M+50 行/s 的 72 小时验收和公平性能对标仍未完成。不能将这些短测结果称为整个路线已完成、生产认证或物理性能极限。
+
+### 2026-10-01 增量架构合同升级
+
+在现有 P6 fixed-W 原型之上新增 `incremental_contract.py` 与 `tools/incremental_contract_test.py`，先固定 backend-neutral 的共享状态 identity、实例 watermark compatibility、bounded changelog retention floor 和多策略 Pareto frontier。该模块不接管当前 daemon，也不修改 catalog 持久格式，因此不会把尚未验证的 RocksDB/StarRocks/hybrid 选择写入生产状态。
+
+CI 现在会验证：相同规范 state spec 产生稳定 identity；schema epoch/predicate/collation 变化不能误复用；fixed-W pin 会阻止过早日志 GC；被其他候选在全部成本维度支配的执行策略会被淘汰，而 time-to-ready/state/source-read 等存在真实权衡的候选同时保留。下一步把这些合同接到 P6 authoritative state 与 physical-state catalog，而不是继续扩展 task-centric MySQL snapshot。
