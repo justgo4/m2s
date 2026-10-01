@@ -39,6 +39,7 @@ import sqlglot
 from sqlglot import exp
 import aggregate_job_bridge
 import aggregate_outbox
+import aggregate_state
 import aggregate_task_catalog
 import aggregate_task_runner
 import cdc_catalog
@@ -46,6 +47,7 @@ import incremental_contract
 import incremental_ir
 import join_job_bridge
 import join_outbox
+import join_state
 import join_task_catalog
 import join_task_runner
 import physical_state_catalog
@@ -1629,6 +1631,8 @@ def init_state(path):
             ON field_overflow(table_name,column_name,id);
     """)
     source_state.install(con)
+    aggregate_state.install(con)
+    join_state.install(con)
     aggregate_outbox.install(con)
     join_outbox.install(con)
     join_task_catalog.install(con)
