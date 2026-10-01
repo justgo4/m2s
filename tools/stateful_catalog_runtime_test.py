@@ -13,6 +13,7 @@ sys.path.insert(0,str(ROOT))
 import j4
 import stateful_catalog_runtime
 import stateful_task_plan
+import source_state
 
 
 ORDERS_SIG=[
@@ -155,6 +156,28 @@ def main():
     ) as td:
         con=j4.init_state(
             os.path.join(td,"state.sqlite3"))
+        source_state.register_relation(
+            con,"db.archived","source-1",
+            pa.schema([
+                pa.field("id",pa.int64()),
+                pa.field("name",pa.large_string()),
+            ]),["id"])
+        archived=hidden_customer()
+        archived["src_table"]="archived"
+        with patch.object(
+            stateful_catalog_runtime,
+            "_probe_source_mapping",
+            return_value=archived
+        ) as durable_probe:
+            monotonic=(
+                stateful_catalog_runtime.extend_durable_source_scope(
+                    con,{"mysql":{"database":"db"}},
+                    [checked_mapping()]))
+        assert [item["src_table"] for item in monotonic]==[
+            "archived","orders"]
+        durable_probe.assert_called_once_with(
+            {"mysql":{"database":"db"}},"archived")
+
         registered=stateful_catalog_runtime.register_compiled(
             con,[compiled])
         assert registered[0]["task"]["status"]=="candidate"
@@ -173,7 +196,7 @@ def main():
 
     print(
         "stateful_catalog_runtime_test ok source_scope hidden_source "
-        "target_inference descriptor_register durable_mapping drop_retire",
+        "target_inference monotonic_source_scope descriptor_register durable_mapping drop_retire",
         flush=True,
     )
 
