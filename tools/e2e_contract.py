@@ -359,8 +359,8 @@ def main():
             dynamic_commits[first_dynamic] = change(source, first_dynamic)
             if args.shared_source_state:
                 activation_log = wait_log_contains(
-                    proc, 'HOT ADD WORKERS sink=events_extra ', timeout=30)
-                marker = 'HOT ADD WORKERS sink=events_extra source=events target=events_extra'
+                    proc, 'HOT ADD WORKERS sink=starrocks.events_extra ', timeout=30)
+                marker = 'HOT ADD WORKERS sink=starrocks.events_extra source=events target=events_extra'
                 line = next(
                     (row for row in activation_log.splitlines() if marker in row), '')
                 if not line or 'snapshot=shared_fixed_w' not in line:
@@ -382,7 +382,7 @@ def main():
                 current = state(directory)
                 shared_pin = bool(
                     current and any(
-                        pin['owner'].startswith('sink:events_extra:')
+                        pin['owner'].startswith('sink:starrocks.events_extra:')
                         for pin in current.get('source_pins', ())
                     )
                 )

@@ -158,6 +158,21 @@ def main():
         pin3 = source_state.acquire_pin(con, "after-restart", ["db.orders"])
         snapshot_values(con, pin3, {2: "b", 3: "c", 4: "d"})
         source_state.release_pin(con, pin3["pin_id"])
+
+        # A source transaction with no row event must still advance the
+        # authoritative sequence so downstream progress/GC never waits for an
+        # output that cannot exist.
+        empty_seq = source_state.log_commit(
+            con, "source-1", ("binlog.000001", 160), None, [])
+        assert empty_seq == 4
+        assert source_state.log_durable_seq(con) == 4
+        assert source_state.base_applied_seq(con) == 3
+        assert source_state.apply_pending(con) == 1
+        assert source_state.base_applied_seq(con) == 4
+        pin4 = source_state.acquire_pin(con, "empty-commit", ["db.orders"])
+        assert pin4["watermark"] == 4
+        snapshot_values(con, pin4, {2: "b", 3: "c", 4: "d"})
+        source_state.release_pin(con, pin4["pin_id"])
         con.close()
 
     print("source_state_protocol_test ok", flush=True)

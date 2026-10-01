@@ -1263,6 +1263,14 @@ def source_relation_key(cfg, mapping_or_table):
     return str(cfg["mysql"]["database"])+"."+str(table)
 
 
+def source_state_relation_exists(con, relation):
+    try:
+        source_state.relation_info(con,relation)
+        return True
+    except KeyError:
+        return False
+
+
 def source_mappings(prepared):
     by_source = {}
     for mapping in prepared:
@@ -5007,14 +5015,32 @@ def validate_hot_catalog_plan(cfg, runtime, publish_result):
     compatible,reason = runtime_plan_compatible(current,candidate)
     if not compatible:
         return dict(status="rebuild_required",version=version,reason=reason)
+    change = runtime_plan_topology(current,candidate)
+    if cfg.get("shared_source_state",False) and change["added"]:
+        probe = open_state(cfg["state"])
+        try:
+            missing_sources = sorted({
+                source_relation_key(cfg,candidate["by_table"][key])
+                for key in change["added"]
+                if not source_state_relation_exists(
+                    probe,source_relation_key(cfg,candidate["by_table"][key]))
+            })
+        finally:
+            probe.close()
+        if missing_sources:
+            return dict(
+                status="rebuild_required",version=version,
+                reason=(
+                    "shared source scope does not contain newly referenced "
+                    "relations; restart/rebuild is required to expand capture: "
+                    + ",".join(missing_sources)),
+                added_sinks=list(change["added"]))
     try:
         hot_add_resource_check(cfg,runtime,current,candidate)
     except RuntimeError as exc:
         return dict(
             status="restart_required",version=version,
             reason=str(exc),added_sinks=hot_add_sinks)
-    change = runtime_plan_topology(current,candidate)
-
     con = open_state(cfg["state"])
     try:
         current_tables = sorted(current["by_table"])
