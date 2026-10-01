@@ -19,7 +19,6 @@ def main():
         pa.field("n",pa.int64()),
         pa.field("total",pa.decimal128(38,2)),
         pa.field("mean",pa.float64()),
-        pa.field("_row_count",pa.int64()),
     ])
     mapping=aggregate_target_mapping.build(
         "agg-sink","agg_result",schema,"category")
@@ -32,7 +31,6 @@ def main():
         "n":("n","bigint","YES","",None,""),
         "total":("total","decimal(38,2)","YES","",None,""),
         "mean":("mean","double","YES","",None,""),
-        "_row_count":("_row_count","bigint","YES","",None,""),
     }
     mapping=aggregate_target_mapping.bind_target(
         mapping,target_columns)
@@ -41,7 +39,7 @@ def main():
     raw=j4.raw_arrow(mapping,[
         (0,dict(
             category="a",n=2,total=Decimal("30.00"),
-            mean=15.0,_row_count=2)),
+            mean=15.0)),
         (1,dict(category="b")),
     ])
     engine=j4.transform_engine(dict(
