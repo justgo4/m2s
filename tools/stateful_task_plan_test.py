@@ -44,6 +44,7 @@ def main():
         target_table="agg",
         source_relations=["orders"],
         primary_key=[],
+        task_version=5,
         sql=(
             "SELECT category, COUNT(*) AS n, "
             "SUM(amount) AS total, AVG(amount) AS mean "
@@ -61,11 +62,13 @@ def main():
         SOURCE_METADATA,aggregate_target)
     assert agg["kind"]=="aggregate"
     assert agg["task"]["source_relation"]=="db.orders"
-    assert agg["task"]["state_id"]=="catalog:starrocks.agg:plan:11:state"
-    assert agg["task"]["consumer_id"]=="catalog:starrocks.agg:plan:11:consumer"
+    assert agg["task_version"]==5
+    assert agg["catalog_plan_version"]==11
+    assert agg["task"]["state_id"]=="catalog:starrocks.agg:plan:5:state"
+    assert agg["task"]["consumer_id"]=="catalog:starrocks.agg:plan:5:consumer"
     assert agg["task"]["ir"]["group_keys"]==["category"]
     assert agg["mapping"]["sr_table"]=="agg"
-    assert agg["mapping"]["_plan_version"]==11
+    assert agg["mapping"]["_plan_version"]==5
 
     join_manifest=dict(
         kind="inner_join",
@@ -73,6 +76,7 @@ def main():
         target_table="joined",
         source_relations=["orders","customers"],
         primary_key=[],
+        task_version=7,
         sql=(
             "SELECT o.amount AS amount,c.name AS customer_name "
             "FROM mysql.orders AS o INNER JOIN mysql.customers AS c "
@@ -92,23 +96,39 @@ def main():
     assert joined["kind"]=="inner_join"
     assert joined["task"]["source_relations"]==[
         "db.orders","db.customers"]
+    assert joined["task_version"]==7
+    assert joined["catalog_plan_version"]==12
     assert joined["task"]["state_id"]==(
-        "catalog:starrocks.joined:plan:12:state")
+        "catalog:starrocks.joined:plan:7:state")
     assert joined["task"]["ir"]["join_pairs"]==[
         dict(left="customer_id",right="id")]
     assert joined["mapping"]["_output_columns"]==[
         join_target_mapping.PAIR_COLUMN,
         "amount","customer_name",
     ]
-    assert joined["mapping"]["_plan_version"]==12
+    assert joined["mapping"]["_plan_version"]==7
 
-    next_version=stateful_task_plan.compile_task(
+    unrelated_plan=stateful_task_plan.compile_task(
         join_manifest,13,"db",
         SOURCE_METADATA,join_target)
-    assert next_version["task"]["state_id"]!=joined["task"]["state_id"]
-    assert next_version["task"]["consumer_id"]!=joined["task"]["consumer_id"]
+    assert unrelated_plan["catalog_plan_version"]==13
+    assert unrelated_plan["task_version"]==7
+    assert unrelated_plan["task"]["state_id"]==joined["task"]["state_id"]
+    assert unrelated_plan["task"]["consumer_id"]==joined["task"]["consumer_id"]
     assert (
-        next_version["task"]["descriptor_hash"]
+        unrelated_plan["task"]["descriptor_hash"]
+        == joined["task"]["descriptor_hash"]
+    )
+
+    changed_manifest=dict(join_manifest)
+    changed_manifest["task_version"]=8
+    changed_task=stateful_task_plan.compile_task(
+        changed_manifest,14,"db",
+        SOURCE_METADATA,join_target)
+    assert changed_task["task"]["state_id"]!=joined["task"]["state_id"]
+    assert changed_task["task"]["consumer_id"]!=joined["task"]["consumer_id"]
+    assert (
+        changed_task["task"]["descriptor_hash"]
         != joined["task"]["descriptor_hash"]
     )
 
@@ -130,7 +150,8 @@ def main():
 
     print(
         "stateful_task_plan_test ok aggregate join "
-        "version_isolation live_metadata target_contract",
+        "sink_revision_identity unrelated_plan_stability "
+        "live_metadata target_contract",
         flush=True,
     )
 
