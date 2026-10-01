@@ -38,6 +38,13 @@ def _metadata(plan_version,ir,state_id,generation_id):
     )
 
 
+def consumer_metadata(
+        plan_version,ir,state_id,generation_id
+):
+    return _metadata(
+        plan_version,ir,state_id,generation_id)
+
+
 def ensure_consumer(
         con,consumer_id,plan_version,ir,state_id,watermark,
         generation_id=None
