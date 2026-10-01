@@ -597,37 +597,75 @@ def main():
             third_state,third=wait_ready_exact(
                 proc,log,directory,source,cfg)
 
-            # Drop aggregate via catalog. Stateful topology changes are validated
-            # online but intentionally activate only after restart.
-            drop=directory/"drop-agg.sql"
-            drop.write_text(
-                "DROP TABLE starrocks.agg;\n",
-                encoding="utf-8")
-            result=subprocess.run(
-                [sys.executable,str(ROOT/"j4.py"),"sql",str(drop)],
-                env=env,capture_output=True,timeout=120)
-            try:
-                response=json.loads(
-                    result.stdout.decode())
-            except Exception as exc:
-                raise RuntimeError(
-                    "stateful DROP returned invalid JSON: "
-                    +result.stdout.decode(errors="replace")[-3000:]
-                ) from exc
-            activation=(
-                ((response.get("result") or {}).get("publish") or {})
-                .get("activation") or {})
+            # Hot-add a second aggregate while the daemon stays up. Both
+            # input relations are already in the authoritative shared source
+            # scope because the original JOIN captures orders+customers.
+            result,response,activation=run_catalog_sql(
+                directory,env,"add-agg-hot",
+                "CREATE TABLE starrocks.agg_hot AS "
+                "SELECT category, COUNT(*) AS n, "
+                "SUM(amount) AS total, AVG(amount) AS mean "
+                "FROM mysql.orders GROUP BY category;")
             if (
-                result.returncode==0
-                or activation.get("status")!="restart_required"
+                result.returncode!=0
+                or activation.get("status") not in {
+                    "hot_pending",
+                    "deferred_until_snapshot_done",
+                    "deferred_until_previous_plan_drained",
+                }
             ):
                 raise AssertionError(
-                    "stateful DROP must commit with restart_required: "
+                    "stateful hot add was not accepted online: "
                     +json.dumps(response,sort_keys=True))
+            hot_state,hot_before=wait_hot_aggregate_exact(
+                proc,log,directory,source,cfg)
 
-            stop(proc,handle,kill=False)
-            proc=handle=log=None
-            proc,handle,log=start(directory,env,3)
+            mutate_after_hot_add(source)
+            hot_live_state,hot_after=wait_hot_aggregate_exact(
+                proc,log,directory,source,cfg)
+
+            # Drop the hot-added task without restarting. The target table is
+            # intentionally preserved, while the durable consumer/generation
+            # retires and writer jobs drain.
+            result,response,activation=run_catalog_sql(
+                directory,env,"drop-agg-hot",
+                "DROP TABLE starrocks.agg_hot;")
+            if (
+                result.returncode!=0
+                or activation.get("status") not in {
+                    "hot_pending",
+                    "deferred_until_snapshot_done",
+                    "deferred_until_previous_plan_drained",
+                }
+            ):
+                raise AssertionError(
+                    "stateful hot drop was not accepted online: "
+                    +json.dumps(response,sort_keys=True))
+            hot_retired=wait_stateful_retired(
+                proc,log,directory,"starrocks.agg_hot")
+            if aggregate_actual(cfg,"agg_hot")!=aggregate_expected(source):
+                raise AssertionError(
+                    "retired hot aggregate target was not preserved exactly")
+
+            # Retire the original long-running aggregate online as well. JOIN
+            # remains active and exact, proving drop is not only safe for a
+            # just-created generation.
+            result,response,activation=run_catalog_sql(
+                directory,env,"drop-agg",
+                "DROP TABLE starrocks.agg;")
+            if (
+                result.returncode!=0
+                or activation.get("status") not in {
+                    "hot_pending",
+                    "deferred_until_snapshot_done",
+                    "deferred_until_previous_plan_drained",
+                }
+            ):
+                raise AssertionError(
+                    "stateful aggregate drop was not accepted online: "
+                    +json.dumps(response,sort_keys=True))
+            retired_state=wait_stateful_retired(
+                proc,log,directory,"starrocks.agg")
             deadline=time.monotonic()+180
             retired=False
             while time.monotonic()<deadline:
@@ -635,19 +673,24 @@ def main():
                 current=state(directory/"state.sqlite3")
                 if (
                     current
-                    and current["aggregate"]==["retired"]
-                    and current["join"]==["active"]
+                    and dict(current["aggregate_tasks"]).get(
+                        "starrocks.agg")=="retired"
+                    and dict(current["aggregate_tasks"]).get(
+                        "starrocks.agg_hot")=="retired"
+                    and dict(current["join_tasks"]).get(
+                        "starrocks.joined")=="active"
                     and current["consumers"]==1
                     and current["pending"]==0
                     and current["deliveries"]==0
+                    and join_expected(source)==join_actual(cfg)
                 ):
-                    if join_expected(source)==join_actual(cfg):
-                        retired=True
-                        break
+                    retired=True
+                    retired_state=current
+                    break
                 time.sleep(.2)
             if not retired:
                 raise AssertionError(
-                    "dropped aggregate task did not retire cleanly: "
+                    "online stateful retire did not drain cleanly: "
                     +repr(state(directory/"state.sqlite3")))
 
             stop(proc,handle,kill=False)
