@@ -16,6 +16,139 @@ import join_task_catalog
 import stateful_task_plan
 
 
+def install(con):
+    con.executescript("""
+        CREATE TABLE IF NOT EXISTS stateful_retirements(
+            task_id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL,
+            sink_key TEXT NOT NULL,
+            frontier INTEGER NOT NULL,
+            created REAL NOT NULL,
+            updated REAL NOT NULL);
+        CREATE INDEX IF NOT EXISTS stateful_retirements_frontier
+            ON stateful_retirements(frontier,task_id);
+    """)
+
+
+def _task_descriptor(con,kind,task_id):
+    if str(kind)=="aggregate":
+        return aggregate_task_catalog.task_info(
+            con,task_id)
+    if str(kind)=="inner_join":
+        return join_task_catalog.task_info(
+            con,task_id)
+    raise ValueError(
+        "unsupported stateful task kind: "+str(kind))
+
+
+def _task_mapping(kind,task):
+    if str(kind)=="aggregate":
+        return aggregate_target_mapping.mapping_from_descriptor(
+            task)
+    if str(kind)=="inner_join":
+        return join_target_mapping.mapping_from_descriptor(
+            task)
+    raise ValueError(
+        "unsupported stateful task kind: "+str(kind))
+
+
+def stage_retirement(con,kind,task,frontier):
+    kind=str(kind)
+    task_id=_text(task["task_id"],"task_id")
+    sink_key=_text(task["sink_key"],"sink_key")
+    frontier=int(frontier)
+    if frontier<0:
+        raise ValueError(
+            "stateful retirement frontier cannot be negative")
+    existing=con.execute("""
+        SELECT kind,sink_key,frontier
+        FROM stateful_retirements
+        WHERE task_id=?
+    """,(task_id,)).fetchone()
+    if existing is not None:
+        actual=(str(existing[0]),str(existing[1]),int(existing[2]))
+        expected=(kind,sink_key,frontier)
+        if actual!=expected:
+            raise RuntimeError(
+                "stateful retirement intent changed across restart "
+                "task=%s actual=%r expected=%r"
+                % (task_id,actual,expected))
+        return dict(
+            task_id=task_id,kind=kind,
+            sink_key=sink_key,frontier=frontier)
+    now=time.time()
+    con.execute("""
+        INSERT INTO stateful_retirements(
+            task_id,kind,sink_key,frontier,created,updated)
+        VALUES(?,?,?,?,?,?)
+    """,(task_id,kind,sink_key,frontier,now,now))
+    return dict(
+        task_id=task_id,kind=kind,
+        sink_key=sink_key,frontier=frontier)
+
+
+def retirement_info(con,task_id):
+    row=con.execute("""
+        SELECT kind,sink_key,frontier,created,updated
+        FROM stateful_retirements
+        WHERE task_id=?
+    """,(_text(task_id,"task_id"),)).fetchone()
+    if row is None:
+        raise KeyError(
+            "stateful retirement intent does not exist")
+    return dict(
+        task_id=str(task_id),kind=str(row[0]),
+        sink_key=str(row[1]),frontier=int(row[2]),
+        created=float(row[3]),updated=float(row[4]))
+
+
+def clear_retirement(con,task_id):
+    con.execute(
+        "DELETE FROM stateful_retirements WHERE task_id=?",
+        (_text(task_id,"task_id"),))
+
+
+def pending_retirements(con):
+    result=[]
+    for task_id,kind,sink_key,frontier,created,updated in con.execute("""
+        SELECT task_id,kind,sink_key,frontier,created,updated
+        FROM stateful_retirements
+        ORDER BY created,task_id
+    """).fetchall():
+        task=_task_descriptor(
+            con,kind,task_id)
+        if task["status"] in {"retired","failed"}:
+            clear_retirement(
+                con,task_id)
+            continue
+        if str(task["sink_key"])!=str(sink_key):
+            raise RuntimeError(
+                "stateful retirement sink identity changed task="
+                +str(task_id))
+        result.append(dict(
+            kind=str(kind),task=task,
+            mapping=_task_mapping(kind,task),
+            frontier=int(frontier)))
+    return result
+
+
+def stage_absent_retirements(con,compiled,frontier):
+    current={
+        (item["kind"],item["task"]["task_id"])
+        for item in compiled or ()
+    }
+    staged=[]
+    for kind,task in _all_durable_tasks(con):
+        if (kind,task["task_id"]) in current:
+            continue
+        if task["status"] in {"retired","failed"}:
+            continue
+        staged.append(
+            stage_retirement(
+                con,kind,task,frontier))
+    return staged
+
+
 def _text(value,name):
     value=str(value or "").strip()
     if not value:
