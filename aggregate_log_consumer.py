@@ -144,7 +144,7 @@ def process_next(
     expected=_metadata(
         metadata.get("source_relation"),
         metadata.get("plan_version"),
-        ir,state_id)
+        ir,state_id,metadata.get("generation_id"))
     if metadata!=expected:
         raise RuntimeError(
             "aggregate consumer metadata differs from execution IR")
