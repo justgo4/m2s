@@ -6830,11 +6830,17 @@ def process_merge_lane(con, engine_cache, handle, table, lane, cfg, runtime):
             recovery_mb = max(
                 1,(recovery_bytes + 1024**2 - 1)//1024**2)
             recovery_cfg["duckdb_memory"] = f"{recovery_mb}MB"
-            plan = runtime_plan(runtime,version)
-            recovery_engine = transform_engine(
-                recovery_cfg,
-                macros=plan.get("macros",()),
-                udfs=plan.get("udfs",()))
+            stateful_mapping=runtime.get(
+                "stateful_mappings",{}).get((int(version),str(table)))
+            if stateful_mapping is not None:
+                recovery_engine=transform_engine(
+                    recovery_cfg)
+            else:
+                plan=runtime_plan(runtime,version)
+                recovery_engine=transform_engine(
+                    recovery_cfg,
+                    macros=plan.get("macros",()),
+                    udfs=plan.get("udfs",()))
             log(
                 f"DUCKDB OOM ESCALATE table={table} delivery={delivery} "
                 f"jobs=1 memory={cfg['duckdb_memory']}->{recovery_cfg['duckdb_memory']} "
