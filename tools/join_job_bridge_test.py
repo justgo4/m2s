@@ -14,6 +14,7 @@ import j4
 import join_job_bridge
 import join_outbox
 import join_state
+import stateful_task_plan
 
 
 def spec():
@@ -175,6 +176,12 @@ def main():
             """).fetchall()
         ]
         assert seq1 and seq3
+        assert {
+            int(con.execute(
+                "SELECT plan_version FROM jobs WHERE id=?",(job_id,)
+            ).fetchone()[0])
+            for job_id in seq1+seq3
+        }=={stateful_task_plan.writer_plan_version(11)}
 
         # The two identical projected rows must retain two exact pair IDs in
         # the routed durable payload path rather than collapsing by value.
