@@ -27,7 +27,7 @@ import sqlglot
 from sqlglot import exp
 
 
-CATALOG_FORMAT = 2
+CATALOG_FORMAT = 3
 MAX_COMMAND_BYTES = 1024*1024
 MAX_SCRIPT_BYTES = 16*1024*1024
 MAX_SESSIONS = 8
@@ -147,15 +147,18 @@ def catalog_open(path):
     if "udfs_json" not in plan_columns:
         con.execute(
             "ALTER TABLE plans ADD COLUMN udfs_json TEXT NOT NULL DEFAULT '[]'")
+    if "stateful_tasks_json" not in plan_columns:
+        con.execute(
+            "ALTER TABLE plans ADD COLUMN stateful_tasks_json TEXT NOT NULL DEFAULT '[]'")
     current = _meta_get(con,"format")
     if current is None:
         _meta_set(con,"format",str(CATALOG_FORMAT))
         _meta_set(con,"draft_revision","0")
         _meta_set(con,"published_version","0")
         _meta_set(con,"config_revision","0")
-    elif int(current) == 1:
-        # Format 2 makes persistence semantics explicit and prevents older
-        # binaries from silently opening a catalog containing hot-plan/UDF state.
+    elif int(current) in (1,2):
+        # Format 3 persists stateful task manifests in plan identity. Older
+        # binaries must fail closed rather than silently drop those tasks.
         _meta_set(con,"format",str(CATALOG_FORMAT))
     elif int(current) != CATALOG_FORMAT:
         con.close()
@@ -437,12 +440,7 @@ def _canonical_name(schema, name):
 
 
 def _query_tree(sql):
-    try:
-        tree = sqlglot.parse_one(sql,read="duckdb")
-    except Exception as exc:
-        raise ValueError(f"invalid DuckDB SQL: {exc}") from exc
-    if not isinstance(tree,exp.Select):
-        raise ValueError("catalog models must be SELECT queries")
+    tree = _select_tree(sql)
     forbidden = (
         exp.Join,exp.Subquery,exp.Union,exp.AggFunc,exp.Window,exp.Group,
         exp.Having,exp.Limit,exp.Offset,exp.Distinct,exp.With,
@@ -452,16 +450,86 @@ def _query_tree(sql):
         raise ValueError(
             "catalog phase 1 supports one-source deterministic projection/filter "
             "only; JOIN/subquery/aggregate/window/set operations are stateful or unsupported")
+    tables = list(tree.find_all(exp.Table))
+    if len(tables) != 1:
+        raise ValueError("catalog phase 1 query must read exactly one relation")
+    return tree,tables[0]
+
+
+def _select_tree(sql):
+    try:
+        tree=sqlglot.parse_one(sql,read="duckdb")
+    except Exception as exc:
+        raise ValueError(f"invalid DuckDB SQL: {exc}") from exc
+    if not isinstance(tree,exp.Select):
+        raise ValueError("catalog models must be SELECT queries")
     if re.search(
         r"\b(random|uuid|now|current_timestamp|current_date|current_time|"
         r"read_\w+|query|unnest|explode|generate_series|json_each|"
         r"regexp_split_to_table)\b",
         tree.sql(dialect="duckdb"),re.I):
-        raise ValueError("catalog query contains a non-deterministic or external function")
-    tables = list(tree.find_all(exp.Table))
-    if len(tables) != 1:
-        raise ValueError("catalog phase 1 query must read exactly one relation")
-    return tree,tables[0]
+        raise ValueError(
+            "catalog query contains a non-deterministic or external function")
+    return tree
+
+
+def _stateful_sink_manifest(name,sql,primary_key=None):
+    tree=_select_tree(sql)
+    has_join=any(isinstance(node,exp.Join) for node in tree.walk())
+    has_agg=any(
+        isinstance(node,(exp.AggFunc,exp.Group))
+        for node in tree.walk())
+    if not has_join and not has_agg:
+        return None
+    forbidden=(
+        exp.Subquery,exp.Union,exp.Window,exp.Having,exp.Limit,
+        exp.Offset,exp.Distinct,exp.With,exp.Unnest,exp.Explode,
+    )
+    if any(isinstance(node,forbidden) for node in tree.walk()):
+        raise ValueError(
+            "stateful catalog v1 rejects subquery/window/HAVING/set/"
+            "DISTINCT/limit/CTE/table-function operations")
+    if has_join and has_agg:
+        raise ValueError(
+            "stateful catalog v1 does not combine JOIN and aggregation")
+    tables=list(tree.find_all(exp.Table))
+    sources=[]
+    for table in tables:
+        db=str(table.db or "").strip().lower()
+        relation=str(table.name or "").strip()
+        if db!="mysql" or not relation:
+            raise ValueError(
+                "stateful catalog v1 requires direct mysql.<table> sources")
+        sources.append(relation)
+    if has_join:
+        joins=list(tree.find_all(exp.Join))
+        if len(tables)!=2 or len(joins)!=1:
+            raise ValueError(
+                "stateful INNER JOIN v1 requires exactly two MySQL tables")
+        join=joins[0]
+        side=str(join.args.get("side") or "").strip().upper()
+        kind=str(join.args.get("kind") or "").strip().upper()
+        if side or kind not in {"","INNER"}:
+            raise ValueError(
+                "stateful catalog v1 supports INNER JOIN only")
+        if primary_key:
+            raise ValueError(
+                "stateful INNER JOIN target identity is managed internally; "
+                "do not declare a catalog PRIMARY KEY")
+        task_kind="inner_join"
+    else:
+        if len(tables)!=1:
+            raise ValueError(
+                "stateful aggregate v1 requires exactly one MySQL source")
+        task_kind="aggregate"
+    return dict(
+        kind=task_kind,
+        sink=str(name),
+        target_table=str(name).split(".",1)[1],
+        sql=tree.sql(dialect="duckdb"),
+        source_relations=sources,
+        primary_key=list(primary_key or ()),
+    )
 
 
 def _relation_name(table):
@@ -573,10 +641,15 @@ def compile_draft(con):
         FROM objects WHERE kind='sink' ORDER BY name
     """).fetchall()
     mappings = []
+    stateful_tasks = []
     for name,sql_text,primary_key_json in sinks:
         keys = json.loads(primary_key_json) if primary_key_json else None
         if keys == []:
             raise ValueError(f"{name}: PRIMARY KEY is empty")
+        stateful=_stateful_sink_manifest(name,sql_text,keys)
+        if stateful is not None:
+            stateful_tasks.append(stateful)
+            continue
         tree,source,_ = _resolve_query(con,sql_text,hidden=False)
         for key in keys or ():
             if not any(
@@ -595,14 +668,18 @@ def compile_draft(con):
             _catalog_compiled=True,
             _catalog_sink=name,
         ))
-    payload = dict(mappings=mappings,macros=macros,udfs=udfs)
+    payload = dict(
+        mappings=mappings,stateful_tasks=stateful_tasks,
+        macros=macros,udfs=udfs)
     body = json.dumps(
         payload,sort_keys=True,separators=(",",":"),ensure_ascii=False)
-    return mappings,macros,udfs,hashlib.sha256(body.encode()).hexdigest()
+    return (
+        mappings,stateful_tasks,macros,udfs,
+        hashlib.sha256(body.encode()).hexdigest())
 
 
 def _publish_candidate(con):
-    mappings,macros,udfs,plan_hash = compile_draft(con)
+    mappings,stateful_tasks,macros,udfs,plan_hash = compile_draft(con)
     existing = con.execute(
         "SELECT version,revision FROM plans WHERE plan_hash=?",
         (plan_hash,)).fetchone()
@@ -619,7 +696,8 @@ def _publish_candidate(con):
         status="candidate",version=version,revision=revision,
         config_revision=int(_meta_get(con,"config_revision","0")),
         plan_hash=plan_hash,changed=current != version,is_new=is_new,
-        mappings=mappings,macros=macros,udfs=udfs,
+        mappings=mappings,stateful_tasks=stateful_tasks,
+        macros=macros,udfs=udfs,
         _variables=_variables_from_con(con))
 
 
@@ -627,23 +705,27 @@ def _published_config_candidate(con):
     version = int(_meta_get(con,"published_version","0"))
     if version:
         row = con.execute("""
-            SELECT revision,plan_hash,mappings_json,macros_json,udfs_json
+            SELECT revision,plan_hash,mappings_json,macros_json,udfs_json,
+                   stateful_tasks_json
             FROM plans WHERE version=?
         """,(version,)).fetchone()
         if not row:
             raise RuntimeError(
                 f"published catalog plan version {version} is missing")
-        revision,plan_hash,mappings_json,macros_json,udfs_json = row
+        revision,plan_hash,mappings_json,macros_json,udfs_json,stateful_json = row
         mappings = json.loads(mappings_json)
         macros = json.loads(macros_json)
         udfs = json.loads(udfs_json)
+        stateful_tasks=json.loads(stateful_json)
     else:
-        revision,plan_hash,mappings,macros,udfs = 0,"",[],[],[]
+        revision,plan_hash,mappings,macros,udfs,stateful_tasks = (
+            0,"",[],[],[],[])
     return dict(
         status="config_candidate",version=version,revision=int(revision),
         config_revision=int(_meta_get(con,"config_revision","0")),
         plan_hash=str(plan_hash),changed=False,is_new=False,
-        mappings=mappings,macros=macros,udfs=udfs,
+        mappings=mappings,stateful_tasks=stateful_tasks,
+        macros=macros,udfs=udfs,
         _variables=_variables_from_con(con))
 
 
@@ -651,8 +733,9 @@ def _publish_persist(con, candidate):
     if candidate.get("is_new"):
         con.execute("""
             INSERT INTO plans(
-                version,revision,plan_hash,mappings_json,macros_json,udfs_json,created)
-            VALUES(?,?,?,?,?,?,?)
+                version,revision,plan_hash,mappings_json,macros_json,udfs_json,
+                stateful_tasks_json,created)
+            VALUES(?,?,?,?,?,?,?,?)
         """,(
             int(candidate["version"]),int(candidate["revision"]),
             candidate["plan_hash"],
@@ -662,6 +745,9 @@ def _publish_persist(con, candidate):
                 candidate["macros"],separators=(",",":"),ensure_ascii=False),
             json.dumps(
                 candidate["udfs"],separators=(",",":"),ensure_ascii=False),
+            json.dumps(
+                candidate.get("stateful_tasks",()),
+                separators=(",",":"),ensure_ascii=False),
             time.time(),
         ))
     _meta_set(con,"published_version",int(candidate["version"]))
@@ -669,8 +755,9 @@ def _publish_persist(con, candidate):
         status="published",version=int(candidate["version"]),
         revision=int(candidate["revision"]),plan_hash=candidate["plan_hash"],
         changed=bool(candidate.get("changed")),
-        mappings=candidate["mappings"],macros=candidate["macros"],
-        udfs=candidate["udfs"])
+        mappings=candidate["mappings"],
+        stateful_tasks=list(candidate.get("stateful_tasks",())),
+        macros=candidate["macros"],udfs=candidate["udfs"])
 
 
 def publish(path, publish_callback=None):
@@ -732,7 +819,8 @@ def load_plan_version(path, version):
     con = catalog_open(path)
     try:
         row = con.execute("""
-            SELECT revision,plan_hash,mappings_json,macros_json,udfs_json
+            SELECT revision,plan_hash,mappings_json,macros_json,udfs_json,
+                   stateful_tasks_json
             FROM plans WHERE version=?
         """,(int(version),)).fetchone()
         if not row:
@@ -740,7 +828,7 @@ def load_plan_version(path, version):
         return dict(
             version=int(version),revision=int(row[0]),plan_hash=row[1],
             mappings=json.loads(row[2]),macros=json.loads(row[3]),
-            udfs=json.loads(row[4]))
+            udfs=json.loads(row[4]),stateful_tasks=json.loads(row[5]))
     finally:
         con.close()
 
@@ -814,8 +902,14 @@ def _create_model_or_sink(con, command):
         raise ValueError("CREATE VIEW is supported only in model.*")
     if object_type == "table" and schema != "starrocks":
         raise ValueError("CREATE TABLE AS is supported only in starrocks.*")
-    _query_tree(query)
     canonical = _canonical_name(schema,name)
+    if object_type=="view":
+        _query_tree(query)
+    else:
+        tree=_select_tree(query)
+        stateful=_stateful_sink_manifest(canonical,query,None)
+        if stateful is None:
+            _query_tree(query)
     revision = _put_object(
         con,canonical,"view" if schema == "model" else "sink",
         query,replace=bool(replace))
