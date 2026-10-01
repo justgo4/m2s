@@ -8807,11 +8807,22 @@ def stateful_task_worker(item, cfg, runtime):
                 stop.wait(0.05)
                 continue
 
-            result=runner.step(
-                con,task["task_id"],cfg,
-                mapping=mapping,
-                bootstrap_limit=max(
-                    1,min(int(cfg.get("snapshot_rows",1000)),4096)))
+            try:
+                result=runner.step(
+                    con,task["task_id"],cfg,
+                    mapping=mapping,
+                    bootstrap_limit=max(
+                        1,min(int(cfg.get("snapshot_rows",1000)),4096)))
+            except RuntimeError:
+                with runtime["plan_lock"]:
+                    active_ids=runtime.get("stateful_active_task_ids")
+                    removed=(
+                        active_ids is not None
+                        and task["task_id"] not in active_ids
+                    )
+                if removed:
+                    break
+                raise
             wake_loaders(runtime,mapping_key(mapping))
             consumer=result.get("consumer")
             applied=int(result.get(
@@ -8827,6 +8838,10 @@ def stateful_task_worker(item, cfg, runtime):
             if caught and pending is None and result.get("phase")=="ready":
                 stop.wait(0.05)
     finally:
+        with runtime["plan_lock"]:
+            threads=runtime.get("stateful_worker_threads",{})
+            if threads.get(task["task_id"]) is threading.current_thread():
+                threads.pop(task["task_id"],None)
         con.close()
 
 
