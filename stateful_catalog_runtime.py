@@ -214,3 +214,56 @@ def register_compiled(con,compiled):
         copy["task"]=durable
         result.append(copy)
     return result
+
+
+
+def _all_durable_tasks(con):
+    result=[]
+    result.extend(
+        ("aggregate",item)
+        for item in aggregate_task_catalog.list_tasks(con)
+    )
+    result.extend(
+        ("inner_join",item)
+        for item in join_task_catalog.list_tasks(con)
+    )
+    return result
+
+
+def ensure_registration_safe(con,cfg,compiled):
+    import j4
+    current={
+        (item["kind"],item["task"]["task_id"])
+        for item in compiled or ()
+    }
+    durable=_all_durable_tasks(con)
+    for item in compiled or ():
+        task=item["task"]
+        for old_kind,old in durable:
+            if (
+                old["sink_key"]==task["sink_key"]
+                and old["task_id"]!=task["task_id"]
+                and old["status"] not in {"retired","failed"}
+            ):
+                raise RuntimeError(
+                    "stateful sink semantic replacement requires an explicit "
+                    "generation cutover/fence before activation: "
+                    +task["sink_key"])
+        exists=any(
+            old_kind==item["kind"]
+            and old["task_id"]==task["task_id"]
+            for old_kind,old in durable
+        )
+        if exists:
+            continue
+        with j4.mysql_connect(cfg,target=True) as target:
+            with target.cursor() as cur:
+                cur.execute(
+                    "SELECT 1 FROM "
+                    +j4.sql_name(task["target_table"],True)
+                    +" LIMIT 1")
+                if cur.fetchone():
+                    raise RuntimeError(
+                        "new stateful task requires an empty pre-existing "
+                        "target table: "+task["target_table"])
+    return current
