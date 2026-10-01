@@ -31,6 +31,13 @@ def instance_id(state_id):
     return "aggregate:"+_text(state_id,"state_id")
 
 
+def _relation_identity(info):
+    return (
+        _text(info["source_epoch"],"source_epoch")
+        +"::"+_text(info["table_name"],"table_name")
+    )
+
+
 def _collation(ir):
     schema=ir["source"]["schema"]
     by_name={str(item[0]):item for item in schema}
@@ -61,7 +68,7 @@ def physical_spec(con,ir):
     ) or "TRUE"
     return incremental_contract.state_spec(
         "materialized_subview",
-        [relation],
+        [_relation_identity(relation_info)],
         [relation_info["schema_epoch"]],
         key_exprs=list(ir["group_keys"]),
         value_exprs=aggregates+[
