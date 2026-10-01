@@ -9041,8 +9041,6 @@ def stateful_finish_retirement(
         con,kind,task["task_id"])
     stateful_catalog_runtime.retire_task(
         con,cfg,kind,durable)
-    stateful_physical_registry.retire(
-        con,kind,durable)
     stateful_catalog_runtime.clear_retirement(
         con,task["task_id"])
     key=mapping_key(mapping)
