@@ -143,28 +143,24 @@ def main():
             ).fetchone()[0] in (1,3)
             for job_id in seq1+seq3)
 
-        deliveries3=[
-            create_delivery(con,job_id)
-            for job_id in seq3
-        ]
-        deliveries1=[
-            create_delivery(con,job_id)
-            for job_id in seq1
-        ]
-        for delivery in deliveries3:
-            j4.acknowledge_delivery(
-                con,delivery)
-        assert aggregate_outbox.commit_info(
-            con,"agg-task",3)["visible"]
-        assert aggregate_outbox.visible_frontier(
-            con,"agg-task")==0
-
-        for delivery in deliveries1:
-            j4.acknowledge_delivery(
-                con,delivery)
+        # Respect the production invariant UNIQUE(table_name,lane):
+        # a lane owns at most one active delivery. Ack one durable lane job at
+        # a time; only after the delivery is removed may the lane be reused.
+        for job_id in seq1:
+            delivery=create_delivery(con,job_id)
+            j4.acknowledge_delivery(con,delivery)
         assert aggregate_outbox.commit_info(
             con,"agg-task",1)["visible"]
-        # seq 2 and 3 were already visible; the continuous prefix jumps to 3.
+        # seq 2 is a zero-output commit already marked visible, so the
+        # continuous target prefix can now advance through it.
+        assert aggregate_outbox.visible_frontier(
+            con,"agg-task")==2
+
+        for job_id in seq3:
+            delivery=create_delivery(con,job_id)
+            j4.acknowledge_delivery(con,delivery)
+        assert aggregate_outbox.commit_info(
+            con,"agg-task",3)["visible"]
         assert aggregate_outbox.visible_frontier(
             con,"agg-task")==3
         assert aggregate_outbox.pending_commits(
@@ -184,8 +180,8 @@ def main():
         con.close()
 
     print(
-        "aggregate_job_bridge_test ok jobs lanes "
-        "out_of_order_ack continuous_visible_frontier",
+        "aggregate_job_bridge_test ok jobs lane_fifo "
+        "continuous_visible_frontier",
         flush=True,
     )
 
