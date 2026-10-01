@@ -224,6 +224,72 @@ def ensure_state(con, state_id, spec, watermark=0):
     return current
 
 
+def clone_complete_state(
+        con,source_state_id,target_state_id,spec,input_semantic_id,watermark
+):
+    """Atomically clone one complete current aggregate state at exact W.
+
+    This is the only safe reuse primitive for the current-only SQLite backend:
+    the source backing state and copied rows are revalidated under the same
+    IMMEDIATE write transaction, so no logical physical pin is mistaken for
+    retained historical bytes.
+    """
+    source_state_id=_text(source_state_id,"source_state_id")
+    target_state_id=_text(target_state_id,"target_state_id")
+    if source_state_id==target_state_id:
+        raise ValueError(
+            "aggregate clone source and target state ids must differ")
+    spec=validate_spec(spec)
+    input_semantic_id=_text(
+        input_semantic_id,"input_semantic_id")
+    watermark=int(watermark)
+    if watermark<0:
+        raise ValueError("aggregate clone watermark cannot be negative")
+
+    with transaction(con):
+        if con.execute(
+            "SELECT 1 FROM aggregate_states WHERE state_id=?",
+            (target_state_id,)
+        ).fetchone():
+            raise RuntimeError(
+                "aggregate clone target state already exists")
+        source=state_info(con,source_state_id)
+        if not source["bootstrap_complete"]:
+            raise RuntimeError(
+                "aggregate clone source bootstrap is incomplete")
+        if int(source["watermark"])!=watermark:
+            raise RuntimeError(
+                "aggregate clone source watermark changed "
+                "expected=%d actual=%d"
+                % (watermark,int(source["watermark"])))
+        if source["spec_hash"]!=semantic_id(spec):
+            raise RuntimeError(
+                "aggregate clone source spec differs")
+        if source["input_semantic_id"]!=input_semantic_id:
+            raise RuntimeError(
+                "aggregate clone source input semantics differ")
+        now=time.time()
+        con.execute("""
+            INSERT INTO aggregate_states(
+                state_id,spec_hash,spec_json,watermark,last_digest,
+                created,updated,bootstrap_complete,bootstrap_cursor,
+                input_semantic_id)
+            VALUES(?,?,?,?,NULL,?,?,1,NULL,?)
+        """,(
+            target_state_id,semantic_id(spec),
+            canonical_bytes(spec).decode("utf-8"),
+            watermark,now,now,input_semantic_id,
+        ))
+        con.execute("""
+            INSERT INTO aggregate_groups(
+                state_id,key_blob,key_payload,row_count,accum_payload)
+            SELECT ?,key_blob,key_payload,row_count,accum_payload
+            FROM aggregate_groups
+            WHERE state_id=?
+        """,(target_state_id,source_state_id))
+    return state_info(con,target_state_id)
+
+
 def bind_input_semantics(con,state_id,input_semantic_id):
     state_id=_text(state_id,"state_id")
     input_semantic_id=_text(input_semantic_id,"input_semantic_id")
