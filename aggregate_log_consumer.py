@@ -46,6 +46,8 @@ def ensure_consumer(
     state=aggregate_state.ensure_state(con,state_id,spec,watermark)
     state=aggregate_state.bind_input_semantics(
         con,state_id,aggregate_ir.semantic_id(ir))
+    aggregate_physical_state.sync_instance(
+        con,state_id,ir,generation=1)
     if int(state["watermark"])!=watermark:
         raise RuntimeError(
             "aggregate state exists at a different watermark; resume from its "

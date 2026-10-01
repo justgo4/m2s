@@ -73,6 +73,19 @@ def physical_spec(con,ir):
     )
 
 
+def _ensure_catalog(con):
+    exists=con.execute("""
+        SELECT 1 FROM sqlite_master
+        WHERE type='table' AND name='physical_states'
+    """).fetchone()
+    if exists:
+        return
+    if con.in_transaction:
+        raise RuntimeError(
+            "physical state catalog must be installed before transactional sync")
+    physical_state_catalog.install(con)
+
+
 def sync_instance(con,state_id,ir,generation=1):
     aggregate_ir.validate_ir(ir)
     state_id=_text(state_id,"state_id")
@@ -92,7 +105,7 @@ def sync_instance(con,state_id,ir,generation=1):
         version_model="current_only",
     )
     health="ready" if aggregate["bootstrap_complete"] else "building"
-    physical_state_catalog.install(con)
+    _ensure_catalog(con)
     try:
         physical=physical_state_catalog.ensure_state(
             con,spec,BACKEND,FORMAT_TAG,aggregate["watermark"],
