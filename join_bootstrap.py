@@ -8,6 +8,7 @@ JOIN output becomes readable only after both sides are complete.
 import join_ir
 import join_log_consumer
 import join_outbox
+import join_physical_state
 import join_state
 import source_state
 
@@ -43,6 +44,8 @@ def ensure_build(con,state_id,ir,pin_id):
                 "JOIN fixed-W predates complete source relation "+relation)
     state=join_state.begin_bootstrap(
         con,state_id,join_ir.state_spec(ir),fixed_w)
+    join_physical_state.sync_instance(
+        con,state_id,ir,generation=1)
     return state
 
 
@@ -92,6 +95,8 @@ def process_next_chunk(
         fault_after_rows=fault_after_rows)
     updated=join_state.state_info(
         con,state_id)
+    join_physical_state.sync_instance(
+        con,state_id,ir,generation=1)
     return dict(
         state_id=state_id,fixed_w=int(fixed_w),
         side=side,done=bool(updated["bootstrap_complete"]),
