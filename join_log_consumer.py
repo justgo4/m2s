@@ -10,6 +10,7 @@ import time
 
 import join_ir
 import join_outbox
+import join_physical_state
 import join_state
 import source_state
 
@@ -68,6 +69,8 @@ def ensure_consumer(
     ):
         raise RuntimeError(
             "JOIN state semantics differ from consumer IR")
+    join_physical_state.sync_instance(
+        con,state_id,ir,generation=1)
     join_outbox.ensure_installed(con)
     join_outbox.ensure_stream(
         con,consumer_id,state_id,int(plan_version),
@@ -193,6 +196,8 @@ def process_next(
         if not applied["applied"]:
             raise RuntimeError(
                 "JOIN state unexpectedly treated next source seq as retry")
+        join_physical_state.sync_instance(
+            con,state_id,ir,generation=1)
         output_commit=join_outbox.enqueue_incremental(
             con,consumer_id,state_id,seq,
             applied["deltas"])
