@@ -161,6 +161,18 @@ def prepare_startup_retirements(
         (item["kind"],item["task"]["task_id"])
         for item in compiled or ()
     }
+    current_ids={
+        task_id for _,task_id in current
+    }
+    # An intent staged before a failed/reverted cutover must not outlive a
+    # catalog that still contains the task.
+    for task_id, in con.execute("""
+        SELECT task_id FROM stateful_retirements
+        ORDER BY task_id
+    """).fetchall():
+        if str(task_id) in current_ids:
+            clear_retirement(
+                con,task_id)
     staged=[]
     abandoned=[]
     for kind,task in _all_durable_tasks(con):
