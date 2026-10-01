@@ -8663,9 +8663,19 @@ def run_cdc(
                 active_version = int(cfg.get("catalog_version",0))
                 meta_set(con,"active_plan_version",active_version)
             if int(active_version) != int(cfg.get("catalog_version",0)):
-                raise RuntimeError(
-                    f"durable active plan {active_version} differs from loaded catalog "
-                    f"plan {cfg.get('catalog_version',0)}")
+                if not cfg.get("catalog_restart_promote",False):
+                    raise RuntimeError(
+                        f"durable active plan {active_version} differs from loaded catalog "
+                        f"plan {cfg.get('catalog_version',0)}")
+                old_version=int(active_version)
+                active_version=int(cfg.get("catalog_version",0))
+                meta_set(con,"active_plan_version",active_version)
+                meta_set(con,"fingerprint",fingerprint)
+                meta_set(con,"stateful_restart_from_plan",old_version)
+                meta_set(con,"stateful_restart_to_plan",active_version)
+                log(
+                    f"STATEFUL PLAN RESTART CUTOVER old={old_version} "
+                    f"new={active_version}")
             con.execute(
                 "UPDATE jobs SET plan_version=? WHERE plan_version=0",
                 (int(active_version),))
@@ -9094,11 +9104,28 @@ def activate_catalog(cfg):
     else:
         published = cdc_catalog.load_plan(cfg["catalog"],cfg["catalog_seed"])
         active_version = durable_active_plan_version(cfg["state"])
-        plan = (
-            cdc_catalog.load_plan_version(cfg["catalog"],active_version)
-            if active_version and active_version != int(published.get("version",0))
-            else published
-        )
+        cfg["catalog_restart_promote"] = False
+        if active_version and active_version != int(published.get("version",0)):
+            active_plan=cdc_catalog.load_plan_version(
+                cfg["catalog"],active_version)
+            stateful_changed=(
+                list(active_plan.get("stateful_tasks",()))
+                !=list(published.get("stateful_tasks",()))
+            )
+            if stateful_changed:
+                if list(active_plan.get("mappings",()))!=list(
+                    published.get("mappings",())
+                ):
+                    raise RuntimeError(
+                        "restart-boundary stateful activation cannot also "
+                        "change stateless sink topology; publish those changes "
+                        "separately")
+                plan=published
+                cfg["catalog_restart_promote"] = True
+            else:
+                plan=active_plan
+        else:
+            plan=published
     mappings = [dict(item) for item in plan["mappings"]]
     cfg["catalog_stateful_tasks"] = [
         dict(item) for item in plan.get("stateful_tasks",())
