@@ -56,7 +56,17 @@ def main():
     assert imported["imported"]
     assert imported["fixed_w"] is None
     assert imported["source_pin_released"]
-    assert len(tg.list_generations(con)) == 2
+    assert imported["status"] == "ready"
+    assert imported["history_staged_at"] is not None
+    assert imported["ready_at"] is not None
+
+    imported_staged = tg.import_existing(
+        con,"sink-old-staged",3,"db.orders","history_staged")
+    assert imported_staged["imported"]
+    assert imported_staged["status"] == "history_staged"
+    assert imported_staged["history_staged_at"] is not None
+    assert imported_staged["ready_at"] is None
+    assert len(tg.list_generations(con)) == 3
 
     retired = tg.set_terminal(con,"sink-a",7,"retired")
     assert retired["status"] == "retired"
