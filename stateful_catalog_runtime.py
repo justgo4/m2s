@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """Startup compiler and source-scope adapter for catalog stateful tasks.
 
-This module deliberately keeps stateful catalog activation restart-boundary
-only. It expands shared source capture to every stateful input relation,
-compiles live source metadata + the real StarRocks target contract into the
-existing durable aggregate/JOIN descriptors, and returns writer mappings for
-the ordinary j4 delivery pipeline.
+This module binds catalog stateful tasks to durable aggregate/JOIN runtimes.
+It expands shared source capture, compiles live source/target contracts, and
+persists retirement frontiers so compatible hot add/drop survives crashes.
 """
 import re
+import time
 
 import aggregate_target_mapping
 import aggregate_task_catalog
