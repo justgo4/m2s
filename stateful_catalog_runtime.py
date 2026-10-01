@@ -491,3 +491,44 @@ def retire_absent(con,cfg,compiled):
         retired.append(dict(
             kind=kind,task=durable,mapping=mapping))
     return retired
+
+
+
+def extend_durable_source_scope(con,cfg,mappings):
+    """Keep every previously registered shared relation in live capture scope.
+
+    Removing the last task that references a relation must not silently stop
+    logging that relation while its durable base remains marked complete. Until
+    an explicit source-scope GC/rebuild protocol exists, shared scope is
+    monotonic: once registered, a relation continues to be captured.
+    """
+    database=_text(
+        cfg["mysql"]["database"],"mysql database")
+    by_relation={
+        database+"."+str(mapping["src_table"]):mapping
+        for mapping in mappings or ()
+    }
+    rows=con.execute("""
+        SELECT table_name FROM source_relations
+        ORDER BY table_name
+    """).fetchall()
+    for row in rows:
+        relation=str(row[0])
+        if relation in by_relation:
+            continue
+        prefix=database+"."
+        if not relation.startswith(prefix):
+            raise RuntimeError(
+                "durable shared source relation belongs to another "
+                "database: "+relation)
+        table=relation[len(prefix):]
+        if not table or "." in table:
+            raise RuntimeError(
+                "unsupported durable shared source relation identity: "
+                +relation)
+        by_relation[relation]=_probe_source_mapping(
+            cfg,table)
+    return [
+        by_relation[name]
+        for name in sorted(by_relation)
+    ]
