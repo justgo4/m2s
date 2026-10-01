@@ -50,6 +50,7 @@ import physical_state_catalog
 import relational_ir
 import source_state
 import stateful_catalog_runtime
+import stateful_task_plan
 import task_generation
 
 mappings = []
@@ -8764,7 +8765,8 @@ def run_cdc(
         for item in compiled_stateful:
             mapping=item["mapping"]
             key=mapping_key(mapping)
-            version=int(item["task"]["plan_version"])
+            version=stateful_task_plan.writer_plan_version(
+                item["task"]["plan_version"])
             identity=(version,key)
             previous=stateful_mappings.get(identity)
             if previous is not None and (
