@@ -7288,6 +7288,12 @@ def capture_binlog_native(cfg, prepared, runtime):
                     max_size=1024**2,dir=state_temp_dir(cfg)) as spool:
                     transaction_batches = transaction_batch_new()
                     source_parts = []
+                    source_parts_bytes = 0
+                    source_parts_limit = max(
+                        64*1024**2,
+                        min(
+                            int(cfg["txn_spool_max_bytes"]),
+                            int(cfg["resource"]["memory_mb"])*1024**2//4))
                     spool_guard_state = dict(size=0,checked=0.0)
                     pending_events = []
                     pending_event_bytes = 0
@@ -7295,6 +7301,7 @@ def capture_binlog_native(cfg, prepared, runtime):
                     group_bytes = min(4*1024*1024,int(cfg["batch_bytes"]))
 
                     def stage_native_result(result):
+                        nonlocal source_parts_bytes
                         if result is None:
                             return
                         database,table,batch = result
@@ -7305,8 +7312,16 @@ def capture_binlog_native(cfg, prepared, runtime):
                         if batch.column_names != expected:
                             raise RuntimeError(f"{table}: native Arrow schema differs from checked source schema")
                         if shared_source_state:
-                            source_parts.append(source_state.prepare_part(
-                                source_relation_key(cfg,table),batch))
+                            part = source_state.prepare_part(
+                                source_relation_key(cfg,table),batch)
+                            source_parts_bytes += len(part["payload"])
+                            if source_parts_bytes > source_parts_limit:
+                                raise RuntimeError(
+                                    "shared source-state transaction exceeds bounded "
+                                    f"in-memory log budget bytes={source_parts_bytes} "
+                                    f"limit={source_parts_limit}; disk-spooled source "
+                                    "parts are not implemented yet")
+                            source_parts.append(part)
                         for mapping in fanout:
                             transaction_batch_add(transaction_batches,mapping,batch,cfg,route_engine,spool)
 
@@ -7401,6 +7416,7 @@ def capture_binlog_native(cfg, prepared, runtime):
                                 pending_event_bytes = 0
                                 transaction_batch_clear(transaction_batches)
                                 source_parts.clear()
+                                source_parts_bytes = 0
                                 spool.seek(0)
                                 spool.truncate()
                                 spool_guard_state.update(size=0,checked=time.monotonic())
@@ -7434,6 +7450,7 @@ def capture_binlog_native(cfg, prepared, runtime):
                             spool.seek(0)
                             spool.truncate()
                             source_parts.clear()
+                            source_parts_bytes = 0
                             spool_guard_state.update(size=0,checked=time.monotonic())
                             in_transaction = False
                             current_gtid = None
