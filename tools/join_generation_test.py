@@ -4,6 +4,7 @@ import os
 import sqlite3
 import sys
 import tempfile
+from unittest.mock import patch
 
 import pyarrow as pa
 
@@ -257,11 +258,44 @@ def main():
             con,"join-consumer",0)["kind"]=="bootstrap"
         assert join_outbox.commit_info(
             con,"join-consumer",1)["kind"]=="incremental"
+
+        # A second identical JOIN at current W clones durable pair/row state
+        # atomically and never scans either source snapshot.
+        with patch.object(
+            source_state,"read_snapshot_batch",
+            side_effect=AssertionError(
+                "physical JOIN reuse fell back to source snapshot")
+        ) as snapshot_read:
+            follower=join_generation.begin(
+                con,"join-sink-copy",72,ir,
+                "join-state-copy")
+            assert follower["phase"]=="bootstrap"
+            assert follower["generation"]["fixed_w"]==1
+            assert follower["reused_physical"]
+            copied=join_generation.process_next_chunk(
+                con,"join-sink-copy",72,ir,
+                "join-state-copy",limit=1)
+            assert copied["done"]
+            snapshot_read.assert_not_called()
+        assert sorted(
+            (
+                item["customer_name"],
+                item["amount"],
+            )
+            for item in join_state.read_rows(
+                con,"join-state-copy")
+        )==rows(con)
+        follower_active=join_generation.activate_catchup(
+            con,"join-sink-copy",72,
+            "join-consumer-copy",ir,
+            "join-state-copy")
+        assert follower_active["consumer"]["watermark"]==1
+        assert follower_active["generation"]["source_pin_released"]
         con.close()
 
     print(
         "join_generation_test ok multi_source_fixed_w "
-        "atomic_handoff rollback restart catchup",
+        "atomic_handoff rollback restart catchup fixed_w_physical_clone",
         flush=True,
     )
 
