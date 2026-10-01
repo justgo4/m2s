@@ -85,7 +85,7 @@ def target_schema():
     return [
         dict(
             name=join_target_mapping.PAIR_COLUMN,
-            type="VARCHAR(1024)",nullable=False,key=True),
+            type="VARCHAR(64)",nullable=False,key=True),
         dict(
             name="customer_name",
             type="VARCHAR(64)",nullable=True,key=False),
@@ -159,7 +159,7 @@ def create_target(cfg):
     ddl=(
         "CREATE TABLE "+DATABASE+"."+TARGET_TABLE+"("
         +join_target_mapping.PAIR_COLUMN
-        +" VARCHAR(1024) NOT NULL,"
+        +" VARCHAR(64) NOT NULL,"
         "customer_name VARCHAR(64) NULL,"
         "amount BIGINT NULL"
         ") PRIMARY KEY("
@@ -597,6 +597,8 @@ def run_contract(output,load_mode):
             starrocks_version=str(wait_ready(cfg)),
             protocol=cfg["load_mode"],
             pair_key_column=join_target_mapping.PAIR_COLUMN,
+            target_identity_format=join_outbox.stream_info(
+                con,CONSUMER_ID)["identity_format"],
             task_status=final_task["status"],
             descriptor_hash=final_task["descriptor_hash"],
             generation_id=status["generation"]["generation_id"],
