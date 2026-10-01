@@ -1633,6 +1633,7 @@ def init_state(path):
     join_outbox.install(con)
     join_task_catalog.install(con)
     aggregate_task_catalog.install(con)
+    stateful_catalog_runtime.install(con)
     physical_state_catalog.install(con)
     task_generation.install(con)
     existing_format = meta_get(con,"state_format")
