@@ -52,10 +52,11 @@ jobs:
         run: python -m pip install -r requirements.txt
       - name: Syntax and CLI
         run: |
-          python -m compileall -q j4.py cdc_catalog.py cdc_selftest.py incremental_contract.py physical_state_catalog.py relational_ir.py source_state.py task_generation.py native tools
+          python -m compileall -q j4.py cdc_catalog.py cdc_selftest.py incremental_contract.py incremental_ir.py physical_state_catalog.py relational_ir.py source_state.py task_generation.py native tools
           python j4.py --help
           python tools/catalog_config_test.py
           python tools/incremental_contract_test.py
+          python tools/incremental_ir_test.py
           python tools/physical_state_catalog_test.py
           python tools/relational_ir_test.py
           python tools/source_base_catalog_test.py

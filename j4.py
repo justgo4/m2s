@@ -39,6 +39,7 @@ import sqlglot
 from sqlglot import exp
 import cdc_catalog
 import incremental_contract
+import incremental_ir
 import physical_state_catalog
 import relational_ir
 import source_state
@@ -4795,6 +4796,10 @@ def runtime_plan_entry(version, prepared, macros=(), udfs=(), fingerprint=""):
             mapping, macros=macros, udfs=udfs)
         mapping["_relational_ir_id"] = relational_ir.semantic_id(
             mapping["_relational_ir"])
+        mapping["_incremental_ir"] = incremental_ir.compile_ir(
+            mapping["_relational_ir"])
+        mapping["_incremental_ir_id"] = incremental_ir.semantic_id(
+            mapping["_incremental_ir"])
         key = mapping_key(mapping)
         if key in by_table:
             raise RuntimeError(f"duplicate durable sink identity: {key}")
