@@ -146,6 +146,29 @@ def main():
             mocked.assert_called_once_with(
                 publish_result,"install")
 
+        drop_result=dict(
+            version=3,plan_hash="drop-last",
+            stateful_tasks=[],
+            validation=dict(
+                status="restart_required",version=3,
+                reason="drop stateful"))
+        with (
+            patch.object(
+                cdc_catalog,"load_plan_version",
+                return_value=dict(stateful_tasks=[tasks[0]])),
+            patch.object(
+                j4,"validate_local_catalog_publish",
+                return_value=dict(
+                    status="installed_offline",version=3)
+            ) as drop_install
+        ):
+            activation=j4.catalog_publish_callback(
+                fake_cfg,runtime,drop_result,"install")
+            assert activation["status"]=="restart_required"
+            assert activation["version"]==3
+            drop_install.assert_called_once_with(
+                drop_result,"install")
+
         # Restart selection promotes a published stateful-only topology change
         # even when durable active_plan_version still names the prior catalog
         # version; mixed stateless topology changes remain fenced.
@@ -257,7 +280,7 @@ def main():
 
     print(
         "catalog_stateful_manifest_test ok format3 "
-        "aggregate join coexist hash load show restart_fence hot_install restart_promote migration",
+        "aggregate join coexist hash load show restart_fence hot_install drop_last restart_promote migration",
         flush=True,
     )
 
