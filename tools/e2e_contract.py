@@ -82,6 +82,7 @@ def state(directory):
             source_pins = []
             visible_frontiers = []
             source_base_catalog = []
+            generations = []
             try:
                 relation_rows = con.execute(
                     'SELECT table_name,complete_seq FROM source_relations ORDER BY table_name'
@@ -122,6 +123,21 @@ def state(directory):
                         "ORDER BY instance_id"
                     ).fetchall()
                 ]
+                generations = [
+                    dict(
+                        sink_key=row[0], plan_version=int(row[1]),
+                        source_relation=row[2],
+                        fixed_w=None if row[3] is None else int(row[3]),
+                        source_pin_id=row[4],
+                        source_pin_released=bool(row[5]),
+                        status=row[6], imported=bool(row[7]))
+                    for row in con.execute(
+                        "SELECT sink_key,plan_version,source_relation,fixed_w,"
+                        "source_pin_id,source_pin_released,status,imported "
+                        "FROM task_generations "
+                        "ORDER BY sink_key,plan_version"
+                    ).fetchall()
+                ]
             except sqlite3.OperationalError:
                 pass
             return dict(done=bool(rows) and all(row[0] for row in rows),
@@ -130,7 +146,8 @@ def state(directory):
                         source_ready=source_ready, source_log=source_log,
                         source_base=source_base, source_pins=source_pins,
                         visible_frontiers=visible_frontiers,
-                        source_base_catalog=source_base_catalog)
+                        source_base_catalog=source_base_catalog,
+                        generations=generations)
         finally:
             con.close()
     except sqlite3.Error:
@@ -433,11 +450,41 @@ def main():
                     and (shared_pin if args.shared_source_state else bool(dynamic_samples))
                 )
                 if backfill_restart is None and crash_ready:
+                    generation_rows = [
+                        row for row in current.get('generations', ())
+                        if row['sink_key'] == 'starrocks.events_extra'
+                    ]
+                    if args.shared_source_state:
+                        if len(generation_rows) != 1:
+                            raise AssertionError(
+                                'shared dynamic build lacks one durable generation: '
+                                + repr(generation_rows))
+                        generation = generation_rows[0]
+                        pin_rows = [
+                            row for row in current.get('source_pins', ())
+                            if row['owner'].startswith(
+                                'sink:starrocks.events_extra:')
+                        ]
+                        if len(pin_rows) != 1:
+                            raise AssertionError(
+                                'shared dynamic build lacks one fixed-W source pin')
+                        if (
+                            generation['fixed_w'] != pin_rows[0]['watermark']
+                            or generation['source_pin_id'] is None
+                            or generation['source_pin_released']
+                            or generation['status'] not in (
+                                'building','history_staged')
+                        ):
+                            raise AssertionError(
+                                'generation fixed-W/pin lifecycle disagrees with '
+                                'durable source pin: generation='
+                                + repr(generation) + ' pin=' + repr(pin_rows[0]))
                     backfill_restart = dict(
                         pending_jobs=current['pending'],
                         deliveries=current['deliveries'],
                         source_pin=shared_pin,
-                        source_pins=current.get('source_pins', []))
+                        source_pins=current.get('source_pins', []),
+                        generation=generation_rows[0] if generation_rows else None)
                     stop(proc, handle, kill=True)
                     proc, handle = None, None
                     proc, handle = start(directory, env, 2)
@@ -458,6 +505,19 @@ def main():
                 if before_state.get('source_log') != before_state.get('source_base'):
                     raise AssertionError(
                         'source base did not catch durable log after dynamic build')
+                dynamic_generations = [
+                    row for row in before_state.get('generations', ())
+                    if row['sink_key'] == 'starrocks.events_extra'
+                ]
+                if (
+                    len(dynamic_generations) != 1
+                    or dynamic_generations[0]['status'] != 'ready'
+                    or not dynamic_generations[0]['source_pin_released']
+                    or dynamic_generations[0]['fixed_w'] is None
+                ):
+                    raise AssertionError(
+                        'shared dynamic generation did not reach durable ready state: '
+                        + repr(dynamic_generations))
                 frontiers = before_state.get('visible_frontiers') or []
                 if not frontiers:
                     raise AssertionError(
@@ -521,6 +581,7 @@ def main():
                           ),
                           visible_frontiers=after_state.get('visible_frontiers', []),
                           source_base_catalog=after_state.get('source_base_catalog', []),
+                          task_generations=after_state.get('generations', []),
                           dynamic_task_latency_seconds=dict(p95=percentile([x['seconds'] for x in dynamic_samples.values()],.95),
                                                            p99=percentile([x['seconds'] for x in dynamic_samples.values()],.99)),
                           crash_boundary='active_new_task_backfill_then_drained_checkpoint; HTTP_boundary_not_controlled',
