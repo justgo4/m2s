@@ -267,3 +267,70 @@ def ensure_registration_safe(con,cfg,compiled):
                         "new stateful task requires an empty pre-existing "
                         "target table: "+task["target_table"])
     return current
+
+
+
+def durable_mappings(con):
+    result={}
+    for task in aggregate_task_catalog.list_tasks(con):
+        mapping=aggregate_target_mapping.mapping_from_descriptor(task)
+        result[(int(task["plan_version"]),str(task["sink_key"]))]=mapping
+    for task in join_task_catalog.list_tasks(con):
+        mapping=join_target_mapping.mapping_from_descriptor(task)
+        result[(int(task["plan_version"]),str(task["sink_key"]))]=mapping
+    return result
+
+
+def retire_absent(con,cfg,compiled):
+    import aggregate_job_bridge
+    import join_job_bridge
+    import source_state
+    import task_generation
+
+    current={
+        (item["kind"],item["task"]["task_id"])
+        for item in compiled or ()
+    }
+    retired=[]
+    for kind,task in _all_durable_tasks(con):
+        if (kind,task["task_id"]) in current:
+            continue
+        if task["status"] in {"retired","failed"}:
+            continue
+        mapping=(
+            aggregate_target_mapping.mapping_from_descriptor(task)
+            if kind=="aggregate"
+            else join_target_mapping.mapping_from_descriptor(task)
+        )
+        generation=task_generation.maybe_info(
+            con,task["sink_key"],task["plan_version"])
+        if generation is not None and generation["source_pin_released"]:
+            try:
+                if kind=="aggregate":
+                    aggregate_job_bridge.stage_pending(
+                        con,task["consumer_id"],mapping,cfg)
+                else:
+                    join_job_bridge.stage_pending(
+                        con,task["consumer_id"],mapping,cfg)
+            except KeyError:
+                pass
+            try:
+                source_state.remove_consumer(
+                    con,task["consumer_id"])
+            except KeyError:
+                pass
+        if generation is not None and generation["status"] not in {
+            "retired","failed"
+        }:
+            task_generation.abandon(
+                con,task["sink_key"],task["plan_version"],
+                status="retired")
+        if kind=="aggregate":
+            durable=aggregate_task_catalog.set_status(
+                con,task["task_id"],"retired")
+        else:
+            durable=join_task_catalog.set_status(
+                con,task["task_id"],"retired")
+        retired.append(dict(
+            kind=kind,task=durable,mapping=mapping))
+    return retired
