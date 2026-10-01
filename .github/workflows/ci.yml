@@ -68,6 +68,7 @@ jobs:
           python tools/catalog_stateful_manifest_test.py
           python tools/stateful_task_plan_test.py
           python tools/stateful_catalog_runtime_test.py
+          python tools/stateful_hot_add_test.py
           python tools/incremental_contract_test.py
           python tools/incremental_ir_test.py
           python tools/join_bootstrap_test.py
