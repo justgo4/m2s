@@ -5666,6 +5666,15 @@ def install_hot_catalog_plan(cfg, runtime, publish_result, validation):
         raise RuntimeError("validated catalog plan disappeared before install")
     candidate,_ = cached
     version = int(candidate["version"])
+    stateful_payload={
+        name:candidate[name]
+        for name in (
+            "stateful_additions",
+            "stateful_added_manifests",
+            "stateful_source_metadata",
+        )
+        if name in candidate
+    }
     added_sinks = list(validation.get("added_sinks") or ())
     if added_sinks:
         ensure_hot_add_targets(cfg,candidate,added_sinks)
@@ -5675,11 +5684,15 @@ def install_hot_catalog_plan(cfg, runtime, publish_result, validation):
         rebound_plan = _catalog_plan_payload(cfg,publish_result)
         candidate = prepare_runtime_catalog_plan(
             cfg,rebound_plan,hot_add_sinks=added_sinks)
+        candidate.update(stateful_payload)
         hot_add_resource_check(
             cfg,runtime,
             runtime_plan(runtime,runtime_active_version(runtime)),
             candidate)
         candidate["hot_add_sinks"] = added_sinks
+    if candidate.get("stateful_additions"):
+        prepare_hot_stateful_additions(
+            cfg,runtime,candidate)
 
     with runtime["plan_lock"]:
         runtime["plans"][version] = candidate
@@ -5715,25 +5728,6 @@ def catalog_publish_callback(cfg, runtime, publish_result, phase):
         if validation is None:
             validation = validate_hot_catalog_plan(cfg,runtime,publish_result)
         try:
-            candidate_tasks=list(
-                publish_result.get("stateful_tasks",()) or ())
-            active_tasks=list(
-                cdc_catalog.load_plan_version(
-                    cfg["catalog"],
-                    runtime_active_version(runtime)
-                ).get("stateful_tasks",()) or ())
-            if candidate_tasks!=active_tasks:
-                installed=validate_local_catalog_publish(
-                    publish_result,"install")
-                installed["status"]="restart_required"
-                installed["version"]=int(
-                    publish_result.get("version",0))
-                installed.setdefault(
-                    "reason",
-                    "stateful task topology/semantics changed; restart "
-                    "the daemon to activate the committed cutover")
-                return catalog_activation_record(
-                    runtime,installed)
             return install_hot_catalog_plan(
                 cfg,runtime,publish_result,validation)
         except Exception as exc:
