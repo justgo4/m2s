@@ -545,3 +545,108 @@ def extend_durable_source_scope(con,cfg,mappings):
         by_relation[name]
         for name in sorted(by_relation)
     ]
+
+
+
+def migrate_writer_versions(con):
+    """Move pre-namespace stateful durable jobs/deliveries to negative versions.
+
+    Old candidate builds wrote the positive task_version into jobs.plan_version,
+    which shares the stateless catalog-version namespace. Migrate every linked
+    stateful job atomically. A delivery containing any unrelated/mixed job is
+    fail-closed because changing its mapping identity would be unsafe.
+    """
+    import j4
+
+    specs=(
+        (
+            "aggregate_job_links",
+            "aggregate_task_descriptors",
+        ),
+        (
+            "join_job_links",
+            "join_task_descriptors",
+        ),
+    )
+    changes=0
+    with j4.state_transaction(con):
+        for link_table,descriptor_table in specs:
+            rows=con.execute(
+                """
+                SELECT l.job_id,l.consumer_id,d.plan_version,j.plan_version,
+                       a.delivery_id
+                FROM %s l
+                JOIN %s d ON d.consumer_id=l.consumer_id
+                JOIN jobs j ON j.id=l.job_id
+                LEFT JOIN job_assignments a ON a.job_id=j.id
+                ORDER BY l.job_id
+                """ % (link_table,descriptor_table)
+            ).fetchall()
+            for job_id,consumer_id,task_version,current,delivery in rows:
+                expected=stateful_task_plan.writer_plan_version(
+                    task_version)
+                current=int(current)
+                if current!=expected:
+                    if current<0:
+                        raise RuntimeError(
+                            "stateful durable job has an unknown writer "
+                            "version namespace job_id=%d current=%d expected=%d"
+                            % (int(job_id),current,expected))
+                    con.execute(
+                        "UPDATE jobs SET plan_version=? WHERE id=?",
+                        (expected,int(job_id)))
+                    changes+=1
+                if delivery is None:
+                    continue
+                assigned=con.execute(
+                    """
+                    SELECT j.id,
+                           a.consumer_id,
+                           q.consumer_id
+                    FROM job_assignments x
+                    JOIN jobs j ON j.id=x.job_id
+                    LEFT JOIN aggregate_job_links a ON a.job_id=j.id
+                    LEFT JOIN join_job_links q ON q.job_id=j.id
+                    WHERE x.delivery_id=?
+                    ORDER BY j.id
+                    """,
+                    (str(delivery),)
+                ).fetchall()
+                for other_id,aggregate_consumer,join_consumer in assigned:
+                    owners=[
+                        value for value in (
+                            aggregate_consumer,join_consumer)
+                        if value is not None
+                    ]
+                    if owners!=[str(consumer_id)]:
+                        raise RuntimeError(
+                            "stateful writer-version migration found a mixed "
+                            "delivery delivery=%s job_id=%d owners=%r "
+                            "expected_consumer=%s"
+                            % (
+                                str(delivery),int(other_id),
+                                owners,str(consumer_id),
+                            ))
+                row=con.execute(
+                    "SELECT plan_version FROM deliveries WHERE id=?",
+                    (str(delivery),)
+                ).fetchone()
+                if row is None:
+                    raise RuntimeError(
+                        "stateful linked job assignment lacks delivery row: "
+                        +str(delivery))
+                delivery_version=int(row[0])
+                if delivery_version!=expected:
+                    if delivery_version<0:
+                        raise RuntimeError(
+                            "stateful delivery has an unknown writer version "
+                            "delivery=%s current=%d expected=%d"
+                            % (
+                                str(delivery),
+                                delivery_version,expected,
+                            ))
+                    con.execute(
+                        "UPDATE deliveries SET plan_version=? WHERE id=?",
+                        (expected,str(delivery)))
+                    changes+=1
+    return changes
