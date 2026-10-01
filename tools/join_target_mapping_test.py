@@ -64,6 +64,26 @@ def main():
         join_target_mapping.PAIR_COLUMN
     ]["nullable"] is False
 
+    # StarRocks 4.1 SHOW COLUMNS uses boolean-like strings in Key.
+    starrocks_rows=rows(
+        pair_key="true",projection_key="false")
+    starrocks_rows["amount"]=(
+        "amount","bigint","YES","false",None,"")
+    join_target_mapping.bind_target(
+        mapping,starrocks_rows)
+    expect_error(
+        lambda: join_target_mapping.bind_target(
+            mapping,rows(
+                pair_key="false",
+                projection_key="false")),
+        ValueError)
+    expect_error(
+        lambda: join_target_mapping.bind_target(
+            mapping,rows(
+                pair_key="true",
+                projection_key="mystery")),
+        ValueError)
+
     expect_error(
         lambda: join_target_mapping.bind_target(
             mapping,rows(pair_nullable="YES")),
