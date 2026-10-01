@@ -1146,14 +1146,15 @@ def help_response():
         "PUBLISH;  -- compatibility alias",
         "HELP;",
     ],limits=[
-        "phase 1: one MySQL source per sink",
-        "projection/filter/macros/view chains only",
-        "JOIN/subquery/aggregate/window/set operations are rejected",
+        "stateless sinks use one direct/model-resolved MySQL source",
+        "stateful v1 supports COUNT/SUM/AVG GROUP BY and a restricted two-source INNER equi-join",
+        "stateful v1 requires CDC_SHARED_SOURCE_STATE=1; window/subquery/JOIN+aggregate/set operations remain fail-closed",
+        "stateful hot add/drop is eligible at a safe transaction boundary when all sources are already mirrored; semantic replacement requires an explicit rebuild/new sink identity",
         "SET/RESET VARIABLE is persistent; catalog values are the normal runtime source of truth",
         "Arrow UDFs are persistent by default; explicit SESSION is temporary",
         "CDC_CATALOG_FILE is bootstrap-only and cannot be stored inside itself",
         "source PRIMARY KEY is inferred automatically unless explicitly overridden",
-        "published plans are eligible for transaction-boundary hot activation by a running daemon",
+        "published compatible plans are eligible for transaction-boundary hot activation by a running daemon",
     ])
 
 
