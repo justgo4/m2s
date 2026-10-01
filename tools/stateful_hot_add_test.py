@@ -63,6 +63,8 @@ def main():
     )
     calls=[]
     with patch.object(
+        j4,"ensure_stateful_hot_add_targets_empty"
+    ) as target_guard, patch.object(
         j4,"runtime_add_sink",
         side_effect=lambda mapping,cfg,runtime,**kwargs:
             calls.append(("sink",mapping["sr_table"],kwargs))
@@ -84,12 +86,16 @@ def main():
     assert calls[0]==(
         "sink","hot",{"historical_snapshot":False})
     assert calls[1][0]=="thread"
+    target_guard.assert_called_once_with(
+        {},[added],allow_missing=False)
 
     # Replaying the same cutover must not duplicate durable task membership.
     # The real runtime does not call this twice, but idempotent in-memory
     # membership keeps crash-recovery logic simple.
     calls.clear()
     with patch.object(
+        j4,"ensure_stateful_hot_add_targets_empty"
+    ), patch.object(
         j4,"runtime_add_sink",
         return_value=False
     ), patch.object(
