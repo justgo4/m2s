@@ -101,6 +101,10 @@ jobs:
         with:
           python-version: '3.14'
       - run: python -m pip install -r requirements.txt
+      - name: Release space from unused hosted-runner toolchains
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
       - name: Start isolated StarRocks 4.1.1 without changing server parameters
         run: docker run --detach --network host --name m2s-starrocks starrocks/allin1-ubuntu:4.1.1
       - name: Prove 2PC and async merge independently; probe combined headers with negative control
