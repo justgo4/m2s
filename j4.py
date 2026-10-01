@@ -5444,6 +5444,8 @@ def validate_hot_catalog_plan(cfg, runtime, publish_result):
                     cfg,version,manifests,
                     scope["source_metadata"],
                     allow_missing=True))
+            ensure_stateful_hot_add_targets_empty(
+                cfg,stateful_additions,allow_missing=True)
             stateful_catalog_runtime.ensure_registration_safe(
                 probe,cfg,stateful_additions)
         finally:
