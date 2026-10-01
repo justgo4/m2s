@@ -202,6 +202,40 @@ def main():
     assert drop_runtime["stateful_retire_frontiers"]=={}
     assert drop_runtime["stateful_retire_items"]=={}
 
+    dirty=dict(
+        task=dict(target_table="dirty_target"),
+    )
+    class Cursor:
+        def __init__(self):
+            self.row=(1,)
+        def __enter__(self):
+            return self
+        def __exit__(self,*args):
+            return False
+        def execute(self,sql,*args):
+            self.row=(1,)
+        def fetchone(self):
+            return self.row
+    class Connection:
+        def __enter__(self):
+            return self
+        def __exit__(self,*args):
+            return False
+        def cursor(self):
+            return Cursor()
+    with patch.object(
+        j4,"mysql_connect",return_value=Connection()
+    ), patch.object(
+        j4,"target_table_exists",return_value=True
+    ):
+        try:
+            j4.ensure_stateful_hot_add_targets_empty(
+                {},[dirty],allow_missing=True)
+            raise AssertionError(
+                "dirty stateful hot-add target was accepted")
+        except RuntimeError as exc:
+            assert "non-empty" in str(exc)
+
     generous=dict(
         load_mode="transaction",
         writer_max=4,
