@@ -9247,10 +9247,14 @@ def bootstrap_catalog_publish_callback(paths, ready, publish_result, phase):
         return validate_local_catalog_publish(publish_result,phase)
     if phase in ("install","install_config"):
         if catalog_bootstrap_ready(paths):
+            installed=validate_local_catalog_publish(
+                publish_result,phase)
             ready.set()
             return dict(
                 status="daemon_starting",
-                version=int(publish_result.get("version",0)))
+                version=int(publish_result.get("version",0)),
+                target_install_status=str(
+                    installed.get("status","validated")))
         if phase == "install_config":
             try:
                 promoted = bootstrap_publish_draft(paths,ready)
