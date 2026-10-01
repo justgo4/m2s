@@ -77,7 +77,36 @@ def hidden_customer():
     )
 
 
+def assert_daemon_state_schema():
+    import tempfile,os
+    with tempfile.TemporaryDirectory(
+        prefix="m2s-stateful-schema-"
+    ) as td:
+        con=j4.init_state(
+            os.path.join(td,"state.sqlite3"))
+        try:
+            tables={
+                row[0] for row in con.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+            required={
+                "aggregate_states","aggregate_groups",
+                "join_states","join_rows",
+                "aggregate_task_descriptors",
+                "join_task_descriptors",
+            }
+            missing=required-tables
+            if missing:
+                raise AssertionError(
+                    "daemon state schema missing stateful tables: "
+                    +repr(sorted(missing)))
+        finally:
+            con.close()
+
+
 def main():
+    assert_daemon_state_schema()
     manifests=[
         dict(
             kind="aggregate",
