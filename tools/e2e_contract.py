@@ -554,6 +554,83 @@ def main():
                     raise AssertionError(
                         'shared source_seq frontier was not durable across restart: '
                         + repr(after_frontiers))
+
+            # Prove online drop lifecycle after the bootstrap/restart contract:
+            # cut over at a source transaction boundary, drain old durable jobs,
+            # retire the generation, and never route later transactions to it.
+            drop_file = directory / 'drop-extra.sql'
+            drop_file.write_text('DROP TABLE starrocks.events_extra;\n')
+            dropped = subprocess.run(
+                [sys.executable, str(ROOT / 'j4.py'), 'sql', str(drop_file)],
+                env=env, capture_output=True, timeout=120)
+            if dropped.returncode:
+                raise RuntimeError(
+                    'online synthetic DROP failed; status='
+                    + str(dropped.returncode) + ' diagnostic='
+                    + dropped.stdout.decode(errors='replace')[-3000:])
+            drop_response = json.loads(dropped.stdout.decode())
+            drop_activation = (
+                ((drop_response.get('result') or {}).get('publish') or {})
+                .get('activation') or {})
+            if (
+                drop_activation.get('status') != 'hot_pending'
+                or 'starrocks.events_extra'
+                not in drop_activation.get('dropped_sinks', [])
+            ):
+                raise AssertionError(
+                    'online DROP was not accepted as hot draining cutover: '
+                    + json.dumps(drop_activation, sort_keys=True))
+
+            drop_cutover_seq = args.transactions + 40
+            change(source, drop_cutover_seq)
+            wait_log_contains(
+                proc, "dropped_sinks=['starrocks.events_extra']",
+                timeout=30)
+
+            post_drop_seq = args.transactions + 41
+            post_drop_commits = {
+                post_drop_seq: change(source, post_drop_seq)}
+            post_drop_samples = {}
+            deadline = time.monotonic() + 60
+            while (
+                post_drop_seq not in post_drop_samples
+                and time.monotonic() < deadline
+            ):
+                sample_visible(
+                    proc, cfg, post_drop_commits, post_drop_samples, directory)
+                time.sleep(.1)
+            if post_drop_seq not in post_drop_samples:
+                raise AssertionError(
+                    'retained sink did not continue after dropping sibling sink')
+
+            wait_log_contains(
+                proc, 'SINK DRAINED table=starrocks.events_extra',
+                timeout=60)
+            _, drop_state = wait_equal(
+                proc, directory, source, cfg, extra=False)
+            stale_rows, _ = execute(
+                cfg,
+                'SELECT id,v FROM ' + DATABASE
+                + '.events_extra WHERE id='
+                + str(1000000 + post_drop_seq))
+            if stale_rows:
+                raise AssertionError(
+                    'dropped sink received transaction after cutover: '
+                    + repr(stale_rows))
+            if args.shared_source_state:
+                retired = [
+                    row for row in drop_state.get('generations', ())
+                    if row['sink_key'] == 'starrocks.events_extra'
+                ]
+                if (
+                    len(retired) != 1
+                    or retired[0]['status'] != 'retired'
+                    or not retired[0]['source_pin_released']
+                ):
+                    raise AssertionError(
+                        'dropped shared generation was not durably retired: '
+                        + repr(retired))
+
             stop(proc, handle)
             proc, handle = None, None
             latencies = [item['seconds'] for item in samples.values()]
@@ -582,6 +659,16 @@ def main():
                           visible_frontiers=after_state.get('visible_frontiers', []),
                           source_base_catalog=after_state.get('source_base_catalog', []),
                           task_generations=after_state.get('generations', []),
+                          hot_drop_drained=True,
+                          post_drop_marker_excluded=True,
+                          drop_generation_retired=(
+                              bool(args.shared_source_state)
+                              and any(
+                                  row['sink_key'] == 'starrocks.events_extra'
+                                  and row['status'] == 'retired'
+                                  for row in drop_state.get('generations', ())
+                              )
+                          ),
                           dynamic_task_latency_seconds=dict(p95=percentile([x['seconds'] for x in dynamic_samples.values()],.95),
                                                            p99=percentile([x['seconds'] for x in dynamic_samples.values()],.99)),
                           crash_boundary='active_new_task_backfill_then_drained_checkpoint; HTTP_boundary_not_controlled',
