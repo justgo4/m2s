@@ -239,6 +239,67 @@ def find_semantic(con, requested_spec):
     return [state_info(con,row[0]) for row in rows]
 
 
+def acquire_reusable_state(
+        con, requested_spec, owner, watermark,
+        backend=None, format_tag=None, role="consumer"
+):
+    """Atomically select, retain and fixed-W pin one reusable physical state.
+
+    Selection, version-readability validation, ref creation and pin creation run
+    under one IMMEDIATE transaction so compaction/GC cannot invalidate W between
+    planning and acquisition.
+    """
+    requested_spec = contract.validate_state_spec(requested_spec)
+    owner = _text(owner, "owner")
+    role = _text(role, "role")
+    if role not in REF_ROLES:
+        raise ValueError("unsupported physical state ref role: " + role)
+    watermark = int(watermark)
+    with transaction(con):
+        candidates = find_semantic(con, requested_spec)
+        chosen = None
+        for state in candidates:
+            if not version_readable(state, watermark):
+                continue
+            if not physically_reusable(
+                    state, backend=backend, format_tag=format_tag):
+                continue
+            chosen = state
+            break
+        if chosen is None:
+            return None
+        instance_id = chosen["instance_id"]
+        con.execute("""
+            INSERT OR IGNORE INTO physical_state_refs(
+                instance_id,owner_id,role,created)
+            VALUES(?,?,?,?)
+        """, (instance_id,owner,role,time.time()))
+        existing = con.execute("""
+            SELECT pin_id,watermark FROM physical_state_pins
+            WHERE instance_id=? AND owner=?
+        """, (instance_id,owner)).fetchone()
+        if existing is not None:
+            if int(existing[1]) != watermark:
+                raise RuntimeError(
+                    "reusable state owner attempted to change fixed-W "
+                    "across retry/restart")
+            pin_id = str(existing[0])
+        else:
+            pin_id = uuid.uuid4().hex
+            con.execute("""
+                INSERT INTO physical_state_pins(
+                    pin_id,instance_id,owner,watermark,created)
+                VALUES(?,?,?,?,?)
+            """, (pin_id,instance_id,owner,watermark,time.time()))
+        return dict(
+            state=state_info(con,instance_id),
+            pin=dict(
+                pin_id=pin_id,instance_id=instance_id,
+                owner=owner,watermark=watermark),
+            ref=dict(instance_id=instance_id,owner_id=owner,role=role),
+        )
+
+
 def set_health(con, instance_id, health):
     health = _text(health, "health")
     if health not in HEALTH_STATES:

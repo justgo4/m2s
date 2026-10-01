@@ -83,6 +83,22 @@ def main():
     found = catalog.find_semantic(con,spec)
     assert [item["instance_id"] for item in found] == ["state-b","state-a"]
     assert catalog.physically_reusable(second,"rocksdb","sst-v1")
+
+    acquired = catalog.acquire_reusable_state(
+        con,spec,"build-reuse",10,backend="rocksdb",format_tag="sst-v1")
+    assert acquired["state"]["instance_id"] == "state-b"
+    assert acquired["pin"]["watermark"] == 10
+    assert acquired["ref"]["role"] == "consumer"
+    resumed = catalog.acquire_reusable_state(
+        con,spec,"build-reuse",10,backend="rocksdb",format_tag="sst-v1")
+    assert resumed["pin"]["pin_id"] == acquired["pin"]["pin_id"]
+    expect_error(
+        lambda: catalog.acquire_reusable_state(
+            con,spec,"build-reuse",11,backend="rocksdb",format_tag="sst-v1"),
+        RuntimeError,
+    )
+    assert catalog.acquire_reusable_state(
+        con,spec,"no-match",9,backend="sqlite",format_tag="sst-v1") is None
     assert catalog.ensure_state(
         con,spec,"rocksdb","sst-v1",21,
         min_readable_watermark=10,generation=2,
