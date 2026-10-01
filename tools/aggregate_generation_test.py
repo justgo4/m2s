@@ -5,6 +5,7 @@ import os
 import sqlite3
 import sys
 import tempfile
+from unittest.mock import patch
 
 import pyarrow as pa
 
@@ -190,11 +191,38 @@ def main():
         ready=task_generation.mark_ready_if_exists(
             con,"agg-sink",21)
         assert ready["status"]=="ready"
+
+        # A semantically identical second task at the current fixed-W reuses
+        # the already-maintained aggregate bytes. No source snapshot rows are
+        # scanned for the follower generation.
+        with patch.object(
+            source_state,"read_snapshot_batch",
+            side_effect=AssertionError(
+                "physical aggregate reuse fell back to source snapshot")
+        ) as snapshot_read:
+            follower=aggregate_generation.begin(
+                con,"agg-sink-copy",22,ir,"agg-state-copy")
+            assert follower["phase"]=="bootstrap"
+            assert follower["generation"]["fixed_w"]==2
+            assert follower["reused_physical"]
+            copied=aggregate_generation.process_next_chunk(
+                con,"agg-sink-copy",22,ir,"agg-state-copy",limit=1)
+            assert copied["done"]
+            snapshot_read.assert_not_called()
+        assert aggregate_state.read_rows(
+            con,"agg-state-copy"
+        )==aggregate_state.read_rows(
+            con,"agg-state")
+        follower_active=aggregate_generation.activate_catchup(
+            con,"agg-sink-copy",22,"agg-consumer-copy",
+            ir,"agg-state-copy")
+        assert follower_active["consumer"]["watermark"]==2
+        assert follower_active["generation"]["source_pin_released"]
         con.close()
 
     print(
         "aggregate_generation_test ok fixed_w resume "
-        "atomic_handoff catchup retry",
+        "atomic_handoff catchup retry fixed_w_physical_clone",
         flush=True,
     )
 
