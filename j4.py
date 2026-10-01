@@ -8293,15 +8293,26 @@ def run_cdc(
             runtime["snapshot_executor"] = executor
             futures = []
             if cfg.get("shared_source_state",False):
+                # All source-mirror jobs are queued before sink builds. With a
+                # single worker this guarantees the mirror completes first;
+                # with multiple workers, queued source jobs still precede every
+                # sink job. Restarted hot-added sinks therefore keep using the
+                # durable fixed-W cursor instead of falling back to MySQL.
                 futures.extend(
                     executor.submit(
                         guarded_worker,source_state_snapshot_worker,
                         runtime,mapping,cfg)
                     for mapping in active_plan["source_prepared"])
-            futures.extend(
-                executor.submit(
-                    guarded_worker,snapshot_worker,runtime,mapping,cfg)
-                for mapping in prepared)
+                futures.extend(
+                    executor.submit(
+                        guarded_worker,shared_snapshot_worker,
+                        runtime,mapping,cfg)
+                    for mapping in prepared)
+            else:
+                futures.extend(
+                    executor.submit(
+                        guarded_worker,snapshot_worker,runtime,mapping,cfg)
+                    for mapping in prepared)
             began = time.monotonic()
             next_status = began + cfg["status_seconds"]
             if cfg["load_mode"] == "merge_async":
