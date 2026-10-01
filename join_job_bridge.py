@@ -13,6 +13,7 @@ import duckdb
 
 import j4
 import join_outbox
+import stateful_task_plan
 from join_target_mapping import PAIR_COLUMN
 
 
@@ -159,7 +160,7 @@ def stage_commit(
             """,(
                 table,int(lane),bytes(payload),
                 int(nrows),int(logical_bytes),
-                int(stream["plan_version"]),
+                stateful_task_plan.writer_plan_version(stream["plan_version"]),
                 source_seq,now,now,
             ))
             job_id=int(cur.lastrowid)
