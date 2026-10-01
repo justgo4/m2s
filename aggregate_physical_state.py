@@ -3,9 +3,10 @@
 
 The SQLite aggregate backend is current-only: after watermark N advances to
 N+1 it does not retain an independently readable copy of N. Therefore the
-physical catalog always records min_readable_watermark == watermark. A fixed-W
-physical pin correctly blocks advancement until a future MVCC/checkpoint
-backend exists.
+physical catalog always records min_readable_watermark == watermark. Generic
+catalog pins do not preserve backing bytes; reuse is allowed only through an
+atomic SQLite clone that revalidates and copies the backing state under one
+IMMEDIATE write transaction.
 """
 import json
 
@@ -140,10 +141,89 @@ def sync_instance(con,state_id,ir,generation=1):
     return physical
 
 
+def clone_reusable_current(con,target_state_id,ir,watermark,generation=1):
+    """Clone a semantically identical ready aggregate state at exact W.
+
+    Selection and backing-state validation happen under the same SQLite
+    IMMEDIATE transaction as the copy. This provides actual bytes-at-W reuse
+    without pretending that a current-only physical-state pin is MVCC.
+    """
+    aggregate_ir.validate_ir(ir)
+    target_state_id=_text(target_state_id,"target_state_id")
+    watermark=int(watermark)
+    generation=int(generation)
+    if watermark<0:
+        raise ValueError("aggregate clone watermark cannot be negative")
+    if generation<1:
+        raise ValueError("aggregate clone generation must be >= 1")
+    _ensure_catalog(con)
+    spec=physical_spec(con,ir)
+    input_id=aggregate_ir.semantic_id(ir)
+
+    with aggregate_state.transaction(con):
+        try:
+            aggregate_state.state_info(con,target_state_id)
+        except KeyError:
+            pass
+        else:
+            return None
+
+        chosen=None
+        for physical in physical_state_catalog.find_semantic(
+            con,spec
+        ):
+            if not physical_state_catalog.physically_reusable(
+                physical,BACKEND,FORMAT_TAG
+            ):
+                continue
+            if (
+                int(physical["watermark"])!=watermark
+                or int(physical["min_readable_watermark"])!=watermark
+            ):
+                continue
+            metadata=physical["metadata"]
+            if (
+                metadata.get("version_model")!="current_only"
+                or metadata.get("aggregate_ir_id")!=input_id
+            ):
+                continue
+            source_state_id=str(
+                metadata.get("aggregate_state_id") or "")
+            if not source_state_id or source_state_id==target_state_id:
+                continue
+            try:
+                backing=aggregate_state.state_info(
+                    con,source_state_id)
+            except KeyError:
+                continue
+            if (
+                not backing["bootstrap_complete"]
+                or int(backing["watermark"])!=watermark
+                or backing["input_semantic_id"]!=input_id
+                or backing["spec_hash"]!=aggregate_state.semantic_id(
+                    aggregate_ir.state_spec(ir))
+            ):
+                continue
+            chosen=(physical,source_state_id)
+            break
+
+        if chosen is None:
+            return None
+        source_physical,source_state_id=chosen
+        cloned=aggregate_state.clone_complete_state(
+            con,source_state_id,target_state_id,
+            aggregate_ir.state_spec(ir),input_id,watermark)
+        target_physical=sync_instance(
+            con,target_state_id,ir,generation=generation)
+        return dict(
+            source_physical=source_physical,
+            source_state_id=source_state_id,
+            state=cloned,
+            physical=target_physical,
+        )
+
+
 def acquire_current(con,state_id,ir,owner,role="consumer",generation=1):
-    state_id=_text(state_id,"state_id")
-    physical=sync_instance(
-        con,state_id,ir,generation=generation)
-    return physical_state_catalog.acquire_reusable_state(
-        con,physical["spec"],owner,physical["watermark"],
-        backend=BACKEND,format_tag=FORMAT_TAG,role=role)
+    raise RuntimeError(
+        "current-only aggregate state cannot be safely retained by a logical "
+        "physical pin; use clone_reusable_current() for atomic bytes-at-W reuse")
