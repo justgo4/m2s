@@ -5683,6 +5683,22 @@ def activate_stateful_additions(cfg, runtime, candidate):
     return activated
 
 
+def stateful_dropped_items(runtime,candidate):
+    candidate_tasks=candidate.get("stateful_candidate_tasks")
+    if candidate_tasks is None:
+        return []
+    candidate_ids={
+        item["task"]["task_id"]
+        for item in candidate_tasks
+    }
+    with runtime["plan_lock"]:
+        prior_tasks=list(runtime.get("stateful_tasks",()))
+    return [
+        item for item in prior_tasks
+        if item["task"]["task_id"] not in candidate_ids
+    ]
+
+
 def activate_stateful_transition(con, cfg, runtime, candidate):
     candidate_tasks=candidate.get("stateful_candidate_tasks")
     if candidate_tasks is None:
@@ -5696,17 +5712,19 @@ def activate_stateful_transition(con, cfg, runtime, candidate):
         item["task"]["task_id"]
         for item in candidate_tasks
     }
-    with runtime["plan_lock"]:
-        prior_tasks=list(runtime.get("stateful_tasks",()))
-    dropped=[
-        item for item in prior_tasks
-        if item["task"]["task_id"] not in candidate_ids
-    ]
-    frontier=source_state.base_applied_seq(con)
+    dropped=stateful_dropped_items(
+        runtime,candidate)
     retiring_ids={
         item["task"]["task_id"]
         for item in dropped
     }
+    durable_intents={}
+    for item in dropped:
+        task_id=item["task"]["task_id"]
+        durable_intents[task_id]=(
+            stateful_catalog_runtime.retirement_info(
+                con,task_id))
+
     with runtime["plan_lock"]:
         runtime["stateful_tasks"]=list(candidate_tasks)
         runtime["stateful_active_task_ids"]=set(
@@ -5717,14 +5735,17 @@ def activate_stateful_transition(con, cfg, runtime, candidate):
             "stateful_retire_items",{})
         for item in dropped:
             task_id=item["task"]["task_id"]
-            retire_frontiers[task_id]=int(frontier)
+            retire_frontiers[task_id]=int(
+                durable_intents[task_id]["frontier"])
             retire_items[task_id]=item
 
     for item in dropped:
         task=item["task"]
+        frontier=durable_intents[
+            task["task_id"]]["frontier"]
         log(
             "STATEFUL HOT DROP FENCE task=%s sink=%s source_seq=%d "
-            "policy=catch_up_visible_then_retire"
+            "policy=catch_up_visible_then_retire durable=1"
             % (
                 task["task_id"],task["sink_key"],int(frontier),
             ))
@@ -6068,12 +6089,21 @@ def activate_pending_plan(con, decoder, cfg, runtime, position):
     change = runtime_plan_topology(current,candidate)
     added = list(change["added"])
     dropped = list(change["dropped"])
+    stateful_dropped=stateful_dropped_items(
+        runtime,candidate)
+    stateful_retire_frontier=(
+        source_state.base_applied_seq(con)
+        if stateful_dropped else None)
     if added:
         # Recheck immediately before durable cutover. A target that was filled
         # by an external process after catalog validation must never be merged
         # with J4's historical bootstrap.
         ensure_hot_add_targets(cfg,candidate,added)
     with state_transaction(con):
+        for item in stateful_dropped:
+            stateful_catalog_runtime.stage_retirement(
+                con,item["kind"],item["task"],
+                stateful_retire_frontier)
         for key in added:
             if con.execute(
                     "SELECT 1 FROM table_state WHERE name=?",(key,)).fetchone():
