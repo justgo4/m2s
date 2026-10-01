@@ -187,25 +187,17 @@ def main():
         except KeyError:
             pass
 
-        acquired=aggregate_physical_state.acquire_current(
-            con,"agg-state",ir,"reuse-test")
-        assert acquired["pin"]["watermark"]==2
         try:
-            aggregate_log_consumer.process_next(
-                con,"agg-task",ir)
+            aggregate_physical_state.acquire_current(
+                con,"agg-state",ir,"reuse-test")
             raise AssertionError(
-                "current-only physical pin did not block aggregate advance")
+                "current-only aggregate state accepted a logical fixed-W pin")
         except RuntimeError as exc:
-            assert "active fixed-W pin" in str(exc)
+            assert "current-only" in str(exc)
         assert aggregate_state.state_info(
             con,"agg-state")["watermark"]==2
         assert source_state.consumer_info(
             con,"agg-task")["watermark"]==2
-        physical_state_catalog.release_state(
-            con,acquired["state"]["instance_id"],
-            "reuse-test","consumer")
-        physical_state_catalog.release_pin(
-            con,acquired["pin"]["pin_id"])
 
         next_commit=aggregate_log_consumer.process_next(
             con,"agg-task",ir)
@@ -231,7 +223,7 @@ def main():
 
     print(
         "aggregate_bootstrap_test ok fixed_w chunk_resume "
-        "activate_consumer catchup",
+        "activate_consumer current_only_pin_fence catchup",
         flush=True,
     )
 
