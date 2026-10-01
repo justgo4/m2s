@@ -193,8 +193,8 @@ def main():
     with tempfile.TemporaryDirectory(
         prefix="m2s-stateful-runtime-"
     ) as td:
-        con=j4.init_state(
-            os.path.join(td,"state.sqlite3"))
+        state_path=os.path.join(td,"state.sqlite3")
+        con=j4.init_state(state_path)
         source_state.register_relation(
             con,"db.archived","source-1",
             pa.schema([
@@ -228,6 +228,8 @@ def main():
             sink_key=compiled["task"]["sink_key"],
             frontier=17,
         )]
+        con.close()
+        con=j4.init_state(state_path)
         pending_retire=stateful_catalog_runtime.pending_retirements(
             con)
         assert len(pending_retire)==1
@@ -268,7 +270,7 @@ def main():
     print(
         "stateful_catalog_runtime_test ok source_scope hidden_source "
         "target_inference stateful_engine_namespace monotonic_source_scope "
-        "descriptor_register durable_retirement_intent durable_mapping "
+        "descriptor_register durable_retirement_restart durable_mapping "
         "drop_retire terminal_fence",
         flush=True,
     )
