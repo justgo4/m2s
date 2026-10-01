@@ -8898,7 +8898,7 @@ def run_cdc(
                     executor.submit(
                         guarded_worker,source_state_snapshot_worker,
                         runtime,mapping,cfg)
-                    for mapping in active_plan["source_prepared"])
+                    for mapping in capture_source_mappings)
                 futures.extend(
                     executor.submit(
                         guarded_worker,shared_snapshot_worker,
@@ -8909,11 +8909,19 @@ def run_cdc(
                     executor.submit(
                         guarded_worker,snapshot_worker,runtime,mapping,cfg)
                     for mapping in prepared)
+            for item in compiled_stateful:
+                thread=threading.Thread(
+                    target=guarded_worker,
+                    args=(stateful_task_worker,runtime,item,cfg),
+                    name="stateful-"+str(item["kind"])+"-"
+                         +mapping_key(item["mapping"]))
+                thread.start()
+                threads.append(thread)
             began = time.monotonic()
             next_status = began + cfg["status_seconds"]
             if cfg["load_mode"] == "merge_async":
                 log(f"START source_reader={cfg.get('source_reader','native_c_v1')} "
-                    f"tables={len(prepared)} protocol=merge_commit_async "
+                    f"tables={len(prepared)} stateful_tasks={len(compiled_stateful)} protocol=merge_commit_async "
                     f"key_partitions={cfg['key_partitions']} writers_initial={cfg['writer_initial']} "
                     f"writers_min={cfg['writer_min']} writers_max={cfg['writer_max']} "
                     f"snapshot_bundle_max_lanes={cfg['snapshot_bundle_max_lanes']} "
@@ -8924,7 +8932,7 @@ def run_cdc(
                     f"durable_position={saved[0]}:{saved[1]} gtid_resume={int(saved_gtid is not None)}")
             else:
                 log(f"START source_reader={cfg.get('source_reader','native_c_v1')} "
-                    f"tables={len(prepared)} protocol=transaction writer_per_table=1 "
+                    f"tables={len(prepared)} stateful_tasks={len(compiled_stateful)} protocol=transaction writer_per_table=1 "
                     f"key_partitions={key_partition_count(cfg)} "
                     f"shared_source_state={int(cfg.get('shared_source_state',False))} "
                     f"durable_position={saved[0]}:{saved[1]} gtid_resume={int(saved_gtid is not None)}")
