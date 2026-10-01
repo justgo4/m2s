@@ -5307,18 +5307,17 @@ def validate_hot_catalog_plan(cfg, runtime, publish_result):
     stateful_changed=sorted(
         sink for sink in set(current_stateful)&set(candidate_stateful)
         if current_stateful[sink]!=candidate_stateful[sink])
-    if stateful_dropped or stateful_changed:
+    if stateful_changed:
         validate_local_catalog_publish(
             publish_result,"validate")
         return dict(
-            status="restart_required",
+            status="rebuild_required",
             version=version,
             reason=(
-                "stateful task drop/semantic replacement is restart-fenced "
-                "until its exact retirement/cutover frontier protocol is active; "
-                "dropped=%s changed=%s"
-                % (stateful_dropped,stateful_changed)),
-            stateful_dropped_sinks=stateful_dropped,
+                "stateful semantic replacement reuses an existing sink/target; "
+                "an explicit generation rebuild or a new sink identity is "
+                "required before cutover: changed=%s"
+                % (stateful_changed,)),
             stateful_changed_sinks=stateful_changed)
 
     candidate_config_revision = int(
@@ -5423,6 +5422,29 @@ def validate_hot_catalog_plan(cfg, runtime, publish_result):
                 status="restart_required",version=version,
                 reason=str(exc),
                 stateful_added_sinks=stateful_added)
+
+    if stateful_added or stateful_dropped:
+        current_compiled=stateful_catalog_runtime.compiled_by_sink(
+            runtime.get("stateful_tasks",()))
+        added_compiled=stateful_catalog_runtime.compiled_by_sink(
+            stateful_additions)
+        candidate_compiled=[]
+        for sink in candidate_stateful:
+            if sink in added_compiled:
+                candidate_compiled.append(
+                    added_compiled[sink])
+                continue
+            item=current_compiled.get(sink)
+            if item is None:
+                return dict(
+                    status="restart_required",version=version,
+                    reason=(
+                        "live runtime lacks the compiled stateful task needed "
+                        "for online cutover: "+sink))
+            candidate_compiled.append(item)
+        candidate["stateful_candidate_tasks"]=candidate_compiled
+        candidate["stateful_dropped_sinks"]=list(
+            stateful_dropped)
     compatible,reason = runtime_plan_compatible(current,candidate)
     if not compatible:
         return dict(status="rebuild_required",version=version,reason=reason)
@@ -5495,10 +5517,15 @@ def validate_hot_catalog_plan(cfg, runtime, publish_result):
             "snapshot_plus_live_cdc"
             if change["added"] else
             "stateful_fixed_w"
-            if stateful_added else "forward"))
+            if stateful_added else
+            "stateful_drop_drain"
+            if stateful_dropped else "forward"))
     if stateful_added:
         validation["stateful_added_sinks"]=list(
             stateful_added)
+    if stateful_dropped:
+        validation["stateful_dropped_sinks"]=list(
+            stateful_dropped)
     if change["added"]:
         validation["added_sinks"] = list(change["added"])
     if change["dropped"]:
