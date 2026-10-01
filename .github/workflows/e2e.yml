@@ -6,7 +6,10 @@ on:
     paths:
       - 'j4.py'
       - 'cdc_catalog.py'
+      - 'incremental_contract.py'
+      - 'physical_state_catalog.py'
       - 'source_state.py'
+      - 'task_generation.py'
       - 'native/**'
       - 'tools/e2e_contract.py'
       - 'tools/merge_quarantine_network_test.py'
@@ -16,7 +19,10 @@ on:
     paths:
       - 'j4.py'
       - 'cdc_catalog.py'
+      - 'incremental_contract.py'
+      - 'physical_state_catalog.py'
       - 'source_state.py'
+      - 'task_generation.py'
       - 'native/**'
       - 'tools/e2e_contract.py'
       - 'tools/merge_quarantine_network_test.py'
