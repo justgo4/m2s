@@ -71,6 +71,7 @@ jobs:
           python tools/join_ir_test.py
           python tools/join_job_bridge_test.py
           python tools/join_state_test.py
+          python tools/join_target_mapping_test.py
           python tools/incremental_ir_state_oracle.py
           python tools/physical_state_catalog_test.py
           python tools/relational_ir_test.py
