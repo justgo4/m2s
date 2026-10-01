@@ -104,6 +104,39 @@ def main():
     assert probe.call_count==1
 
     metadata=scope["source_metadata"]
+    aggregate_ir=stateful_task_plan.compile_ir(
+        manifests[0],"db",metadata)["ir"]
+    inferred_aggregate=stateful_catalog_runtime.infer_target_schema(
+        "aggregate",aggregate_ir)
+    assert inferred_aggregate==[
+        dict(
+            name="category",type="VARCHAR(128)",
+            nullable=False,key=True),
+        dict(
+            name="n",type="BIGINT",
+            nullable=False,key=False),
+    ]
+
+    join_ir=stateful_task_plan.compile_ir(
+        manifests[1],"db",metadata)["ir"]
+    inferred_join=stateful_catalog_runtime.infer_target_schema(
+        "inner_join",join_ir)
+    assert inferred_join==[
+        dict(
+            name="_j4_pair_id",type="VARCHAR(1024)",
+            nullable=False,key=True),
+        dict(
+            name="amount",type="BIGINT",
+            nullable=True,key=False),
+        dict(
+            name="name",type="VARCHAR(256)",
+            nullable=True,key=False),
+    ]
+    ddl=stateful_catalog_runtime.target_ddl(
+        "joined",inferred_join)
+    assert "PRIMARY KEY(`_j4_pair_id`)" in ddl
+    assert "`name` VARCHAR(256) NULL" in ddl
+
     aggregate_manifest=manifests[0]
     aggregate_target=[
         dict(
@@ -140,7 +173,7 @@ def main():
 
     print(
         "stateful_catalog_runtime_test ok source_scope hidden_source "
-        "descriptor_register durable_mapping drop_retire",
+        "target_inference descriptor_register durable_mapping drop_retire",
         flush=True,
     )
 
