@@ -14,9 +14,7 @@ import duckdb
 
 import j4
 import join_outbox
-
-
-PAIR_COLUMN="_j4_pair_id"
+from join_target_mapping import PAIR_COLUMN
 
 
 def _text(value,name):
