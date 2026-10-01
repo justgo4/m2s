@@ -118,10 +118,18 @@ def main():
     catalog.delete_state(con,"state-a")
     expect_error(lambda: catalog.state_info(con,"state-a"), KeyError)
 
-    # Pins and refs independently prevent collection of retired state.
+    # acquire_reusable_state() intentionally owns both a ref and a fixed-W
+    # pin. They survive retry/restart and must block collection until the
+    # consumer explicitly releases both.
     catalog.retain_state(con,"state-b","query-2","dependency")
     catalog.set_health(con,"state-b","retired")
     assert not catalog.gc_eligible(con,"state-b")
+    catalog.release_state(con,"state-b","build-reuse","consumer")
+    assert not catalog.gc_eligible(con,"state-b")
+    catalog.release_pin(con,acquired["pin"]["pin_id"])
+    assert not catalog.gc_eligible(con,"state-b")
+
+    # Independent refs and pins each keep the retired state alive.
     catalog.release_state(con,"state-b","query-2","dependency")
     pin2 = catalog.pin_state(con,"state-b","build-2",10)
     assert not catalog.gc_eligible(con,"state-b")
