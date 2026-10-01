@@ -123,6 +123,14 @@ def install(con):
         with transaction(con):
             _meta_set_int(con, "log_durable_seq", 0)
             _meta_set_int(con, "base_applied_seq", 0)
+            _meta_set_int(con, "min_readable_seq", 0)
+    elif _meta_int(con, "min_readable_seq", None) is None:
+        # Older shared-state builds could already have GCed historical
+        # versions without recording the physical history floor. Migrate
+        # conservatively: current applied state is always readable.
+        with transaction(con):
+            _meta_set_int(
+                con, "min_readable_seq", base_applied_seq(con))
 
 
 def _meta_int(con, key, default=0):
@@ -147,6 +155,10 @@ def log_durable_seq(con):
 
 def base_applied_seq(con):
     return int(_meta_int(con, "base_applied_seq", 0))
+
+
+def min_readable_seq(con):
+    return int(_meta_int(con, "min_readable_seq", 0))
 
 
 def _schema_bytes(schema):
@@ -791,8 +803,14 @@ def gc(con, consumer_watermarks=()):
             DELETE FROM source_commits
             WHERE seq<? AND base_applied=1
         """, (floor,)).rowcount
+        current_min = min_readable_seq(con)
+        if floor < current_min:
+            raise RuntimeError(
+                "source-state GC floor moved behind physical history frontier")
+        _meta_set_int(con, "min_readable_seq", floor)
     return dict(
         floor=int(floor),
+        min_readable_seq=min_readable_seq(con),
         versions=max(0, int(version_rows)),
         commits=max(0, int(commit_rows)),
     )
@@ -821,6 +839,7 @@ def status(con):
     return dict(
         log_durable_seq=log_durable_seq(con),
         base_applied_seq=base_applied_seq(con),
+        min_readable_seq=min_readable_seq(con),
         snapshot_safe_seq=None if incomplete else base_applied_seq(con),
         retention_floor=retention_floor(con),
         incomplete_relations=incomplete,

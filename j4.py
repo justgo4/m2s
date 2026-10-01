@@ -1297,7 +1297,7 @@ def source_base_catalog_instance_id(info):
 
 def sync_source_base_catalog(con):
     applied = source_state.base_applied_seq(con)
-    floor = source_state.retention_floor(con)
+    physical_min = source_state.min_readable_seq(con)
     result = []
     tables = [
         row[0] for row in con.execute(
@@ -1308,7 +1308,7 @@ def sync_source_base_catalog(con):
         complete = info["complete_seq"]
         minimum = (
             applied if complete is None
-            else max(int(complete),int(floor))
+            else max(int(complete),int(physical_min))
         )
         spec = source_base_catalog_spec(info)
         instance_id = source_base_catalog_instance_id(info)

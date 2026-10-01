@@ -125,14 +125,17 @@ def main():
         assert pin2["watermark"] == 2
         snapshot_values(con, pin2, {2: "b", 3: "c"})
 
+        assert source_state.min_readable_seq(con) == 0
         before = source_state.gc(con)
         assert before["floor"] == 1
+        assert before["min_readable_seq"] == 1
         snapshot_values(con, pin1, {1: "a2", 2: "b"})
         assert [c["seq"] for c in source_state.read_commits(con, 0)] == [1, 2]
 
         source_state.release_pin(con, pin1["pin_id"])
         after = source_state.gc(con)
         assert after["floor"] == 2
+        assert after["min_readable_seq"] == 2
         assert [c["seq"] for c in source_state.read_commits(con, 0)] == [2]
         snapshot_values(con, pin2, {2: "b", 3: "c"})
 
@@ -181,6 +184,8 @@ def main():
             metadata={"plan_version": 7})
         assert consumer["watermark"] == 2
         assert source_state.retention_floor(con) == 2
+        # A retention decision alone does not change physical readability.
+        assert source_state.min_readable_seq(con) == 2
         assert source_state.gc(con)["floor"] == 2
         assert [c["seq"] for c in source_state.read_commits(con, 0)] == [2, 3, 4]
 

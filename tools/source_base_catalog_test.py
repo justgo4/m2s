@@ -57,6 +57,11 @@ def main():
         assert source_state.apply_pending(con) == 1
         ready = j4.sync_source_base_catalog(con)[0]
         assert ready["watermark"] == 1
+        # Retention currently allows GC to 1, but GC has not happened yet:
+        # physical W=0 remains readable and catalog must report that fact.
+        assert source_state.retention_floor(con) == 1
+        assert source_state.min_readable_seq(con) == 0
+        assert ready["min_readable_watermark"] == 0
         assert physical_state_catalog.version_readable(ready,0)
         assert physical_state_catalog.version_readable(ready,1)
 
