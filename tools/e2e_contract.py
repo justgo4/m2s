@@ -631,6 +631,37 @@ def main():
                         'dropped shared generation was not durably retired: '
                         + repr(retired))
 
+            # Re-adding the same durable sink is intentionally not an online
+            # operation yet. Its old target/table_state/generation must never
+            # be mistaken for a fresh empty bootstrap.
+            readd_file = directory / 'readd-extra.sql'
+            readd_file.write_text(
+                'CREATE TABLE starrocks.events_extra AS '
+                'SELECT id,part,v,note,amount FROM mysql.events '
+                'WHERE active=1 AND v>=0;\n')
+            readded = subprocess.run(
+                [sys.executable, str(ROOT / 'j4.py'), 'sql', str(readd_file)],
+                env=env, capture_output=True, timeout=120)
+            if readded.returncode:
+                raise RuntimeError(
+                    're-add validation command failed unexpectedly; status='
+                    + str(readded.returncode) + ' diagnostic='
+                    + readded.stdout.decode(errors='replace')[-3000:])
+            readd_response = json.loads(readded.stdout.decode())
+            readd_activation = (
+                ((readd_response.get('result') or {}).get('publish') or {})
+                .get('activation') or {})
+            if (
+                readd_activation.get('status') != 'rebuild_required'
+                or 'durable prior table_state'
+                not in str(readd_activation.get('reason', ''))
+            ):
+                raise AssertionError(
+                    'same-name sink re-add did not fail closed to rebuild: '
+                    + json.dumps(readd_activation, sort_keys=True))
+            wait_log_contains(
+                proc, 'status=rebuild_required', timeout=30)
+
             stop(proc, handle)
             proc, handle = None, None
             latencies = [item['seconds'] for item in samples.values()]
@@ -661,6 +692,7 @@ def main():
                           task_generations=after_state.get('generations', []),
                           hot_drop_drained=True,
                           post_drop_marker_excluded=True,
+                          readd_requires_rebuild=True,
                           drop_generation_retired=(
                               bool(args.shared_source_state)
                               and any(
