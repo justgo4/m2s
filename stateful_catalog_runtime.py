@@ -650,3 +650,75 @@ def migrate_writer_versions(con):
                         (expected,str(delivery)))
                     changes+=1
     return changes
+
+
+
+def compile_online_catalog_tasks(
+        cfg,catalog_plan_version,manifests,capture_mappings,
+        create_missing=False,allow_missing=False
+):
+    """Compile a hot candidate only from relations already in live capture.
+
+    Online stateful activation must never silently probe/add a new source
+    relation: expanding authoritative source history requires an explicit
+    source-scope bootstrap/restart boundary.
+    """
+    manifests=list(manifests or ())
+    required=required_sources(manifests)
+    by_source={
+        str(mapping["src_table"]):mapping
+        for mapping in capture_mappings or ()
+    }
+    missing=[
+        source for source in required
+        if source not in by_source
+    ]
+    if missing:
+        raise RuntimeError(
+            "stateful online activation requires already mirrored source "
+            "relations; restart is required to expand capture: "
+            +",".join(sorted(missing)))
+    metadata={
+        source:_source_metadata_from_mapping(by_source[source])
+        for source in required
+    }
+    return compile_catalog_tasks(
+        cfg,catalog_plan_version,manifests,metadata,
+        create_missing=create_missing,
+        allow_missing=allow_missing)
+
+
+def compiled_by_sink(compiled):
+    result={}
+    for item in compiled or ():
+        sink=str(item["task"]["sink_key"])
+        if sink in result:
+            raise RuntimeError(
+                "duplicate stateful sink in compiled plan: "+sink)
+        result[sink]=item
+    return result
+
+
+def transition(current,candidate):
+    """Compare durable stateful semantics by sink, not catalog plan version."""
+    old=compiled_by_sink(current)
+    new=compiled_by_sink(candidate)
+    added=sorted(set(new)-set(old))
+    dropped=sorted(set(old)-set(new))
+    changed=[]
+    retained=[]
+    for sink in sorted(set(old)&set(new)):
+        before=old[sink]["task"]
+        after=new[sink]["task"]
+        if before["descriptor_hash"]!=after["descriptor_hash"]:
+            changed.append(sink)
+        else:
+            retained.append(sink)
+    return dict(
+        added=added,
+        dropped=dropped,
+        changed=changed,
+        retained=retained,
+        old=old,
+        new=new,
+    )
