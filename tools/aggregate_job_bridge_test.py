@@ -165,6 +165,21 @@ def main():
         assert aggregate_outbox.pending_commits(
             con,"agg-task")==[]
 
+        # StarRocks strict Stream Load validates declared target columns before
+        # applying __op=1. A key-only aggregate delete therefore needs harmless
+        # typed placeholders for NOT NULL non-key columns.
+        delete_mapping=mapping()
+        delete_mapping["_target_schema"]={
+            "category":dict(nullable=False),
+            "n":dict(nullable=False),
+            "total":dict(nullable=True),
+            "mean":dict(nullable=True),
+        }
+        delete_row=aggregate_job_bridge._delete_wire_row(
+            delete_mapping,{"category":"gone"})
+        assert delete_row==dict(
+            category="gone",n=0,total=None,mean=None)
+
         # Retired job GC may remove sidecar links without changing the already
         # durable output frontier.
         while True:
