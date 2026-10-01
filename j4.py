@@ -7684,13 +7684,24 @@ def native_advance_position(stream, event, event_type, log_pos):
     return str(stream["log_file"]),int(stream["log_pos"])
 
 
+def runtime_capture_sources(runtime, plan):
+    combined=list(plan["source_prepared"])+list(
+        runtime.get("stateful_source_mappings",()))
+    prepared=source_mappings(combined)
+    return prepared,{
+        str(mapping["src_table"]):mapping
+        for mapping in prepared
+    }
+
+
 def capture_binlog_native(cfg, prepared, runtime):
     con = open_state(cfg["state"])
     route_engine = transform_engine(cfg)
     shared_source_state = bool(cfg.get("shared_source_state",False))
     active_plan = runtime_plan(runtime,runtime_active_version(runtime))
     prepared = active_plan["prepared"]
-    source_prepared = active_plan["source_prepared"]
+    source_prepared,capture_by_source = runtime_capture_sources(
+        runtime,active_plan)
     by_sink = active_plan["by_table"]
     by_source = active_plan["by_source"]
     stop = runtime["stop"]
@@ -7717,7 +7728,8 @@ def capture_binlog_native(cfg, prepared, runtime):
             try:
                 active_plan = runtime_plan(runtime,runtime_active_version(runtime))
                 prepared = active_plan["prepared"]
-                source_prepared = active_plan["source_prepared"]
+                source_prepared,capture_by_source = runtime_capture_sources(
+                    runtime,active_plan)
                 by_sink = active_plan["by_table"]
                 by_source = active_plan["by_source"]
                 runtime["reader_state"] = "connecting"
@@ -7754,12 +7766,20 @@ def capture_binlog_native(cfg, prepared, runtime):
                         if result is None:
                             return
                         database,table,batch = result
-                        if database != cfg["mysql"]["database"] or table not in by_source:
-                            raise RuntimeError(f"native decoder emitted unexpected table {database}.{table}")
-                        fanout = by_source[table]
-                        expected = [name for name,_ in fanout[0]["_schema"]]+["_sync_op","_sync_order"]
+                        if (
+                            database != cfg["mysql"]["database"]
+                            or table not in capture_by_source
+                        ):
+                            raise RuntimeError(
+                                f"native decoder emitted unexpected table {database}.{table}")
+                        source_mapping=capture_by_source[table]
+                        fanout=by_source.get(table,())
+                        expected=[
+                            name for name,_ in source_mapping["_schema"]
+                        ]+["_sync_op","_sync_order"]
                         if batch.column_names != expected:
-                            raise RuntimeError(f"{table}: native Arrow schema differs from checked source schema")
+                            raise RuntimeError(
+                                f"{table}: native Arrow schema differs from checked source schema")
                         if shared_source_state:
                             part = source_state.prepare_part(
                                 source_relation_key(cfg,table),batch)
@@ -7813,7 +7833,8 @@ def capture_binlog_native(cfg, prepared, runtime):
                                     con,decoder,cfg,runtime,position)
                                 if activated is not None:
                                     prepared = activated["prepared"]
-                                    source_prepared = activated["source_prepared"]
+                                    source_prepared,capture_by_source = runtime_capture_sources(
+                                        runtime,activated)
                                     by_sink = activated["by_table"]
                                     by_source = activated["by_source"]
 
@@ -7912,7 +7933,8 @@ def capture_binlog_native(cfg, prepared, runtime):
                                     con,decoder,cfg,runtime,position)
                                 if activated is not None:
                                     prepared = activated["prepared"]
-                                    source_prepared = activated["source_prepared"]
+                                    source_prepared,capture_by_source = runtime_capture_sources(
+                                        runtime,activated)
                                     by_sink = activated["by_table"]
                                     by_source = activated["by_source"]
                             while meta_get(con,"pending_bytes",0) >= cfg["max_backlog_bytes"] and not stop.is_set():
