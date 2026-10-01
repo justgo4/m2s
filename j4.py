@@ -5093,6 +5093,18 @@ def _catalog_plan_payload(cfg, publish_result):
         cfg["catalog"],int(publish_result["version"]))
 
 
+def reject_unactivated_stateful_tasks(plan, context):
+    tasks=list(plan.get("stateful_tasks",()) or ())
+    if not tasks:
+        return
+    sinks=",".join(
+        str(item.get("sink","?")) for item in tasks)
+    raise RuntimeError(
+        "stateful catalog tasks are persisted but daemon activation is not "
+        "installed yet; refuse silent activation context=%s sinks=%s"
+        % (str(context),sinks))
+
+
 def durable_plan_hot_add_sinks(cfg, plan):
     state_path = cfg["state"]
     if not os.path.exists(state_path):
@@ -5135,6 +5147,8 @@ def validate_local_catalog_publish(publish_result, phase):
                 note="persistent connection settings are incomplete; target creation skipped")
         local_cfg = read_config()
         plan = _catalog_plan_payload(local_cfg,publish_result)
+        reject_unactivated_stateful_tasks(
+            plan,"local_"+phase)
         if not plan.get("mappings"):
             return dict(
                 status="validated_offline",
@@ -5179,6 +5193,8 @@ def validate_local_catalog_publish(publish_result, phase):
     with catalog_variable_scope(variables):
         local_cfg = read_config()
         plan = _catalog_plan_payload(local_cfg,publish_result)
+        reject_unactivated_stateful_tasks(
+            plan,"local_"+phase)
         local_cfg["catalog_macros"] = list(plan.get("macros",()))
         local_cfg["catalog_udfs"] = list(plan.get("udfs",()))
         hot_add_sinks = durable_plan_hot_add_sinks(local_cfg,plan)
@@ -5226,6 +5242,8 @@ def validate_hot_catalog_plan(cfg, runtime, publish_result):
                 "be used after restart"))
 
     plan = _catalog_plan_payload(cfg,publish_result)
+    reject_unactivated_stateful_tasks(
+        plan,"hot_publish")
     current = runtime_plan(runtime,runtime_active_version(runtime))
     current_keys = set(current["by_table"])
     candidate_keys = {mapping_key(item) for item in plan.get("mappings",())}
@@ -8875,6 +8893,8 @@ def activate_catalog(cfg):
             if active_version and active_version != int(published.get("version",0))
             else published
         )
+    reject_unactivated_stateful_tasks(
+        plan,"daemon_startup")
     mappings = [dict(item) for item in plan["mappings"]]
     version = int(plan.get("version",0))
     for mapping in mappings:
@@ -8913,7 +8933,7 @@ def catalog_bootstrap_ready(paths):
         if "catalog has no published plan" in str(exc):
             return False
         raise
-    return bool(plan.get("mappings"))
+    return bool(plan.get("mappings") or plan.get("stateful_tasks"))
 
 
 def bootstrap_publish_draft(paths, ready):
@@ -8923,10 +8943,10 @@ def bootstrap_publish_draft(paths, ready):
         return None
     con = cdc_catalog.catalog_open(paths["catalog"])
     try:
-        mappings,_,_,_ = cdc_catalog.compile_draft(con)
+        mappings,stateful_tasks,_,_,_ = cdc_catalog.compile_draft(con)
     finally:
         con.close()
-    if not mappings:
+    if not mappings and not stateful_tasks:
         return None
     return cdc_catalog.publish(
         paths["catalog"],
