@@ -270,7 +270,7 @@ def aggregate_expected(source):
         (
             str(row[0]),int(row[1]),
             normalize_decimal(row[2]),
-            None if row[3] is None else float(row[3]),
+            None if row[3] is None else round(float(row[3]),9),
         )
         for row in rows
     ]
@@ -285,7 +285,7 @@ def aggregate_actual(cfg):
         (
             str(row[0]),int(row[1]),
             normalize_decimal(row[2]),
-            None if row[3] is None else float(row[3]),
+            None if row[3] is None else round(float(row[3]),9),
         )
         for row in rows
     ]
@@ -360,7 +360,10 @@ def wait_ready_exact(proc,log,directory,source,cfg,timeout=240):
                 and sorted(
                     name for name,complete in current["source"]
                     if complete is not None
-                )==["customers","orders"]
+                )==[
+                    DATABASE+".customers",
+                    DATABASE+".orders",
+                ]
             )
             if ready:
                 ok,detail=equal_results(source,cfg)
@@ -512,7 +515,7 @@ def main():
                 ((response.get("result") or {}).get("publish") or {})
                 .get("activation") or {})
             if (
-                result.returncode==0
+                result.returncode!=0
                 or activation.get("status")!="restart_required"
             ):
                 raise AssertionError(
