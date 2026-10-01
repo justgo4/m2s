@@ -5523,6 +5523,20 @@ def catalog_publish_callback(cfg, runtime, publish_result, phase):
         if validation is None:
             validation = validate_hot_catalog_plan(cfg,runtime,publish_result)
         try:
+            candidate_tasks=list(
+                publish_result.get("stateful_tasks",()) or ())
+            active_tasks=list(
+                cdc_catalog.load_plan_version(
+                    cfg["catalog"],
+                    runtime_active_version(runtime)
+                ).get("stateful_tasks",()) or ())
+            if candidate_tasks!=active_tasks:
+                installed=validate_local_catalog_publish(
+                    publish_result,"install")
+                installed.setdefault(
+                    "status","restart_required")
+                return catalog_activation_record(
+                    runtime,installed)
             return install_hot_catalog_plan(
                 cfg,runtime,publish_result,validation)
         except Exception as exc:
