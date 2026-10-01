@@ -427,10 +427,15 @@ def wait_hot_aggregate_exact(
             ):
                 expected=aggregate_expected(source)
                 actual=aggregate_actual(cfg,table)
-                if expected==actual:
+                base_ok,base_detail=equal_results(
+                    source,cfg)
+                if expected==actual and base_ok:
                     return current,dict(
-                        expected=expected,actual=actual)
-                last=dict(expected=expected,actual=actual)
+                        expected=expected,actual=actual,
+                        base=base_detail)
+                last=dict(
+                    expected=expected,actual=actual,
+                    base=base_detail)
         time.sleep(.2)
     raise AssertionError(
         "hot aggregate did not become exact state=%r result=%r"
