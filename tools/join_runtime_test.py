@@ -12,7 +12,8 @@ sys.path.insert(0,str(ROOT))
 import j4
 import join_ir
 import join_outbox
-import join_runtime
+import join_task_catalog
+import join_task_runner
 import join_state
 import join_target_mapping
 import source_state
@@ -63,15 +64,28 @@ def plan():
     )
 
 
-def wire_mapping():
-    return join_target_mapping.build(
-        SINK_KEY,SINK_KEY,
-        pa.schema([
-            pa.field("customer_name",pa.string()),
-            pa.field("amount",pa.int64()),
-        ]),
-        plan_version=PLAN_VERSION,
-    )
+def target_schema():
+    return [
+        dict(
+            name=join_target_mapping.PAIR_COLUMN,
+            type="VARCHAR(1024)",nullable=False,key=True),
+        dict(
+            name="customer_name",
+            type="VARCHAR(64)",nullable=True,key=False),
+        dict(
+            name="amount",
+            type="BIGINT",nullable=True,key=False),
+    ]
+
+
+def register_task(con,ir):
+    return join_task_catalog.register_task(
+        con,"join-task",SINK_KEY,PLAN_VERSION,ir,
+        SINK_KEY,STATE_ID,CONSUMER_ID,target_schema())
+
+
+def wire_mapping(task):
+    return join_target_mapping.mapping_from_descriptor(task)
 
 
 def cfg(path):
@@ -157,7 +171,6 @@ def ack_all(con):
 
 def main():
     ir=plan()
-    mapping=wire_mapping()
     with tempfile.TemporaryDirectory(
         prefix="m2s-join-runtime-"
     ) as td:
@@ -189,11 +202,12 @@ def main():
                 dict(id=10,name="same",_sync_op=1),
                 dict(id=10,name="alice",_sync_op=0),
             ],100)==1
+        task=register_task(con,ir)
+        mapping=wire_mapping(task)
 
-        first=join_runtime.step(
-            con,SINK_KEY,PLAN_VERSION,CONSUMER_ID,
-            ir,STATE_ID,mapping,cfg(path),
-            bootstrap_limit=1)
+        first=join_task_runner.step(
+            con,"join-task",cfg(path),
+            mapping=mapping,bootstrap_limit=1)
         assert first["phase"]=="bootstrap"
         fixed_w=first["generation"]["fixed_w"]
         assert fixed_w==1
@@ -212,9 +226,9 @@ def main():
             ],None,120)==2
 
         for _ in range(20):
-            status=join_runtime.step(
-                con,SINK_KEY,PLAN_VERSION,CONSUMER_ID,
-                ir,STATE_ID,mapping,cfg(path),
+            status=join_task_runner.step(
+                con,"join-task",cfg(path),
+                mapping=mapping,
                 bootstrap_limit=1)
             if status["phase"]!="bootstrap":
                 break
@@ -229,9 +243,8 @@ def main():
         # Compute may catch up before the target; ready must remain fenced on
         # target-visible continuous outbox frontier.
         for _ in range(10):
-            status=join_runtime.step(
-                con,SINK_KEY,PLAN_VERSION,CONSUMER_ID,
-                ir,STATE_ID,mapping,cfg(path))
+            status=join_task_runner.step(
+                con,"join-task",cfg(path),mapping=mapping)
             if status["consumer"]["watermark"]==2:
                 break
         assert status["consumer"]["watermark"]==2
@@ -243,13 +256,19 @@ def main():
         assert stream["fixed_w"]==fixed_w
         con.close()
 
-        # Durable jobs alone are enough to finish publication after restart.
+        # Durable descriptor + jobs are enough to finish publication after restart.
         con=open_state(path)
+        persisted=join_task_catalog.task_info(
+            con,"join-task")
+        assert persisted["descriptor_hash"]==task["descriptor_hash"]
+        assert persisted["source_relations"]==[
+            LEFT_RELATION,RIGHT_RELATION]
+        mapping=wire_mapping(persisted)
         assert ack_all(con)>0
-        status=join_runtime.step(
-            con,SINK_KEY,PLAN_VERSION,CONSUMER_ID,
-            ir,STATE_ID,mapping,cfg(path))
+        status=join_task_runner.step(
+            con,"join-task",cfg(path),mapping=mapping)
         assert status["generation"]["status"]=="ready"
+        assert status["task"]["status"]=="active"
         assert status["phase"]=="ready"
         assert status["visible_frontier"]>=2
         assert status["consumer"]["watermark"]==2
@@ -259,9 +278,8 @@ def main():
         # neither input still advances compute/outbox visibility contiguously.
         assert add_commit(
             con,None,None,140)==3
-        status=join_runtime.step(
-            con,SINK_KEY,PLAN_VERSION,CONSUMER_ID,
-            ir,STATE_ID,mapping,cfg(path))
+        status=join_task_runner.step(
+            con,"join-task",cfg(path),mapping=mapping)
         assert status["generation"]["status"]=="ready"
         assert status["consumer"]["watermark"]==3
         assert status["visible_frontier"]==3
@@ -269,8 +287,8 @@ def main():
         con.close()
 
     print(
-        "join_runtime_test ok bootstrap_restart multi_source "
-        "catchup target_visibility ready_continuous",
+        "join_runtime_test ok durable_descriptor bootstrap_restart "
+        "multi_source catchup target_visibility ready_continuous",
         flush=True,
     )
 
