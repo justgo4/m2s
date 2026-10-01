@@ -94,6 +94,17 @@ def main():
         assert not physical_state_catalog.version_readable(ready,1)
         assert physical_state_catalog.version_readable(ready,2)
 
+        # A second SQLite connection represents another shared snapshot worker.
+        # Repeated synchronization must serialize and preserve the same
+        # monotonic frontier rather than racing a stale read against an advance.
+        con2 = j4.open_state(str(Path(td)/"state.sqlite3"))
+        try:
+            ready2 = j4.sync_source_base_catalog(con2)[0]
+            assert ready2["watermark"] == 2
+            assert ready2["min_readable_watermark"] == 2
+        finally:
+            con2.close()
+
         rows = physical_state_catalog.status(con)
         assert len(rows) == 1
         assert rows[0]["refs"][0]["role"] == "owner"
