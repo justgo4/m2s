@@ -8960,6 +8960,8 @@ def stateful_finish_retirement(
         con,kind,task["task_id"])
     stateful_catalog_runtime.retire_task(
         con,cfg,kind,durable)
+    stateful_catalog_runtime.clear_retirement(
+        con,task["task_id"])
     key=mapping_key(mapping)
     with runtime["plan_lock"]:
         runtime.get(
@@ -9194,8 +9196,14 @@ def run_cdc(
                 con,cfg,compiled_stateful)
             compiled_stateful=stateful_catalog_runtime.register_compiled(
                 con,compiled_stateful)
-        retired_stateful=stateful_catalog_runtime.retire_absent(
-            con,cfg,compiled_stateful)
+        # A catalog restart/drop is a cutover too. Persist a fixed retirement
+        # frontier instead of immediately deleting the old consumer; this lets
+        # a crash/restart resume the exact same catch-up boundary.
+        stateful_catalog_runtime.stage_absent_retirements(
+            con,compiled_stateful,
+            source_state.base_applied_seq(con))
+        retiring_stateful=(
+            stateful_catalog_runtime.pending_retirements(con))
         durable_stateful_mappings=(
             stateful_catalog_runtime.durable_mappings(con))
         migrate_sink_identity(
@@ -9255,7 +9263,10 @@ def run_cdc(
             cfg.get("catalog_macros",()),cfg.get("catalog_udfs",()),fingerprint)
         recovered_plans = {int(active_plan["version"]):active_plan}
         stateful_mappings=dict(durable_stateful_mappings)
-        current_stateful_keys=set()
+        current_stateful_keys={
+            mapping_key(item["mapping"])
+            for item in retiring_stateful
+        }
         for item in compiled_stateful:
             mapping=item["mapping"]
             key=mapping_key(mapping)
@@ -9381,10 +9392,16 @@ def run_cdc(
                        stateful_tasks=list(compiled_stateful),
                        stateful_active_task_ids={
                            item["task"]["task_id"]
-                           for item in compiled_stateful},
+                           for item in (
+                               list(compiled_stateful)
+                               +list(retiring_stateful))},
                        stateful_worker_threads={},
-                       stateful_retire_frontiers={},
-                       stateful_retire_items={},
+                       stateful_retire_frontiers={
+                           item["task"]["task_id"]:int(item["frontier"])
+                           for item in retiring_stateful},
+                       stateful_retire_items={
+                           item["task"]["task_id"]:item
+                           for item in retiring_stateful},
                        stateful_source_mappings=list(stateful_source_mappings),
                        pending_plan=None,deferred_plan=None,
                        validated_catalog_plans={},
@@ -9489,7 +9506,15 @@ def run_cdc(
                     executor.submit(
                         guarded_worker,snapshot_worker,runtime,mapping,cfg)
                     for mapping in prepared)
-            for item in compiled_stateful:
+            stateful_worker_items=[]
+            seen_stateful_workers=set()
+            for item in list(compiled_stateful)+list(retiring_stateful):
+                task_id=item["task"]["task_id"]
+                if task_id in seen_stateful_workers:
+                    continue
+                seen_stateful_workers.add(task_id)
+                stateful_worker_items.append(item)
+            for item in stateful_worker_items:
                 thread=threading.Thread(
                     target=guarded_worker,
                     args=(stateful_task_worker,runtime,item,cfg),
