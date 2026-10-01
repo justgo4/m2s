@@ -38,6 +38,7 @@ import pymysql
 import sqlglot
 from sqlglot import exp
 import cdc_catalog
+import source_state
 
 mappings = []
 
@@ -1209,6 +1210,7 @@ def read_config():
         status_seconds=env_int("CDC_STATUS_SECONDS", 30, maximum=3600),
         idle_status_seconds=env_int("CDC_IDLE_STATUS_SECONDS", 300, maximum=86400),
         detail_logs=env_bool("CDC_DETAIL_LOGS", False),
+        shared_source_state=env_bool("CDC_SHARED_SOURCE_STATE", False),
         plan_retain=env_int("CDC_PLAN_RETAIN",32,minimum=4,maximum=10000),
         metrics_max_bytes=env_int(
             "CDC_METRICS_MAX_BYTES",64*1024**2,
@@ -1250,6 +1252,15 @@ def pk_columns(mapping):
 
 def mapping_key(mapping):
     return str(mapping.get("_catalog_sink") or mapping["src_table"])
+
+
+def source_relation_key(cfg, mapping_or_table):
+    table = (
+        mapping_or_table["src_table"]
+        if isinstance(mapping_or_table,dict)
+        else str(mapping_or_table)
+    )
+    return str(cfg["mysql"]["database"])+"."+str(table)
 
 
 def source_mappings(prepared):
@@ -1507,6 +1518,7 @@ def init_state(path):
         CREATE INDEX IF NOT EXISTS field_overflow_table
             ON field_overflow(table_name,column_name,id);
     """)
+    source_state.install(con)
     existing_format = meta_get(con,"state_format")
     if existing_format is None:
         if con.execute("SELECT 1 FROM meta LIMIT 1").fetchone():
@@ -2231,7 +2243,7 @@ def insert_touched_column(con, table, column):
 
 def commit_spool(
         con, spool, position, source_time, mapping_by_name, gtid=None,
-        plan_version=0):
+        plan_version=0, source_parts=None, source_epoch=None):
     """All rows of a committed source transaction and its read cursor commit together."""
     spool.seek(0)
     now = time.time()
@@ -2261,6 +2273,11 @@ def commit_spool(
                 insert_touched_column(
                     con,table,arrow_job_table(mapping,payload).column("_sync_key"))
         meta_set(con, "pending_bytes", meta_get(con, "pending_bytes", 0) + total)
+        if source_parts is not None:
+            if not source_epoch:
+                raise RuntimeError("source-state logging requires a source epoch")
+            source_state.log_commit_tx(
+                con,source_epoch,position,gtid,source_parts)
         cursor_advance(con, position)
         if gtid is not None:
             current = meta_get(con,"gtid_set")
@@ -7199,6 +7216,7 @@ def native_advance_position(stream, event, event_type, log_pos):
 def capture_binlog_native(cfg, prepared, runtime):
     con = open_state(cfg["state"])
     route_engine = transform_engine(cfg)
+    shared_source_state = bool(cfg.get("shared_source_state",False))
     active_plan = runtime_plan(runtime,runtime_active_version(runtime))
     prepared = active_plan["prepared"]
     source_prepared = active_plan["source_prepared"]
@@ -7242,6 +7260,7 @@ def capture_binlog_native(cfg, prepared, runtime):
                 with tempfile.SpooledTemporaryFile(
                     max_size=1024**2,dir=state_temp_dir(cfg)) as spool:
                     transaction_batches = transaction_batch_new()
+                    source_parts = []
                     spool_guard_state = dict(size=0,checked=0.0)
                     pending_events = []
                     pending_event_bytes = 0
@@ -7258,6 +7277,9 @@ def capture_binlog_native(cfg, prepared, runtime):
                         expected = [name for name,_ in fanout[0]["_schema"]]+["_sync_op","_sync_order"]
                         if batch.column_names != expected:
                             raise RuntimeError(f"{table}: native Arrow schema differs from checked source schema")
+                        if shared_source_state:
+                            source_parts.append(source_state.prepare_part(
+                                source_relation_key(cfg,table),batch))
                         for mapping in fanout:
                             transaction_batch_add(transaction_batches,mapping,batch,cfg,route_engine,spool)
 
@@ -7351,6 +7373,7 @@ def capture_binlog_native(cfg, prepared, runtime):
                                 pending_events.clear()
                                 pending_event_bytes = 0
                                 transaction_batch_clear(transaction_batches)
+                                source_parts.clear()
                                 spool.seek(0)
                                 spool.truncate()
                                 spool_guard_state.update(size=0,checked=time.monotonic())
@@ -7372,13 +7395,18 @@ def capture_binlog_native(cfg, prepared, runtime):
                             changed_tables = commit_spool(
                                 con,spool,position,source_time,by_sink,
                                 current_gtid if durable_gtid is not None else None,
-                                plan_version=transaction_plan_version)
+                                plan_version=transaction_plan_version,
+                                source_parts=source_parts if shared_source_state else None,
+                                source_epoch=runtime.get("source_uuid"))
+                            if shared_source_state:
+                                source_state.apply_pending(con)
                             if changed_tables:
                                 runtime["cdc_transactions"] += 1
                                 for table in changed_tables:
                                     wake_loaders(runtime,table)
                             spool.seek(0)
                             spool.truncate()
+                            source_parts.clear()
                             spool_guard_state.update(size=0,checked=time.monotonic())
                             in_transaction = False
                             current_gtid = None
@@ -7819,6 +7847,14 @@ def run_cdc(
                 f"STATE MIGRATION format={migrated_from}->{STATE_FORMAT} "
                 "fingerprint_verified=1")
         bootstrap(con,fingerprint,source_uuid,start,[mapping_key(m) for m in prepared],start_gtid)
+        if cfg.get("shared_source_state",False):
+            for source_mapping in source_mappings(prepared):
+                source_state.register_relation(
+                    con,source_relation_key(cfg,source_mapping),source_uuid,
+                    source_arrow_schema(source_mapping),pk_columns(source_mapping))
+            recovered = source_state.apply_pending(con)
+            if recovered:
+                log(f"SOURCE STATE replayed_pending_commits={recovered}")
         migrate_sink_identity(
             con,cfg["catalog"],int(cfg.get("catalog_version",0)),
             prepared,fresh=fresh_state)
@@ -7919,7 +7955,7 @@ def run_cdc(
 
         now = time.time()
         runtime = dict(stop=control["stop"],reader_ready=threading.Event(),errors=[],
-                       error_lock=threading.Lock(),stream=None,source_seen=now,
+                       error_lock=threading.Lock(),stream=None,source_uuid=str(source_uuid),source_seen=now,
                        source_data_seen=now,heartbeat_count=0,cdc_transactions=0,
                        load_events=load_events,pressure_until={mapping_key(m):0 for m in worker_mappings},
                        table_interval={mapping_key(m):cfg["commit_interval_ms"]/1000 for m in worker_mappings},
@@ -8036,11 +8072,13 @@ def run_cdc(
                     f"snapshot_read_ahead_groups={cfg['snapshot_read_ahead_groups']} "
                     f"merge_interval_ms={cfg['merge_commit_interval_ms']} "
                     f"merge_parallel={cfg['merge_commit_parallel']} "
+                    f"shared_source_state={int(cfg.get('shared_source_state',False))} "
                     f"durable_position={saved[0]}:{saved[1]} gtid_resume={int(saved_gtid is not None)}")
             else:
                 log(f"START source_reader={cfg.get('source_reader','native_c_v1')} "
                     f"tables={len(prepared)} protocol=transaction writer_per_table=1 "
                     f"key_partitions={key_partition_count(cfg)} "
+                    f"shared_source_state={int(cfg.get('shared_source_state',False))} "
                     f"durable_position={saved[0]}:{saved[1]} gtid_resume={int(saved_gtid is not None)}")
             while not runtime["stop"].wait(1) and not signal_stop_requested(control):
                 now_mono = time.monotonic()
