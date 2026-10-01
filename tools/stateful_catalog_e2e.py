@@ -703,15 +703,22 @@ def main():
                 initial_exact=True,
                 same_transaction_update_exact=True,
                 hard_restart_exact=True,
+                online_stateful_add=True,
+                online_stateful_add_live_updates=True,
+                online_stateful_drop=True,
                 aggregate_status_before_drop=third_state["aggregate"],
                 join_status_before_drop=third_state["join"],
                 dropped_aggregate_retired=True,
+                hot_aggregate_retired=True,
                 remaining_join_exact=True,
                 automatic_stateful_target_creation=True,
                 source_relations=third_state["source"],
                 first=first,
                 second=second,
                 third=third,
+                hot_before=hot_before,
+                hot_after=hot_after,
+                retired_state=retired_state,
             )
             args.output.parent.mkdir(
                 parents=True,exist_ok=True)
@@ -720,7 +727,10 @@ def main():
             print(
                 json.dumps({
                     key:value for key,value in report.items()
-                    if key not in {"first","second","third"}
+                    if key not in {
+                        "first","second","third",
+                        "hot_before","hot_after","retired_state"
+                    }
                 },sort_keys=True),
                 flush=True)
     finally:
