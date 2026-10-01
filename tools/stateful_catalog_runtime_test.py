@@ -115,6 +115,34 @@ def main():
         "schema_signature"]==CUSTOMERS_SIG
     assert probe.call_count==1
 
+    # Stateful durable writer versions live outside the positive catalog-plan
+    # namespace. Engine resolution must therefore never fall through to
+    # runtime_plan() for a stateful delivery, including OOM recovery.
+    sentinel=object()
+    runtime=dict(
+        stateful_mappings={
+            (
+                stateful_task_plan.writer_plan_version(5),
+                "starrocks.agg",
+            ):dict(src_table="starrocks.agg")
+        }
+    )
+    with patch.object(
+        j4,"runtime_plan",
+        side_effect=AssertionError(
+            "stateful writer attempted catalog plan lookup")
+    ), patch.object(
+        j4,"transform_engine",
+        return_value=sentinel
+    ) as transform:
+        resolved=j4.transform_engine_for_version(
+            runtime,{"duckdb_memory":"64MB"},
+            stateful_task_plan.writer_plan_version(5),
+            "starrocks.agg")
+    assert resolved is sentinel
+    transform.assert_called_once_with(
+        {"duckdb_memory":"64MB"})
+
     metadata=scope["source_metadata"]
     aggregate_ir=stateful_task_plan.compile_ir(
         manifests[0],"db",metadata)["ir"]
@@ -221,7 +249,8 @@ def main():
 
     print(
         "stateful_catalog_runtime_test ok source_scope hidden_source "
-        "target_inference monotonic_source_scope descriptor_register durable_mapping drop_retire terminal_fence",
+        "target_inference stateful_engine_namespace monotonic_source_scope "
+        "descriptor_register durable_mapping drop_retire terminal_fence",
         flush=True,
     )
 
