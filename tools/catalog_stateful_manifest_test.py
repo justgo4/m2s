@@ -145,6 +145,57 @@ def main():
             mocked.assert_called_once_with(
                 publish_result,"install")
 
+        # Restart selection promotes a published stateful-only topology change
+        # even when durable active_plan_version still names the prior catalog
+        # version; mixed stateless topology changes remain fenced.
+        restart_cfg=dict(
+            catalog=path,catalog_seed=None,
+            state=os.path.join(td,"restart-state.sqlite3"),
+        )
+        published_plan=dict(
+            version=2,plan_hash="new",
+            mappings=[],stateful_tasks=[tasks[0]],
+            macros=[],udfs=[])
+        active_plan=dict(
+            version=1,plan_hash="old",
+            mappings=[],stateful_tasks=[],
+            macros=[],udfs=[])
+        with (
+            patch.object(
+                cdc_catalog,"load_plan",
+                return_value=published_plan),
+            patch.object(
+                cdc_catalog,"load_plan_version",
+                return_value=active_plan),
+            patch.object(
+                j4,"durable_active_plan_version",
+                return_value=1)
+        ):
+            j4.activate_catalog(restart_cfg)
+        assert restart_cfg["catalog_version"]==2
+        assert restart_cfg["catalog_restart_promote"]
+        assert restart_cfg["catalog_stateful_tasks"]==[tasks[0]]
+
+        unsafe_published=dict(
+            published_plan,
+            mappings=[dict(
+                src_table="orders",sr_table="new_plain")])
+        with (
+            patch.object(
+                cdc_catalog,"load_plan",
+                return_value=unsafe_published),
+            patch.object(
+                cdc_catalog,"load_plan_version",
+                return_value=active_plan),
+            patch.object(
+                j4,"durable_active_plan_version",
+                return_value=1)
+        ):
+            expect_error(
+                lambda: j4.activate_catalog(dict(restart_cfg)),
+                RuntimeError,
+                "cannot also change stateless sink topology")
+
         # Stateful model views remain unsupported; only sink manifests may own
         # stateful operators in the first control-plane phase.
         expect_error(
@@ -205,7 +256,7 @@ def main():
 
     print(
         "catalog_stateful_manifest_test ok format3 "
-        "aggregate join coexist hash load show restart_fence hot_install migration",
+        "aggregate join coexist hash load show restart_fence hot_install restart_promote migration",
         flush=True,
     )
 
