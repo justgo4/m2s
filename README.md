@@ -8,9 +8,9 @@
 
 ## 1. 场景与待验证假说
 
-第一期限定一个 MySQL 实例、单机运行、稳定主键、ROW binlog + FULL row image，支持 GTID 和文件位置恢复。显式登记源库表及全部允许列；后续 SQL 只能使用已捕获的信息。StarRocks 固定 **4.1.1 主键表、默认服务端参数**。不支持的 SQL、破坏性 DDL、日志缺口必须拒绝或进入显式重建流程。
+第一期限定单 MySQL 实例、单机、稳定主键、ROW + FULL row image，支持 GTID/文件位置恢复；显式登记源表及允许列。StarRocks 固定 **4.1.1 主键表、默认服务端参数**。不支持 SQL、破坏性 DDL、日志缺口必须拒绝或显式重建。
 
-核心负载为 **5000 万历史行 + 每秒 50 行增量**。基础同步的初始回填与 CDC 并行，旧回填不得覆盖新版本或复活已删除记录。目标是已有就绪任务在健康运行期间，从 MySQL 事务提交到 StarRocks 可查询 **P95 ≤ 5 秒、P99 ≤ 10 秒**；另报最大延迟、超标次数和故障期间表现。新增任务另报 `time_to_ready` 和是否完整，不能用初始化期混淆实时 SLO。
+核心负载：**5000 万历史行 + 50 rows/s**。初始回填与 CDC 并行，旧回填不得覆盖新版本或复活删除。健康运行时已就绪任务目标为 MySQL commit → StarRocks queryable **P95 ≤ 5 秒、P99 ≤ 10 秒**；新增任务另报 `time_to_ready` 与完整性。
 
 默认保存当前关系和有界变化历史，不永久保存数据库全部历史。未来任意新增查询仅指届时支持的、确定性的 SQL 范围；未捕获的列和已丢弃的历史无法凭空重建。**系统某处必须持久保存足以精确重建当前关系的信息**，但不要求存在一份字面上的逐行完整副本；压缩列式、factorized state、base+delta 等表示只要满足同一语义与恢复合同都可接受。
 
@@ -25,10 +25,10 @@
 
 | 已验证范围 | 可核查证据 | 证据边界 |
 |---|---|---|
-| 实际 daemon；MySQL 8.4.6 → StarRocks 4.1.1；GTID ON/OFF × transaction/merge_async；动态第二下游、断线、强退重启；逐键逐字段 oracle | [端到端 CI](https://github.com/justgo4/m2s/actions/runs/36787425832)、[公开样本](reports/e2e-20261001.json)；[回填中强退 CI](https://github.com/justgo4/m2s/actions/runs/36787945824) | 合成短测、共享 runner，不能证明 50M/72h SLO |
-| Python/C 解码差分、真实 MySQL、多类型、durable cursor、decoder 重启、sanitizer | [native/integration CI](https://github.com/justgo4/m2s/actions/runs/36795348569)、[baseline CI](https://github.com/justgo4/m2s/actions/runs/36795348655) | 正确性/恢复证据，不是性能极限证明 |
-| merge 请求已接受但响应丢失；保留未知请求、隔离目标；重启后其他目标仍正确；未知 payload 未重复发送 | [真实网络故障 CI](https://github.com/justgo4/m2s/actions/runs/36795348744)、[报告](reports/merge-quarantine-20261001.json) | 不代表受影响目标已自动完成远端对账和恢复 |
-| SQLite Arrow/key index、DuckDB typed state、RocksDB Arrow/key index；原子提交、fixed-W 原型、崩溃恢复 | [layout 报告](reports/state-layout-20261001.json)、[RocksDB 报告](reports/state-rocks-20261001.json) | 小规模候选；部分构建暂停写入并复制 checkpoint，未证明在线版本 pin/GC，未接 daemon |
+| daemon + MySQL 8.4.6 → StarRocks 4.1.1；GTID ON/OFF、两输出协议、动态第二下游、断线/强退恢复、逐字段 oracle | [E2E](https://github.com/justgo4/m2s/actions/runs/36787425832)、[样本](reports/e2e-20261001.json)、[回填强退](https://github.com/justgo4/m2s/actions/runs/36787945824) | 短测，非 50M/72h |
+| Python/C 解码差分、真实 MySQL、多类型、durable cursor、sanitizer | [integration](https://github.com/justgo4/m2s/actions/runs/36795348569)、[baseline](https://github.com/justgo4/m2s/actions/runs/36795348655) | 正确性/恢复，不是性能结论 |
+| merge 已接受但响应丢失；未知请求持久化并隔离目标，独立目标继续 | [网络故障 CI](https://github.com/justgo4/m2s/actions/runs/36795348744)、[报告](reports/merge-quarantine-20261001.json) | 尚无自动远端对账/解隔离 |
+| SQLite / DuckDB / RocksDB 状态候选；fixed-W 与 crash recovery 原型 | [layout](reports/state-layout-20261001.json)、[RocksDB](reports/state-rocks-20261001.json) | 小规模、未在线 pin/GC、未接 daemon |
 
 2PC 与 merge_commit async 是已独立验收的两条输出协议。默认 `merge_async`，可选 `transaction`；不能因同时设置 header 就声称双机制已叠加。已知事务 ID 的恢复与“是否被接收也未知”的请求必须分开处理，后者不得盲目重放。
 
@@ -54,11 +54,9 @@
 
 新任务流程为：**原子取得 W 与保留句柄 → 读取一致 S(W) → 构建 generation → 重放 Δ(W, now] → 追赶 → 输出可见 → 发布**。源 CDC 在构建期间继续推进。
 
-不能扫描不断变化的 latest 后重放旧 W；也不能只 pin changelog。必须共同保留 S(W) 所需的数据版本、schema、删除标记、索引/文件及 W 之后日志。获取快照和登记 pin 与 GC 之间不能留竞态窗口。
+不能扫描变化中的 latest 再重放旧 W，也不能只 pin changelog；必须同时保留 S(W) 所需的数据版本、schema、tombstone/索引/文件及 W 后日志，并让 snapshot/pin 获取与 GC 无竞态。
 
-持久 manifest 至少记录 source epoch、W、可读版本/文件、schema、扫描进度、重放进度和 generation。重启后仍能恢复同一 W；不能仅依赖进程内 snapshot。日志保留下界取有效消费者和 build pin 的最小水位，数据版本按独立的可达性规则回收。没有消费者/pin 才可推进到源持久水位。
-
-容量不足时优先限制新构建和慢任务，必要时对源施加背压；不得删除仍需读取的版本。释放 pin 必须与完成或已隔离的取消绑定。长期保留旧版本的空间成本必须计入预算；“不复制整份 base”不意味着零额外空间。
+持久 manifest 记录 source epoch、W、可读版本、schema、扫描/重放进度和 generation；重启后仍恢复同一 W。日志按消费者/build pin 保留，数据版本按可达性独立 GC。容量不足时限制新构建/慢任务或背压，绝不删除仍需版本；旧版本保留成本计入预算。
 
 ### 3.3 Generation 与输出隔离
 
@@ -74,11 +72,11 @@ generation 更替须证明旧的在途请求不能覆盖新结果。停止本地
 
 | 候选 | 进入性能比较前的能力门禁 |
 |---|---|
-| 本地 versioned state | 原子事务、可恢复 fixed-W、在线版本 pin/GC；比较 KV 与**不可变压缩列式 base + 版本 delta/键索引**，不默认每行全进 KV |
-| StarRocks 基础镜像 | 在实际 4.1.1 证明源序号 → 可读版本、旧值/删除保留、分页一致性、跨重启续建；READ COMMITTED 或查询当前主键表本身不构成该证明 |
-| Hybrid | 明确每层的权威数据和崩溃恢复责任；证明 base 与本地索引/delta 的一致 cut 和可恢复更新协议，不能仅凭架构图判定可行 |
+| 本地 versioned state | 原子事务、可恢复 fixed-W、在线 pin/GC；比较 KV 与压缩列式 base + delta/index |
+| StarRocks 基础镜像 | 实测证明 source seq → 可读版本、旧值/删除保留、分页一致性和跨重启续建；“查询当前主键表”不算证明 |
+| Hybrid | 明确每层权威性与 crash 责任；证明 base 与本地 delta/index 的一致 cut 和可恢复更新 |
 
-比较重复数据、索引、存活版本、日志、checkpoint 的**唯一物理字节**以及 CPU、I/O、构建/恢复时间；共享 segment/SST 不重复计算，也不能隐藏 StarRocks 的存储与 compaction 成本。
+统一比较**唯一物理字节**、CPU/I/O、构建/恢复和 compaction，不重复计算共享 segment/SST，也不隐藏 StarRocks 成本。
 
 ### 4.2 Identity 相同只是复用的必要条件
 
@@ -124,9 +122,7 @@ total_cost ≈ bootstrap + catchup + shared_state_creation
 
 最短主线是：**可恢复源镜像与 fixed-W → 不回源的单源动态构建 → 最小有状态 SQL 闭环 → 共享/代价策略**。完整优化器和更多语言重写不应阻塞前两步。
 
-测量分 decoder、local durable pipeline、snapshot、端到端四层。最终 gate 用固定机器、固定资源，记录数据宽度、事务/event 大小、重复次数和原始样本；提交/可见时间的观测方法与时钟误差也要说明。计算 Python/C 子进程、source/sink CPU、compaction、存储及网络的全部成本。
-
-与 Flink、RisingWave、Materialize、Bytewax、Pathway、Proton、Arroyo 对比时，采用相同 SQL/结果语义、源与目标、耐久性和恢复要求；分别报告共同支持的负载与功能缺失。吞吐、延迟、构建时间、空间与恢复成本分开列出。单机源/网卡/目标写入能力是需实测的上界；任意 SQL 下全面超越所有系统没有普遍保证。
+测量分 decoder、local durable pipeline、snapshot、端到端四层；最终 gate 固定机器/资源并计入 Python/C、source/sink、compaction、存储和网络。与 Flink、RisingWave、Materialize、Bytewax、Pathway、Proton、Arroyo 对比时保持 SQL/结果语义、源/目标、耐久性和恢复要求一致，分别报告吞吐、延迟、构建、空间、恢复与功能缺失；不宣称任意 SQL 下全面领先。
 
 ## 7. 研究输入及适用边界
 
@@ -134,14 +130,14 @@ total_cost ≈ bootstrap + catchup + shared_state_creation
 
 | 一手资料 | 可借鉴内容与边界 |
 |---|---|
-| [DBSP](https://arxiv.org/abs/2203.16684) | 增量化与撤回代数；不自动提供本项目的 source/state/sink 事务协议 |
-| [Shared Arrangements](https://arxiv.org/abs/1812.02639) | 跨查询共享维护索引；需补版本读取、持久 pin、恢复与资源归属 |
-| [OpenIVM](https://arxiv.org/abs/2404.16486) | SQL-to-SQL 编译路线；论文原型覆盖不能当成当前通用 SQL/CDC 能力证明 |
-| [Enzyme（2026）](https://arxiv.org/abs/2603.27775) | 增量/局部/全量策略及整图成本；依赖源版本与变化跟踪，不能省略本项目的 fixed-W 合同 |
-| [Streaming View（2025）](https://www.vldb.org/pvldb/vol18/p5153-zhou.pdf) | 仓内增量维护与运行策略；本项目额外面对 MySQL/m2s/StarRocks 三个一致性域 |
-| [RisingWave backfill（2026）](https://www.risingwave.com/blog/backfilling-in-risingwave-from-historical-initialization-to-continuous-streaming/) / [Noria](https://www.usenix.org/conference/osdi18/presentation/gjengset) | 固定快照追赶、共享状态构建及部分物化；部分结果不能冒充完整下游关系 |
-| [Heavy-Light IVM（2026）](https://arxiv.org/abs/2605.08397) | skew 下的分区/增量维护算法候选；常数延迟枚举不是总输出成本常数，SQL bag/NULL、持久化和恢复仍需验证；放在正确 JOIN 基线之后评测 |
-| [StarRocks SQL transaction 官方文档](https://docs.starrocks.io/docs/loading/SQL_transaction/) | 事务/隔离能力边界；文档的事务承诺不等于可恢复 time travel，实际 4.1.1 门禁由集成测试确认 |
+| [DBSP](https://arxiv.org/abs/2203.16684) | 增量化/撤回代数；不含本项目跨系统事务协议 |
+| [Shared Arrangements](https://arxiv.org/abs/1812.02639) | 跨查询共享索引；仍需版本、pin、恢复和资源归属 |
+| [OpenIVM](https://arxiv.org/abs/2404.16486) | SQL-to-SQL incremental compilation 候选 |
+| [Enzyme（2026）](https://arxiv.org/abs/2603.27775) | 增量/局部/全量与整图成本；不能替代 fixed-W 合同 |
+| [Streaming View（2025）](https://www.vldb.org/pvldb/vol18/p5153-zhou.pdf) | 仓内增量维护；m2s 额外跨三个一致性域 |
+| [RisingWave backfill（2026）](https://www.risingwave.com/blog/backfilling-in-risingwave-from-historical-initialization-to-continuous-streaming/) / [Noria](https://www.usenix.org/conference/osdi18/presentation/gjengset) | fixed snapshot/catch-up、共享/部分物化 |
+| [Heavy-Light IVM（2026）](https://arxiv.org/abs/2605.08397) | skew 算法候选；放在正确 JOIN 基线之后 |
+| [StarRocks SQL transaction](https://docs.starrocks.io/docs/loading/SQL_transaction/) | 事务/隔离边界；不等于可恢复 time travel |
 
 ## 8. 给外部评审者的问题
 
@@ -163,26 +159,12 @@ total_cost ≈ bootstrap + catchup + shared_state_creation
 Linux x86_64、Python 3.12/3.14、C11、CMake ≥ 3.20。
 
 ```bash
-python -m venv .venv
-. .venv/bin/activate
 python -m pip install -r requirements.txt
-cmake -S native -B build/native -DCMAKE_BUILD_TYPE=Release
-cmake --build build/native --parallel 2
+cmake -S native -B build/native -DCMAKE_BUILD_TYPE=Release && cmake --build build/native --parallel 2
 python native/native_abi_selftest.py
 python j4.py selftest
-
-cp setup.sql.example setup.sql
-chmod 600 setup.sql
-# 编辑本地连接配置
-python j4.py
+python j4.py                  # daemon
+python j4.py sql setup.sql    # 另一终端部署
 ```
 
-保持 daemon 运行，在另一终端使用 SQL 文件部署或交互 CLI：
-
-```bash
-python j4.py sql setup.sql
-# 或
-python j4.py cli
-```
-
-公开仓库只提交通用代码、合成配置/数据和可公开的测量。真实凭据、连接地址、业务字段/数据、生产日志、SQLite/WAL 和运行 metrics 不得提交；公开报告也需检查隐私。
+公开仓库只提交通用代码、合成配置/数据和公开测量；真实凭据、地址、业务数据、生产日志、SQLite/WAL 和 metrics 不得提交。
