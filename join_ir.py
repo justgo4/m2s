@@ -16,6 +16,45 @@ from sqlglot import exp
 
 FORMAT_VERSION=1
 
+EXACT_JOIN_KEY_TYPES={
+    "tinyint","smallint","mediumint","int","integer","bigint",
+    "decimal","numeric","date","datetime","timestamp","year",
+}
+
+
+def _column_signature(schema,name):
+    for item in schema:
+        if str(item[0])==str(name):
+            return item
+    raise ValueError("INNER JOIN source schema lacks column "+str(name))
+
+
+def _join_key_contract(left_schema,right_schema,left_name,right_name):
+    left=_column_signature(left_schema,left_name)
+    right=_column_signature(right_schema,right_name)
+    left_type=str(left[1]).strip().lower()
+    right_type=str(right[1]).strip().lower()
+    if (
+        left_type not in EXACT_JOIN_KEY_TYPES
+        or right_type not in EXACT_JOIN_KEY_TYPES
+    ):
+        raise ValueError(
+            "INNER JOIN v1 key type must use exact numeric/date equality; "
+            "string/binary/float/JSON equality is rejected until source "
+            "collation/NaN semantics are encoded: %s(%s) = %s(%s)"
+            % (left_name,left_type,right_name,right_type))
+    left_column=" ".join(str(left[2]).strip().lower().split())
+    right_column=" ".join(str(right[2]).strip().lower().split())
+    if left_type!=right_type or left_column!=right_column:
+        raise ValueError(
+            "INNER JOIN v1 key types must match exactly across sources: "
+            "%s %s/%s != %s %s/%s"
+            % (
+                left_name,left_type,left_column,
+                right_name,right_type,right_column,
+            ))
+    return True
+
 
 def canonical_bytes(value):
     return json.dumps(
@@ -251,6 +290,7 @@ def validate_ir(ir):
         raise ValueError("INNER JOIN IR must contain left/right sources")
 
     columns={}
+    normalized_sources={}
     for side in ("left","right"):
         source=sources[side]
         if not isinstance(source,dict) or set(source)!={
@@ -260,6 +300,7 @@ def validate_ir(ir):
         source=_source(
             source["relation"],source["schema"],
             source["primary_key"],side)
+        normalized_sources[side]=source
         columns[side]=set(_columns(source["schema"]))
     if sources["left"]["relation"]==sources["right"]["relation"]:
         raise ValueError("INNER JOIN sources must be distinct relations")
@@ -279,6 +320,10 @@ def validate_ir(ir):
             raise ValueError("INNER JOIN key is absent from source schema")
         if left_name in used_left or right_name in used_right:
             raise ValueError("INNER JOIN key repeats a source column")
+        _join_key_contract(
+            normalized_sources["left"]["schema"],
+            normalized_sources["right"]["schema"],
+            left_name,right_name)
         used_left.add(left_name)
         used_right.add(right_name)
         normalized.append(dict(left=left_name,right=right_name))
