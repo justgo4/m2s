@@ -81,6 +81,7 @@ def state(directory):
             source_ready = source_log = source_base = None
             source_pins = []
             visible_frontiers = []
+            source_base_catalog = []
             try:
                 relation_rows = con.execute(
                     'SELECT table_name,complete_seq FROM source_relations ORDER BY table_name'
@@ -107,6 +108,20 @@ def state(directory):
                         'FROM applied ORDER BY table_name,lane'
                     ).fetchall()
                 ]
+                source_base_catalog = [
+                    dict(
+                        instance_id=row[0], health=row[1],
+                        backend=row[2], format_tag=row[3],
+                        min_readable_watermark=int(row[4]),
+                        watermark=int(row[5]))
+                    for row in con.execute(
+                        "SELECT instance_id,health,backend,format_tag,"
+                        "min_readable_watermark,watermark "
+                        "FROM physical_states "
+                        "WHERE backend='sqlite-source-state' "
+                        "ORDER BY instance_id"
+                    ).fetchall()
+                ]
             except sqlite3.OperationalError:
                 pass
             return dict(done=bool(rows) and all(row[0] for row in rows),
@@ -114,7 +129,8 @@ def state(directory):
                         cursor=j4.unpack(cursor[0]) if cursor else None,
                         source_ready=source_ready, source_log=source_log,
                         source_base=source_base, source_pins=source_pins,
-                        visible_frontiers=visible_frontiers)
+                        visible_frontiers=visible_frontiers,
+                        source_base_catalog=source_base_catalog)
         finally:
             con.close()
     except sqlite3.Error:
@@ -349,6 +365,21 @@ def main():
                     raise AssertionError(
                         'dynamic deployment attempted while source base lagged durable log: '
                         + repr(before_dynamic))
+                catalog_states = before_dynamic.get('source_base_catalog') or []
+                if not catalog_states:
+                    raise AssertionError(
+                        'shared source base was not registered in physical-state catalog')
+                if any(
+                    item['health'] != 'ready'
+                    or item['backend'] != 'sqlite-source-state'
+                    or item['format_tag'] != 'source-state-v1'
+                    or item['min_readable_watermark'] > item['watermark']
+                    or item['watermark'] > int(before_dynamic['source_base'])
+                    for item in catalog_states
+                ):
+                    raise AssertionError(
+                        'physical source-base catalog overclaimed readiness/version range: '
+                        + repr(catalog_states))
             deployment = directory / 'deploy-extra.sql'
             deployment.write_text('CREATE TABLE starrocks.events_extra AS '
                                   'SELECT id,part,v,note,amount FROM mysql.events WHERE active=1 AND v>=0;\n')
@@ -489,6 +520,7 @@ def main():
                               )
                           ),
                           visible_frontiers=after_state.get('visible_frontiers', []),
+                          source_base_catalog=after_state.get('source_base_catalog', []),
                           dynamic_task_latency_seconds=dict(p95=percentile([x['seconds'] for x in dynamic_samples.values()],.95),
                                                            p99=percentile([x['seconds'] for x in dynamic_samples.values()],.99)),
                           crash_boundary='active_new_task_backfill_then_drained_checkpoint; HTTP_boundary_not_controlled',
