@@ -169,6 +169,30 @@ def main():
             drop_install.assert_called_once_with(
                 drop_result,"install")
 
+        # Bootstrap mode installs target contracts before releasing the data
+        # plane, so a first stateful-only catalog cannot start with a missing
+        # StarRocks table.
+        ready=__import__("threading").Event()
+        with (
+            patch.object(
+                j4,"catalog_bootstrap_ready",
+                return_value=True),
+            patch.object(
+                j4,"validate_local_catalog_publish",
+                return_value=dict(
+                    status="restart_required",version=4)
+            ) as bootstrap_install
+        ):
+            bootstrap_result=j4.bootstrap_catalog_publish_callback(
+                {},ready,
+                dict(version=4,stateful_tasks=[tasks[0]]),
+                "install")
+            assert bootstrap_result["status"]=="daemon_starting"
+            assert ready.is_set()
+            bootstrap_install.assert_called_once_with(
+                dict(version=4,stateful_tasks=[tasks[0]]),
+                "install")
+
         # Restart selection promotes a published stateful-only topology change
         # even when durable active_plan_version still names the prior catalog
         # version; mixed stateless topology changes remain fenced.
@@ -280,7 +304,7 @@ def main():
 
     print(
         "catalog_stateful_manifest_test ok format3 "
-        "aggregate join coexist hash load show restart_fence hot_install drop_last restart_promote migration",
+        "aggregate join coexist hash load show restart_fence hot_install drop_last bootstrap_install restart_promote migration",
         flush=True,
     )
 
