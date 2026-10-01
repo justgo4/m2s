@@ -10,6 +10,7 @@ import aggregate_bootstrap
 import aggregate_ir
 import aggregate_log_consumer
 import aggregate_outbox
+import aggregate_physical_state
 import aggregate_state
 import source_state
 import task_generation
@@ -54,6 +55,21 @@ def _validate_existing_consumer(
     return consumer
 
 
+def _build_or_clone(con,state_id,ir,pin):
+    try:
+        aggregate_state.state_info(
+            con,state_id)
+    except KeyError:
+        reused=aggregate_physical_state.clone_reusable_current(
+            con,state_id,ir,int(pin["watermark"]),
+            generation=1)
+        if reused is not None:
+            return reused["state"],True
+    state=aggregate_bootstrap.ensure_build(
+        con,state_id,ir,pin["pin_id"])
+    return state,False
+
+
 def begin(con,sink_key,plan_version,ir,state_id):
     aggregate_ir.validate_ir(ir)
     sink_key=_text(sink_key,"sink_key")
@@ -88,10 +104,11 @@ def begin(con,sink_key,plan_version,ir,state_id):
         ):
             raise RuntimeError(
                 "aggregate generation source pin changed across restart")
-        state=aggregate_bootstrap.ensure_build(
-            con,state_id,ir,pin["pin_id"])
+        state,reused=_build_or_clone(
+            con,state_id,ir,pin)
         return dict(
-            generation=existing,pin=pin,state=state,phase="bootstrap")
+            generation=existing,pin=pin,state=state,phase="bootstrap",
+            reused_physical=bool(reused))
 
     owner=task_generation.generation_id(
         sink_key,plan_version)
@@ -100,13 +117,14 @@ def begin(con,sink_key,plan_version,ir,state_id):
     generation=task_generation.ensure_build(
         con,sink_key,plan_version,relation,
         pin["watermark"],pin["pin_id"])
-    state=aggregate_bootstrap.ensure_build(
-        con,state_id,ir,pin["pin_id"])
+    state,reused=_build_or_clone(
+        con,state_id,ir,pin)
     if int(state["watermark"])!=int(generation["fixed_w"]):
         raise RuntimeError(
             "aggregate state fixed-W differs from task generation")
     return dict(
-        generation=generation,pin=pin,state=state,phase="bootstrap")
+        generation=generation,pin=pin,state=state,phase="bootstrap",
+        reused_physical=bool(reused))
 
 
 def process_next_chunk(
