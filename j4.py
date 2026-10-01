@@ -5128,17 +5128,18 @@ def _catalog_plan_payload(cfg, publish_result):
         cfg["catalog"],int(publish_result["version"]))
 
 
-def reject_unactivated_stateful_tasks(plan, context):
+def validate_stateful_catalog_plan(cfg, plan, prepared):
     tasks=list(plan.get("stateful_tasks",()) or ())
     if not tasks:
-        return
-    sinks=",".join(
-        str(item.get("sink","?")) for item in tasks)
-    raise RuntimeError(
-        "stateful catalog tasks are persisted but daemon activation is not "
-        "installed yet; refuse silent activation context=%s sinks=%s"
-        % (str(context),sinks))
-
+        return []
+    if not cfg.get("shared_source_state",False):
+        raise RuntimeError(
+            "stateful catalog tasks require CDC_SHARED_SOURCE_STATE=1")
+    scope=stateful_catalog_runtime.source_scope(
+        cfg,tasks,prepared)
+    return stateful_catalog_runtime.compile_catalog_tasks(
+        cfg,int(plan.get("version",0)),tasks,
+        scope["source_metadata"])
 
 def durable_plan_hot_add_sinks(cfg, plan):
     state_path = cfg["state"]
@@ -5166,13 +5167,6 @@ def durable_plan_hot_add_sinks(cfg, plan):
 def validate_local_catalog_publish(publish_result, phase):
     if phase not in ("validate","validate_config","install","install_config"):
         raise ValueError(f"unknown catalog publish phase: {phase}")
-    if (
-        phase in ("validate","validate_config")
-        and publish_result.get("stateful_tasks")
-    ):
-        raise RuntimeError(
-            "stateful catalog task manifests are persisted but daemon "
-            "execution is not enabled yet; publish refused fail-closed")
 
     if phase in ("install","install_config"):
         if phase == "install_config" and not online_config_available():
@@ -5182,13 +5176,6 @@ def validate_local_catalog_publish(publish_result, phase):
                 note="persistent connection settings are incomplete; target creation skipped")
         local_cfg = read_config()
         plan = _catalog_plan_payload(local_cfg,publish_result)
-        reject_unactivated_stateful_tasks(
-            plan,"local_"+phase)
-        if not plan.get("mappings"):
-            return dict(
-                status="validated_offline",
-                version=int(publish_result.get("version",0)),
-                note="empty plan requires no target creation")
         local_cfg["catalog_macros"] = list(plan.get("macros",()))
         local_cfg["catalog_udfs"] = list(plan.get("udfs",()))
         hot_add_sinks = durable_plan_hot_add_sinks(local_cfg,plan)
@@ -5198,9 +5185,22 @@ def validate_local_catalog_publish(publish_result, phase):
             plan_macros=local_cfg["catalog_macros"],
             plan_udfs=local_cfg["catalog_udfs"],
             hot_add_sinks=hot_add_sinks)
+        stateful=validate_stateful_catalog_plan(
+            local_cfg,plan,prepared)
         created = sorted(
             mapping["sr_table"] for mapping in prepared
             if mapping.get("_target_missing"))
+        if stateful:
+            return dict(
+                status="restart_required",
+                version=int(publish_result.get("version",0)),
+                target_creation="stateless_created_stateful_verified",
+                created_targets=created,
+                stateful_tasks=len(stateful),
+                reason=(
+                    "stateful task plan was committed and validated; restart "
+                    "the daemon to expand shared source capture and activate "
+                    "durable stateful workers"))
         return dict(
             status="installed_offline",
             version=int(publish_result.get("version",0)),
@@ -5212,7 +5212,11 @@ def validate_local_catalog_publish(publish_result, phase):
     if variables is None:
         raise RuntimeError(
             "local publish validation is missing the transactional configuration snapshot")
-    if phase == "validate" and mappings == []:
+    if (
+        phase == "validate"
+        and mappings == []
+        and not publish_result.get("stateful_tasks")
+    ):
         return dict(
             status="validated_offline",version=int(publish_result["version"]),
             note="empty plan requires no online source/target validation")
@@ -5228,35 +5232,47 @@ def validate_local_catalog_publish(publish_result, phase):
     with catalog_variable_scope(variables):
         local_cfg = read_config()
         plan = _catalog_plan_payload(local_cfg,publish_result)
-        reject_unactivated_stateful_tasks(
-            plan,"local_"+phase)
         local_cfg["catalog_macros"] = list(plan.get("macros",()))
         local_cfg["catalog_udfs"] = list(plan.get("udfs",()))
         hot_add_sinks = durable_plan_hot_add_sinks(local_cfg,plan)
-        preflight(
+        prepared,_,_,_,_,_ = preflight(
             local_cfg,create_missing=False,
             mapping_defs=plan.get("mappings",()),
             plan_macros=local_cfg["catalog_macros"],
             plan_udfs=local_cfg["catalog_udfs"],
             allow_missing_targets=True,
             hot_add_sinks=hot_add_sinks)
+        stateful=validate_stateful_catalog_plan(
+            local_cfg,plan,prepared)
     return dict(
         status=(
             "validated_config"
             if phase == "validate_config"
             else "validated_offline"),
         version=int(publish_result.get("version",0)),
+        stateful_tasks=len(stateful),
         target_creation="create_after_catalog_commit")
-
 
 def validate_hot_catalog_plan(cfg, runtime, publish_result):
     version = int(publish_result["version"])
-    if publish_result.get("stateful_tasks"):
-        raise RuntimeError(
-            "stateful catalog task manifests are not yet wired into the live "
-            "daemon lifecycle; hot publish refused fail-closed")
     if version == runtime_active_version(runtime):
         return dict(status="active",version=version)
+
+    plan=_catalog_plan_payload(cfg,publish_result)
+    current_catalog=cdc_catalog.load_plan_version(
+        cfg["catalog"],runtime_active_version(runtime))
+    if list(plan.get("stateful_tasks",()))!=list(
+        current_catalog.get("stateful_tasks",())
+    ):
+        validate_local_catalog_publish(
+            publish_result,"validate")
+        return dict(
+            status="restart_required",
+            version=version,
+            reason=(
+                "stateful task topology/semantics changed; candidate was "
+                "validated but shared capture/task generations activate only "
+                "at a daemon restart boundary"))
 
     candidate_config_revision = int(
         publish_result.get(
@@ -5276,9 +5292,6 @@ def validate_hot_catalog_plan(cfg, runtime, publish_result):
                 "candidate plan validated against the new configuration and will "
                 "be used after restart"))
 
-    plan = _catalog_plan_payload(cfg,publish_result)
-    reject_unactivated_stateful_tasks(
-        plan,"hot_publish")
     current = runtime_plan(runtime,runtime_active_version(runtime))
     current_keys = set(current["by_table"])
     candidate_keys = {mapping_key(item) for item in plan.get("mappings",())}
