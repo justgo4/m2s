@@ -136,8 +136,9 @@ def main():
                 return_value=dict(
                     status="restart_required",version=2,
                     stateful_tasks=1,
-                    reason="created target; restart"))
-        ) as mocked:
+                    reason="created target; restart")
+            ) as mocked
+        ):
             activation=j4.catalog_publish_callback(
                 fake_cfg,runtime,publish_result,"install")
             assert activation["status"]=="restart_required"
