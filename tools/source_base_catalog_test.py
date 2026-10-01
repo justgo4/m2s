@@ -74,6 +74,26 @@ def main():
         assert ready["metadata"]["pin_authority"] == "source_state"
         source_state.release_pin(con,pin["pin_id"])
 
+        # A physical frontier can be stricter than the backing source-store
+        # GC frontier. Re-sync after restart must preserve the stricter durable
+        # declaration rather than attempting to make old W readable again.
+        part = source_state.prepare_part(
+            "db.orders",batch([(2,"b2")]))
+        assert source_state.log_commit(
+            con,"source-1",("binlog.000001",120),None,[part]) == 2
+        assert source_state.apply_pending(con) == 1
+        ready = j4.sync_source_base_catalog(con)[0]
+        assert ready["watermark"] == 2
+        assert ready["min_readable_watermark"] == 1
+        physical_state_catalog.advance_state(
+            con,ready["instance_id"],2,min_readable_watermark=2)
+        assert source_state.min_readable_seq(con) == 1
+        ready = j4.sync_source_base_catalog(con)[0]
+        assert ready["watermark"] == 2
+        assert ready["min_readable_watermark"] == 2
+        assert not physical_state_catalog.version_readable(ready,1)
+        assert physical_state_catalog.version_readable(ready,2)
+
         rows = physical_state_catalog.status(con)
         assert len(rows) == 1
         assert rows[0]["refs"][0]["role"] == "owner"
