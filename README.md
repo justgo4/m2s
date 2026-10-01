@@ -12,14 +12,14 @@
 
 核心负载为 **5000 万历史行 + 每秒 50 行增量**。基础同步的初始回填与 CDC 并行，旧回填不得覆盖新版本或复活已删除记录。目标是已有就绪任务在健康运行期间，从 MySQL 事务提交到 StarRocks 可查询 **P95 ≤ 5 秒、P99 ≤ 10 秒**；另报最大延迟、超标次数和故障期间表现。新增任务另报 `time_to_ready` 和是否完整，不能用初始化期混淆实时 SLO。
 
-默认保存当前关系和有界变化历史，不永久保存数据库全部历史。未来任意新增查询仅指届时支持的、确定性的 SQL 范围；未捕获的列和已丢弃的历史无法凭空重建。完整当前关系必须在某处持久保存。
+默认保存当前关系和有界变化历史，不永久保存数据库全部历史。未来任意新增查询仅指届时支持的、确定性的 SQL 范围；未捕获的列和已丢弃的历史无法凭空重建。**系统某处必须持久保存足以精确重建当前关系的信息**，但不要求存在一份字面上的逐行完整副本；压缩列式、factorized state、base+delta 等表示只要满足同一语义与恢复合同都可接受。
 
 待验证的价值是：**在既有任务 SLO 和资源预算内，结合可恢复的在线构建、共享状态与状态放置，降低新增任务的构建时间、重复存储和持续维护成本。** 增量计算、共享索引和代价规划均有先例；这里的贡献需要联合协议、实验和反例检验来证明。
 
 ## 2. 当前代码与证据
 
 - [j4.py](j4.py)、[cdc_catalog.py](cdc_catalog.py)：daemon、SQL catalog、动态部署。当前支持确定性的单源投影、过滤、宏和模型视图链；拒绝有状态 JOIN、聚合、窗口及跨源计划。**当前 hot-add 历史初始化仍启动 MySQL `snapshot_worker`。**
-- 当前组件包括 Python 控制/恢复、C 行事件解码与批处理内核、Arrow 批表示、DuckDB SQL/列计算、SQLite 持久队列。native 路径仍有 Python 网络/协议与 IPC 成本，不等于完整 C replication client，也不等于零拷贝。不预先决定移除 DuckDB 或用某种语言重写所有组件。
+- 当前组件包括 Python 控制/恢复、C 解码/批处理、Arrow、DuckDB 和 SQLite。native 路径仍含 Python 网络/协议与 IPC 成本，不等于完整 C replication client 或零拷贝；是否替换组件由 profile 决定。
 - [incremental_contract.py](incremental_contract.py)：独立于 daemon 的纯合同模块，已有 state spec/hash、handle 校验、日志保留水位计算和六维候选 Pareto 筛选。**尚无在线共享状态、实际统计、全局优化器或执行器接入。** 表达式规范化仍由调用方负责。
 - [native/](native/)、[tools/](tools/)、[cdc_selftest.py](cdc_selftest.py)：解码差分、恢复、协议、故障注入和候选性能测量。
 
@@ -42,11 +42,11 @@
 
 | 水位 | 含义与原子边界 |
 |---|---|
-| `source_durable` | 完整源事务的 base 变更、changelog、源 cursor 原子提交；多张源表的同一事务不能被拆成不一致切面 |
+| `source_durable` | 完整源事务的 base 变更、changelog、源 cursor 形成同一 durable commit boundary；同引擎可原子提交，跨引擎必须用显式可重放协调协议，不能用两个独立 commit 冒充原子性 |
 | `task_compute` | 某个 generation 的算子状态、输出 delta/outbox、计算进度原子提交 |
-| `target_visible` | 所需输出已在 StarRocks 可查询的**连续完成前缀**；并发完成的最大序号不能越过未完成的空洞 |
+| `target_visible` | **每个 target / ordered domain** 各自维护可查询的连续完成 frontier；并发完成的最大序号不能越过空洞。任务级发布 frontier 只能由所有必需输出 frontier 的共同前缀推导 |
 
-提交序号须与 source UUID/epoch、GTID 或文件位置持久关联。初始跨表镜像也须证明共同切面；每张表分别扫描完成不足以证明全局一致。跨表 JOIN 在同一个源事务切面计算。HTTP 接收不等于可见；本地原子性也不等于多个 StarRocks 目标的跨表原子可见性，后者只有独立协议证明后才能承诺。
+提交序号须与 source UUID/epoch、GTID 或文件位置持久关联。初始跨表镜像也须证明共同切面；每张表分别扫描完成不足以证明全局一致。跨表 JOIN 在同一个源事务切面计算。HTTP 接收不等于可见；本地 commit boundary 也不等于多个 StarRocks 目标跨表原子可见，后者只有独立协议证明后才能承诺。
 
 `complete(W)` 与 watermark 分开记录：完整扫描前，进度领先不代表关系完整。单源同步可明确提供未完整的实时预览；JOIN/聚合未完成初始化时不能发布为完整结果。
 
@@ -82,23 +82,30 @@ generation 更替须证明旧的在途请求不能覆盖新结果。停止本地
 
 ### 4.2 Identity 相同只是复用的必要条件
 
-现有 `state_compatible(..., minimum_watermark)` 表示 hash/语义匹配且进度不低于下限，**不是 fixed-W 可读性证明**。例如任务需要 W=100，状态已到 200，却不保留 100 的版本，就不能直接拿它初始化。
+现有 `state_compatible(..., minimum_watermark)` 只证明当前最小的 hash/语义与进度条件，**不是 fixed-W 可读性证明**。最终复用必须拆成三个独立判断：`semantic_compatible(state, query)`、`version_readable(state, W)`、`physically_reusable(state, consumer)`；任一失败都不能直接共享。
 
-目标复用检查须分开验证：语义兼容、所需版本可读、可 pin/追赶、健康与可恢复性、backend 格式兼容。语义 identity 还需源实例/epoch 和关系身份、列类型/精度、时区、NULL/bag 语义、表达式 collation、宏/UDF 定义版本。watermark、路径、refcount 属于实例状态，不能混进语义身份。以上扩展**尚未全部在当前合同模块实现**。
+语义 identity 后续还需覆盖 source instance/epoch、稳定 relation identity、类型/精度、时区、NULL/bag 语义、collation 及宏/UDF 定义版本；watermark、路径、refcount 属于实例状态。物理复用另检查 backend/encoding/ABI、健康、pin/追赶与恢复能力。以上扩展**尚未全部在当前合同模块实现**。
 
-先稳定最小接口：获取/构建状态、读取固定版本、订阅变化、retain/release、持久进度与安全 GC；不要求完成通用优化器后才能做第一个 JOIN。相同 identity、相容版本与消费进度的任务才可共享，慢消费者的保留成本须显式归属，不能只凭 refcount 回收。
+最小共享接口只需先支持：获取/构建状态、fixed-version read、change subscription、retain/release、持久进度与安全 GC。第一个正确 JOIN 不等待通用优化器，但也不能只凭 refcount 或相同 hash 回收/复用状态。
 
 ## 5. SQL、规划与性能路线
 
 编译目标是 **SQL → 规范关系 IR → 带撤回语义的增量 IR → 物理计划**。初期采用受限算子集合，允许少量手写物理算子；不为每条 SQL 永久添加独立 handler。先做 COUNT/SUM/AVG 和 INNER JOIN 的完整撤回/恢复，再考虑 LEFT JOIN、MIN/MAX、DISTINCT、窗口。类型、溢出、NULL、重复值、复合键及确定性需统一语义，不能只比较打印出来的值。
 
-DuckDB、DBSP/OpenIVM 路线、DataFusion、现有 C 内核和自研算子均是可复用候选。选择看覆盖语义、可恢复状态接口和实测总成本；C/C++/Rust/Zig、PyO3 不是性能结论。Python 保持函数式、下划线命名，不引入 OOP、typing、logging，日志使用 `print(..., flush=True)`；只有 profile 与 A/B 收益支持时才下沉热点。
+DuckDB、DBSP/OpenIVM、DataFusion、现有 C 内核和自研算子均只是候选；选择依据是语义覆盖、可恢复状态接口和实测总成本。语言或 FFI 本身不是性能结论，只有 profile 与 A/B 收益支持时才下沉热点。
 
-规划策略包括复用、增量构建、局部重算和全量重算。**先按语义、恢复能力、资源/SLO 过滤，再在相同输入切面和完整性条件下比较成本。** 单任务 Pareto 不等于整图最优：上游较便宜的重算可能放大下游 delta；共享状态的新建成本、复用成本及持续维护成本也不同。
+规划策略包括复用、增量构建、局部重算和全量重算。**先按语义、恢复能力、资源/SLO 过滤，再优化整个共享 DAG 的长期成本，而不是只选“当前这个任务最便宜”的计划。**
 
-目标成本覆盖整个 DAG：构建/追赶时间、峰值 RSS、唯一状态字节、source/base 读取、CPU、磁盘/网络写入、spill/compaction 债务、恢复时间、输出 delta 大小、StarRocks 未可见队列和发布耗时。加入估计误差、运行反馈和切换滞后，避免策略振荡。高 fan-out JOIN 的输出可能远大于输入，不能只按“源 50 行/秒”估算能力。准入需验证构建期间有足够追赶余量；预计无法追上的任务不能无条件接受。
+```text
+total_cost ≈ bootstrap + catchup + shared_state_creation
+           + expected_future_maintenance + storage_retention
+           + recovery + downstream_delta_amplification
+           + GC/compaction_debt
+```
 
-资源调度先保障已就绪任务，再分配新构建的 CPU、I/O、内存和输出配额。版本压力升高时合批、降低回填速率/并发，并保留可恢复进度；不能依靠修改 StarRocks 默认参数、关闭 fsync 或无界重试通过验收。
+约束至少包括已有任务 SLO、新任务 `time_to_ready`、CPU/内存/磁盘/网络预算和恢复正确性。成本模型记录峰值 RSS、唯一状态字节、source/base read、CPU、网络/磁盘写入、spill/compaction、恢复时间、输出放大和目标未可见队列；加入运行反馈与切换滞后，避免策略振荡。高 fan-out JOIN 不能只按“源 50 行/秒”估算能力，预计无法追上的任务必须拒绝或等待。
+
+调度先保障已就绪任务，再给新构建配额；版本压力升高时限速/降并发并保留可恢复进度，不能通过关闭 fsync、修改 StarRocks 默认安全参数或无界重试通过验收。
 
 ## 6. 实施顺序与退出门禁
 
@@ -107,7 +114,7 @@ DuckDB、DBSP/OpenIVM 路线、DataFusion、现有 C 内核和自研算子均是
 | 阶段 | 下一步与通过标准 |
 |---|---|
 | P0–P3 / P10 | 保持现有差分/故障测试；定义上述事务、水位、完整性、未知请求和代际协议；跨目标原子性未证明则明确不承诺 |
-| **P6A/P6B** | 选择一个可行放置方案接入源镜像；原子 base/log/cursor；版本、schema、tombstone 与日志共同保留。构建过半强退，继续源 UPDATE/DELETE 并执行 compaction/GC 后重启，仍从同一 W 正确续建；测试 W 获取/pin 与 GC 竞态、空间耗尽和 schema epoch 变化 |
+| **P6A/P6B** | 选择一个可行放置方案接入源镜像；base/log/cursor 形成可证明的 durable commit boundary，跨引擎时使用可重放协调协议；版本、schema、tombstone 与日志共同保留。构建过半强退，继续源 UPDATE/DELETE 并执行 compaction/GC 后重启，仍从同一 W 正确续建；测试 W 获取/pin 与 GC 竞态、空间耗尽和 schema epoch 变化 |
 | **P6C 最小接口 + P7** | daemon 接入共享状态，先让单源投影 hot-add 不回源；镜像完整后 MySQL 历史 SELECT 次数为 0，不默认复制 base。并发新增/取消/替换至少 10 个 generation，故意延迟旧请求、乱序完成输出并在发布前后强退；逐字段 oracle 正确且 visible 水位不越洞 |
 | **P8A/P8B** | 受限增量 IR、COUNT/SUM/AVG、INNER JOIN；至少 10,000 次带多表同事务、UPDATE/DELETE、重复值、NULL、复合键和 skew 的随机操作，对照独立完整查询；跨构建/计算/outbox 崩溃点恢复后保持一致，再扩展其他算子 |
 | **P9A/P9B/P9C** | 共享 arrangement/subview、整图策略、统计反馈与 GC；1/10/100 个语义相同/部分共享任务，验证只维护所需共享状态、慢任务取消后安全回收；比较共享开/关、固定 IVM/自适应、不同放置，其他语义与耐久性保持一致 |
@@ -141,12 +148,13 @@ DuckDB、DBSP/OpenIVM 路线、DataFusion、现有 C 内核和自研算子均是
 请基于当前实现和本文待实现合同，先给反例和优先级，再推荐组件。尤其检查：
 
 1. W=100、共享状态已到 200：哪些持久版本和 pin 才足以安全复用？构建强退后源继续更新、GC/compaction，恢复协议是否仍成立？
-2. 跨表初始镜像、源事务、task state/outbox 和可见前缀之间是否有遗漏、重复或错误确认窗口？请给最小事件序列。
-3. 旧 generation 的 HTTP 请求晚到、部分目标已可见、替换发布中强退：如何避免污染新结果？哪些目标能力尚未实测？
-4. local 列式 base + delta、KV、StarRocks 镜像或 hybrid，哪个首先满足版本/恢复合同？是否有更简单可行的首版，哪些存储成本容易漏算？
-5. 最小共享接口是否足以先做一个正确 JOIN？IR 的类型/NULL/bag/撤回语义和 identity 是否缺字段？哪些共享必须拒绝？
-6. 单任务最优为何可能损害整个 DAG？100 个任务、热点 key 或高 fan-out 下，预算、GC、SLO 准入及策略切换如何失效？
-7. 联合设计相对已有工作有何可验证贡献？应删去哪些研究路线，补哪些实验，才能对性能优势给出可信结论？
+2. 跨表初始镜像、源事务、task state/outbox 和 **per-target visible frontier** 之间是否有遗漏、重复、越洞或错误确认窗口？请给最小事件序列。
+3. local 或跨引擎 base/log/cursor 的 durable commit boundary 在 crash 的每个切点是否可重放？hybrid 是否存在无法收敛的 split-brain？
+4. 旧 generation 的 HTTP 请求晚到、部分目标已可见、替换发布中强退：如何避免污染新结果？哪些目标能力尚未实测？
+5. `semantic_compatible` / `version_readable(W)` / `physically_reusable` 三层检查是否足够？最小共享接口能否先做正确 JOIN？
+6. local 列式 base + delta、KV、StarRocks 镜像或 hybrid，哪个首先满足版本/恢复合同？哪些存储与 compaction 成本容易漏算？
+7. 单任务最优为何可能损害整个 DAG？100 个任务、热点 key、高 fan-out 与未来复用不确定性下，lifetime cost、GC、SLO 准入及策略切换如何失效？
+8. 联合设计相对已有工作有何可验证贡献？应删去哪些路线、补哪些反例和实验，才能对优势给出可信结论？
 
 建议评审输出：**必须修正 / 可后置 / 无证据的主张**，每项附失败机制、最小修正和验收测试。不要把路线图当成已实现能力，也不要仅凭组件名称评价性能。
 
