@@ -4,6 +4,7 @@ import os
 import sqlite3
 import sys
 import tempfile
+from unittest.mock import patch
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
@@ -81,17 +82,36 @@ def main():
         shown=cdc_catalog.execute(path,"SHOW PLAN")
         assert shown["plan"]["stateful_tasks"]==tasks
 
-        # The J4 entrypoint must fail before moving the published pointer while
-        # stateful execution is not wired into the daemon lifecycle.
+        # Stateful plans now validate through the same publish callback, but
+        # activation is deliberately fenced to a daemon restart boundary.
         candidate=dict(
             version=2,revision=2,plan_hash="x",
             mappings=[],stateful_tasks=[tasks[0]],
             macros=[],udfs=[],_variables={})
-        expect_error(
-            lambda: j4.validate_local_catalog_publish(
-                candidate,"validate"),
-            RuntimeError,
-            "publish refused fail-closed")
+        fake_cfg=dict(
+            catalog=path,
+            state=os.path.join(td,"state.sqlite3"),
+            shared_source_state=True,
+            catalog_macros=[],
+            catalog_udfs=[],
+        )
+        with (
+            patch.object(j4,"read_config",return_value=fake_cfg),
+            patch.object(
+                j4,"preflight",
+                return_value=([],None,None,None,None,"fingerprint")),
+            patch.object(
+                j4,"validate_stateful_catalog_plan",
+                return_value=[dict(kind="aggregate")])
+        ):
+            validated=j4.validate_local_catalog_publish(
+                candidate,"validate")
+            assert validated["status"]=="validated_offline"
+            assert validated["stateful_tasks"]==1
+            installed=j4.validate_local_catalog_publish(
+                candidate,"install")
+            assert installed["status"]=="restart_required"
+            assert installed["stateful_tasks"]==1
 
         # Stateful model views remain unsupported; only sink manifests may own
         # stateful operators in the first control-plane phase.
@@ -153,7 +173,7 @@ def main():
 
     print(
         "catalog_stateful_manifest_test ok format3 "
-        "aggregate join coexist hash load show fail_closed migration",
+        "aggregate join coexist hash load show restart_fence migration",
         flush=True,
     )
 
