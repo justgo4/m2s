@@ -1,333 +1,514 @@
 # m2s
 
-单机 MySQL → StarRocks 实时同步与动态 SQL 数据加工项目。目标是让用户随时部署一个 SQL 任务，自动创建下游主键表，同时完成历史初始化与持续增量更新；后续通过 MCP 将自然语言转换成可检查、可部署的 SQL。
+单机 MySQL → StarRocks 实时同步与动态 SQL 数据加工项目。
 
-本仓库从可执行的 CDC 基线开始，逐阶段向原生增量计算引擎演进。**当前代码是基线，不是已经完成的新引擎；尚无“达到物理极限”或“全面超过其他系统”的测量结论。**下面的验收条件是后续工作的合同，只有提供对应测试和原始结果才能标记完成。
+> **项目定位：把多个当前最先进的研究方向收敛到一个非常具体、苛刻的 MySQL → StarRocks 动态实时计算场景，并尝试解决它们交界处尚未被很好解决的问题。**
 
-## 当前交付
+目标不是“再做一个 CDC 工具”，而是让一个长期运行中的系统支持：
 
-- `j4.py`：基线主程序，默认启动 daemon；全量回填与增量捕获并发运行。
-- `cdc_catalog.py`：持久化 SQL catalog、部署文件、REPL、运行中任务发布。
-- `incremental_contract.py`：共享物理状态 identity、fixed-W 日志保留与多候选计划 Pareto 成本合同；当前是架构护栏，不代表 P6/P8/P9 已接入生产 runtime。
-- `cdc_selftest.py`：离线故障、状态恢复和数据正确性回归。
-- `native/`：原生行事件解码器、Arrow IPC、稳定计数分区、JSON 编码、ABI 测试和可复现构建源码。
-- `setup.sql.example`：使用保留的 `.invalid` 域名、占位密码和合成表结构的配置示例。
-- `tools/privacy_check.py`：发布文件、硬编码凭据、地址与原生 bundle 扫描。
-- `tools/partition_benchmark.py`：排序分区与计数分区的重复 A/B 微基准，输出 JSON。
-- `.github/workflows/ci.yml`：公有 runner 上的隐私检查、源码构建、原生自测与 Python 回归矩阵。
-- `.github/workflows/benchmark.yml`：手动运行合成微基准，上传允许的 JSON 结果。
+```text
+MySQL
+  │
+  │ 一次捕获
+  ▼
+共享、可恢复的源关系状态 + 有界 changelog
+  │
+  ├─ 已有 SQL 任务持续实时更新
+  └─ 任意后来新增的 SQL
+          │
+          ├─ 不重新扫描 MySQL
+          ├─ 不复制整份 base
+          ├─ 从 fixed-W 一致状态构建
+          ├─ 追赶 W 之后的变化
+          └─ 完成后持续增量维护
+                          │
+                          ▼
+                      StarRocks
+```
 
-公开版本仅包含代码、合成测试和通用文档。业务日志、生产数据、连接地址、密码、运行状态和原有提交历史均不进入本仓库。不会从另一个仓库拉取源代码；构建依赖只有明确声明的公开第三方组件。
+后续可通过 MCP 将自然语言转换成可检查、可解释、可部署的 SQL 任务。
 
-## 基线运行
+**当前仓库仍是演进中的基线，不是已经完成的新引擎。** 任何“生产候选”“物理极限”“全面超过其他系统”的结论，都必须由对应的正确性、故障恢复、长跑和公平对标数据支持。
 
-当前基线保留 DuckDB 和 Python 调度，避免在建立测量基准之前改变数据语义。SQL 支持单源确定性投影、过滤、宏及模型视图链；**有状态 JOIN、聚合、窗口和跨源查询尚未实现，当前发布会拒绝这些计划。**当前按已部署任务捕获数据，不等于已具备可供任意未来 SQL 使用的全库源状态。
+---
 
-要求 Linux x86_64、Python 3.12 或 3.14、C11 编译器、CMake >= 3.20、Git。使用 MySQL ROW binlog 和 FULL row image；GTID 开启时使用 GTID 恢复，关闭时使用已持久化的文件/位置，源日志过期需要明确报错或受控重建，不能静默跳过。StarRocks 目标版本为 4.1.1，目标表为主键表。安装依赖固定版本，升级也须通过完整回归。
+## 1. 当前已经有什么
+
+- `j4.py`：当前 daemon；MySQL snapshot 与 binlog CDC、StarRocks 输出、动态部署基线。
+- `cdc_catalog.py`：SQL catalog、部署状态和运行时计划控制。
+- `incremental_contract.py`：共享物理状态 identity、fixed-W retention、候选计划和 Pareto frontier 的 backend-neutral 合同。
+- `cdc_selftest.py`：离线恢复和正确性回归。
+- `native/`：C 行事件解码、Arrow IPC、分区/JSON 内核和 ABI 自测。
+- `tools/`：真实 MySQL/StarRocks contract、故障注入、snapshot/state benchmark、端到端测试。
+
+当前 SQL 仅支持确定性的单源投影、过滤、宏和模型视图链。**有状态 JOIN、聚合、窗口及跨源查询尚未开放，当前 catalog 会拒绝这些计划。**
+
+当前在线新增下游已经可工作，但历史初始化仍会启动新的 MySQL `snapshot_worker`。这正是 P6/P7 要替换掉的路径。
+
+---
+
+## 2. 问题定义
+
+第一版边界：
+
+- 一个 MySQL 实例、一个可确认事务流。
+- 显式登记需要镜像的库/表及全部允许列。
+- 先要求稳定主键；不支持项、破坏性 DDL 和日志不足必须明确拒绝或受控重建。
+- MySQL 使用 ROW binlog + FULL row image；支持 GTID ON/OFF 恢复。
+- StarRocks 目标版本固定为 **4.1.1**，使用主键表。
+- 基础镜像和已就绪任务的新数据可见目标：**5–10 秒**。
+- 新增有状态任务另报告 `time-to-ready`，不能拿初始化时间掩盖实时链路延迟。
+- 不要求永久保存全部历史版本；默认语义是“当前关系 + 有限变化历史”，不是数据库出生以来的事件仓库。
+
+最重要的产品要求：
+
+> 系统运行几个月后，今天新增一条此前从未存在的 SQL，也能基于完整当前关系得到正确结果并继续实时更新，同时正常情况下不再回源扫描 MySQL。
+
+这意味着系统某处必须保存足以重建当前关系的信息；“什么都不保存 + 不回源 + 支持未来任意 SQL”在信息上不可实现。
+
+---
+
+## 3. 目标架构
+
+```text
+                         MySQL
+                           │
+                    single CDC reader
+                           │
+                 source transaction Δ
+                           │
+            ┌──────────────┴──────────────┐
+            ▼                             ▼
+   authoritative base state        bounded changelog
+   current relation @ versions     commit_seq / schema epoch
+            │                             │
+            └──────────────┬──────────────┘
+                           │
+                shared physical-state layer
+          arrangements / materialized subviews
+                           │
+                           ▼
+             SQL → relational IR → incremental IR
+                           │
+                  physical candidates
+          ┌────────────────┼────────────────┐
+          │                │                │
+       reuse           incremental      partial/full
+       state              build           recompute
+          └────────────────┼────────────────┘
+                           │
+                  cost/SLO planner
+                           │
+                           ▼
+                       StarRocks
+```
+
+这个设计刻意把 **source capture、共享状态、任务 generation、SQL 计算、目标可见性** 分开。
+
+### 三个独立水位
+
+1. **source durable watermark**：源事务已原子持久化到共享 base/changelog 的位置。
+2. **task compute watermark**：某个 SQL generation 已计算到的位置。
+3. **target visible watermark**：结果已经在 StarRocks 可查询的位置。
+
+不能把“HTTP 接受”“StarRocks 事务完成”“用户已可见”混成一个状态。
+
+---
+
+## 4. 核心设计合同
+
+### 4.1 Source-centric capture
+
+最终 source capture 不应知道当前有多少下游 SQL：
+
+```text
+错误方向：
+source event → Q1 / Q2 / Q3 各自持久化
+
+目标方向：
+source event → shared base + changelog（一次）
+                         ↓
+                    Q1 / Q2 / Q3
+```
+
+新增 Q1000 不改变 MySQL replication 拓扑。
+
+### 4.2 Fixed-W 动态初始化
+
+新任务部署时：
+
+```text
+选择一致 W
+→ pin changelog retention
+→ 从 S(W) 构建 generation
+→ CDC 继续推进
+→ replay Δ(W, now]
+→ catch up
+→ fence 旧 generation
+→ publish
+```
+
+不能扫描一个持续变化的“latest state”后再从旧 W 全量重放，否则会产生重复或缺失。
+
+### 4.3 Base / shared state / task state 分层
+
+- **authoritative base**：足以重建当前源关系。
+- **arrangement / materialized subview**：多个 SQL 可复用的派生物理状态。
+- **task generation state**：某个任务私有的 build progress、operator delta、outbox 等。
+
+新任务**不得默认复制整份 base**。
+
+### 4.4 Bounded changelog
+
+日志只需覆盖最慢有效消费者和所有 fixed-W build pin：
+
+```text
+retention_floor =
+    min(active consumer watermarks,
+        fixed-W pins)
+```
+
+没有消费者和 pin 时才允许回收到 source durable watermark。容量不足时暂停/拒绝新 build，而不是偷偷删除仍需重放的历史。
+
+### 4.5 Physical state identity
+
+共享状态必须有稳定语义 identity，至少覆盖：
+
+- state kind
+- normalized relations
+- key/value expressions
+- predicate
+- schema epoch
+- collation
+- semantics version
+
+watermark、存储路径、refcount 描述的是**实例进度**，不属于语义 identity。
+
+`incremental_contract.py` 已实现这一层最小合同并校验 handle 自身 spec，避免损坏 metadata 导致误共享。
+
+### 4.6 SQL 不直接绑定手写 handler
+
+目标编译链：
+
+```text
+SQL
+ ↓
+normalized relational IR
+ ↓
+incremental IR
+ ↓
+physical candidates
+```
+
+DBSP / differential semantics、OpenIVM SQL-to-SQL、自研算子、DataFusion 等都是候选，不预先锁死。
+
+P8 不采用“每多一种 SQL 就写一个新的永久 handler”作为长期架构。
+
+### 4.7 多策略，而不是“所有查询都强制 IVM”
+
+一个任务可以有多个候选：
+
+- reuse existing state
+- incremental build
+- partial recompute
+- full recompute
+
+先做 Pareto 淘汰，再由显式 SLO / 资源策略选择。核心成本至少记录：
+
+- time-to-ready
+- source/base read bytes
+- state bytes
+- steady-state CPU
+- write amplification
+- catch-up lag
+
+`incremental_contract.py` 已提供 backend-neutral 的 candidate / Pareto 合同；真实统计和执行器尚未接入。
+
+---
+
+## 5. P6 最重要的未决问题：authoritative base 放哪里
+
+不预设“RocksDB 再完整复制一份 MySQL”就是答案。必须用同一语义/耐久性合同比较三类方案。
+
+### A. Local versioned state
+
+```text
+MySQL → m2s local state → StarRocks
+```
+
+优点是 fixed-W 和恢复最可控；缺点是可能与 StarRocks 重复保存大体量数据。
+
+### B. StarRocks base mirror
+
+```text
+MySQL → StarRocks base mirror
+          ↑
+      m2s metadata/delta
+```
+
+优点是避免第三份完整 base；难点是必须证明 StarRocks 能提供与 W 绑定、跨重启可恢复的一致读语义。**查询“当前值”不能冒充 fixed-W snapshot。**
+
+### C. Hybrid
+
+```text
+StarRocks columnar base
++
+m2s local key/index/delta
+```
+
+这可能同时降低大规模 base 的重复存储，又保留增量计算需要的低延迟索引与版本信息。
+
+P6A 的任务不是“挑一个 KV 引擎”，而是确定**谁是 authoritative source relation，哪些状态放在哪一层**。
+
+---
+
+## 6. Shared arrangements 必须早于通用 JOIN
+
+如果先实现 JOIN/aggregation，再考虑共享，很容易演化成：
+
+```text
+Q1 → 自己一份 hash/index
+Q2 → 再一份
+Q3 → 再一份
+```
+
+因此在开放通用 JOIN 前先稳定 P6C：
+
+```text
+arrangement identity
++ watermark
++ schema epoch
++ refcount
++ health
++ retention / GC
+```
+
+相同 identity 的 1/10/100 个任务应尽量只维护一份共享物理状态。
+
+---
+
+## 7. 路线图
+
+| 阶段 | 目标 | 当前状态 |
+|---|---|---|
+| P0–P3 | 基线、语义/故障合同、真实测量 | 部分完成；已有差分、恢复、真实 MySQL/StarRocks 短测 |
+| P4–P5 | 仅按 profile 下沉 socket、批处理、布局/融合 | 候选优化，不是 P6/P7 前置 |
+| **P6A** | local / StarRocks / hybrid authoritative base 对比 | state 候选 benchmark 已有；尚未选型 |
+| **P6B** | commit sequence、schema epoch、fixed-W pin、bounded changelog | fixed-W 原型已有；在线 retention/GC 未接 daemon |
+| **P6C** | shared arrangement / materialized-state catalog | identity/retention/Pareto 合同已有；runtime 未实现 |
+| **P7** | 新任务从 shared state 做 W→build→catch-up→publish，不重扫 MySQL | 当前 hot-add 功能存在，但仍重扫 MySQL |
+| **P8A** | SQL → normalized/incremental IR | 计划 |
+| **P8B** | COUNT/SUM/AVG、INNER JOIN，再扩展 LEFT JOIN/MIN/MAX/DISTINCT | 计划 |
+| **P9A** | shared arrangements / subviews / common subgraphs | 计划 |
+| **P9B** | cost-based reuse / incremental / partial/full recompute | Pareto 合同已有；真实 planner 未实现 |
+| **P9C** | workload-driven materialization / GC | 计划 |
+| P10 | StarRocks 输出顺序、未知状态恢复、回填调度 | 部分完成 |
+| P11 | 50M 初始行 + 50 rows/s + 动态任务，72h | 未完成 |
+| P12 | 与 Flink/RisingWave/Materialize/Bytewax/Pathway/Proton/Arroyo 公平对标 | 未完成 |
+| P13 | deploy/explain/status/cancel、MCP、升级/回滚 | 计划 |
+
+当前主线：
+
+```text
+P1/P2/P3 + P10 最小闭环
+        ↓
+P6A → P6B → P6C
+        ↓
+P7
+        ↓
+P8A → P8B
+        ↓
+P9A → P9B → P9C
+```
+
+P4/P5 只有真实 profile 指向瓶颈时才插入。
+
+---
+
+## 8. 当前已经验证的东西
+
+### 真实 daemon / 动态下游
+
+[CI 36787425832](https://github.com/justgo4/m2s/actions/runs/36787425832) 验证：
+
+- MySQL 8.4.6 → 实际 `j4.py` → StarRocks 4.1.1
+- transaction / merge_async
+- GTID ON / OFF
+- 动态创建第二个不同投影/过滤的下游
+- 源断线恢复
+- 强制退出后重启
+- 最终结果逐键逐字段等于独立 MySQL SELECT
+
+共享 runner 上的小规模观察值：
+
+| 协议 | GTID | 初始阶段 P99 | 新增任务 P99 |
+|---|---|---:|---:|
+| transaction | ON | 2.197 s | 1.657 s |
+| transaction | OFF | 2.249 s | 1.677 s |
+| merge_async | ON | 3.781 s | 3.478 s |
+| merge_async | OFF | 3.729 s | 3.892 s |
+
+这些是功能短测，不是 50M / 72h SLO 认证。
+
+新增任务回填中强退/续建也通过 [CI 36787945824](https://github.com/justgo4/m2s/actions/runs/36787945824)。
+
+### MySQL/native 正确性和恢复
+
+- Python/C row decoder 差分、真实 MySQL 最终状态对照。
+- GTID / 文件位置 durable cursor 恢复。
+- 进程 kill / decoder restart / source reconnect 覆盖。
+- sanitizer、非法 metadata、NULL/DECIMAL/UTF-8/BINARY/复合键等测试。
+
+相关 CI：
+- [36738492453](https://github.com/justgo4/m2s/actions/runs/36738492453)
+- [36738492665](https://github.com/justgo4/m2s/actions/runs/36738492665)
+
+### StarRocks 输出协议
+
+真实 4.1.1 测试确认：
+
+- transaction 2PC 与 merge_async 是两条独立协议路径。
+- 不能因为请求同时带某些 header 就宣称二者已组合。
+- merge_async 未知响应可隔离受影响目标，其他独立目标继续运行。
+
+真实网络丢响应测试：
+- [CI 36795348744](https://github.com/justgo4/m2s/actions/runs/36795348744)
+
+### P6 状态候选
+
+`tools/state_layout_benchmark.py` 当前比较：
+
+- SQLite Arrow + key index
+- DuckDB typed state
+- RocksDB Arrow + key index
+
+均已覆盖：
+
+- state + changelog + watermark 原子边界
+- fixed-W checkpoint/replay
+- commit 前/后 crash
+- 重启恢复
+- 冲突/非法输入
+
+公开样本：
+- [state-layout-20261001.json](reports/state-layout-20261001.json)
+- [state-rocks-20261001.json](reports/state-rocks-20261001.json)
+
+这些只是候选评测，**尚未选定 P6 authoritative backend，也尚未接入 daemon。**
+
+### 最新架构合同
+
+提交到当前主线的 `incremental_contract.py` 已测试：
+
+- deterministic state identity
+- schema epoch / predicate / collation 不兼容隔离
+- state handle 自身 spec/hash 一致性
+- fixed-W pin 对 changelog GC 的约束
+- plan candidate validation
+- 多维 Pareto frontier
+
+最终相关 Public baseline CI 与 integration CI 均通过。
+
+---
+
+## 9. 明确尚未完成
+
+当前不能宣称完成的核心事项：
+
+- P6 shared authoritative source state 接入 daemon
+- 在线 bounded changelog pin / GC
+- dynamic task 不再重扫 MySQL
+- physical-state catalog / shared arrangements
+- SQL incremental IR
+- JOIN / aggregation retract semantics
+- partial/full recompute planner
+- workload-driven materialization / GC
+- 50M + 50 rows/s 的 72 小时长跑
+- 七个系统同机同语义公平对标
+- 生产级升级/回滚和 MCP 控制面
+
+所以目前最准确的定位是：
+
+> **研究级增量数据库系统设计正在形成；组成原理大多有世界一流先例，但跨 MySQL / m2s / StarRocks 的 shared state、fixed-W bootstrap、state placement 和 cost-based IVM 联合设计仍有明显原创实现空间。**
+
+---
+
+## 10. 性能与正确性原则
+
+- 正确性和恢复语义优先于微基准。
+- decoder、local pipeline、snapshot、end-to-end 四层分开测。
+- 不能隐藏 C 子进程、compaction、source/sink CPU 或额外 state storage。
+- 云 runner 只用于回归和发现明显退化；最终性能 gate 在固定机器执行。
+- 不用关闭 fsync、恢复能力或 StarRocks 默认安全参数换 benchmark。
+- 每个性能结论必须给 workload、资源、重复次数、区间和原始样本。
+- “物理极限”只表示持续消除已测瓶颈，不是对任意 SQL 的数学极限。
+
+---
+
+## 11. 运行基线
+
+要求 Linux x86_64、Python 3.12/3.14、C11、CMake >= 3.20、Git。
 
 ```bash
 python -m venv .venv
 . .venv/bin/activate
 python -m pip install -r requirements.txt
+
 cmake -S native -B build/native -DCMAKE_BUILD_TYPE=Release
 cmake --build build/native --parallel 2
-cp build/native/mysql_arrow_reader mysql_arrow_reader-linux-x86_64
+
 python native/native_abi_selftest.py
 python j4.py selftest
 ```
 
-上述测试使用合成数据及回环服务，不需要生产数据库凭据。`native/libj4_native.so.gz.b64` 是经过校验的 libc-free x86_64 ABI bundle；构建也会生成本地 `.so`，两种加载路径都纳入 CI。编译产物不提交到 Git。
-
-部署前先在自有 MySQL 中创建 `demo_source.orders`，至少包含主键 `id BIGINT`、`display_name VARCHAR(255)`、`amount DECIMAL(19,4)`，并创建目标数据库。为源端用户授予复制和读取所需权限，为目标用户授予读取 schema、建表和导入所需权限。示例域名不能连接真实服务，需要替换成本地配置。
+运行：
 
 ```bash
-mkdir -p runtime
 cp setup.sql.example setup.sql
 chmod 600 setup.sql
-# 在本地编辑 setup.sql，填写自己的地址、账号和密码。
+# 编辑本地连接配置，不要提交真实凭据
+
 python j4.py
-# 另一个终端部署 SQL：
 python j4.py sql setup.sql
-# 或进入交互终端：
+# 或
 python j4.py cli
 ```
 
-不需要额外的 `cdc` 参数。daemon、部署和自测均可使用此入口。当前 catalog 保存连接配置，包含本地密码，因此 catalog、状态及其备份也需要访问控制，不得上传为公开 artifact。长时间运行应由 systemd 等进程管理器托管，终端后台任务不作为生产运行方式。
+默认 `CDC_LOAD_MODE='merge_async'`，也支持 `'transaction'`。两者独立验收。
 
-基线默认 `CDC_LOAD_MODE='merge_async'`，另有 `'transaction'` 模式。前者使用 Merge Commit async 并确认事务最终 VISIBLE；后者使用事务接口 begin/load/prepare/commit。**这是两种路径，不是已经验证在同一导入事务中叠加两阶段提交与 Merge Commit。**双机制的兼容性必须以固定版本真实服务的行为验证，不能仅凭请求包含两个 header 判定成功。所有优化维持 StarRocks 默认服务参数；异步请求返回不等于可见，也不能据此删除本地 outbox。对于历史结果查询不到的未知事务，保持可诊断的受控状态，不能擅自当作未执行而覆盖新数据。
+公开仓库只允许代码、合成配置、合成 benchmark 结果和通用文档；真实日志、生产配置、SQLite/WAL、metrics、业务数据和凭据不得提交。
 
-## 全局路线修订（2026-10-01）
+---
 
-保留正确性、故障恢复、差分测试和实测驱动优化。修正此前将 C socket、运行时重写和底层布局排在共享源状态、动态部署之前的顺序：用户最重要的能力是“运行中新增 SQL 下游，自动历史初始化并持续更新”，必须先形成可恢复的最小端到端闭环。性能工作贯穿闭环建设，但某个解码热点的改善不是产品能力的前置条件。
+## 12. 理论与系统参考
 
-当前 native reader 仍由 Python 读取复制包，再交给 C 解码；已有组批是候选优化。当前 SQLite 保存 CDC 作业和位置，snapshot 使用分块扫描、水位屏障及 touched 键；这些机制不能直接当作任意多表 SQL 在同一时点的完整源状态。当前 SQL 为 DuckDB 方言的受限单源子集。以下目标合同均是待实现的设计，不表示基线已经满足。
+这些工作是设计输入，不代表 m2s 已实现对应能力：
 
-### 先明确数据与可见性合同
+- [DBSP: Automatic Incremental View Maintenance for Rich Query Languages](https://arxiv.org/abs/2203.16684) — 自动 incrementalization / retract semantics。
+- [OpenIVM](https://arxiv.org/abs/2404.16486) — SQL-to-SQL incremental computation。
+- [Enzyme: Incremental View Maintenance for Data Engineering](https://arxiv.org/abs/2603.27775) — cost-based incremental/full refresh。
+- [Noria](https://www.usenix.org/conference/osdi18/presentation/gjengset) — dynamic partially materialized dataflow。
+- [Differential Dataflow](https://arxiv.org/abs/1812.02639) / Materialize — shared arrangements。
+- RisingWave backfill / snapshot epoch + log-store — fixed snapshot + catch-up。
+- Alibaba Streaming View — shared delta / adaptive indexing / warehouse-native incremental maintenance。
+- RocksDB snapshot/checkpoint — durable local state candidate。
+- StarRocks Stream Load / transaction interface / async MV — sink 和可复用 warehouse state 的现实边界。
 
-- **源范围**：第一版以一个 MySQL 实例、一个可确认的事务流为边界，显式登记需要镜像的库/表及其全部允许列；不因当前 SQL 投影而丢弃未来加工需要的列。全库模式也要处理新表发现、权限、容量和 DDL，不能直接宣称支持所有 MySQL 类型、无主键表或任意新增表。先要求稳定源主键；无主键、不可支持类型及破坏性 DDL 有明确拒绝/隔离策略。源镜像是最新状态加有限 changelog，不默认永久保存全部历史版本。
-- **语义**：将确定性的 SQL 子集、NULL、DECIMAL 溢出、时区、字符排序/主键比较、JSON、更新前后镜像、删除及 schema 版本形成合同。明确源键等价规则与输出键编码；不能用字符串哈希碰撞概率代替键正确性。不支持的查询部署前拒绝。DDL 与数据事件的先后顺序也要持久化。
-- **新鲜度与完整度分别报告**：单源复制/投影允许历史不完整时持续输出新记录，但旧回填不得覆盖新版本、删除不得被复活。新建 JOIN/聚合在依赖历史尚不完整时，不能承诺其结果已等于完整 SQL：默认先构建隔离 generation，完成初始化、追赶和校验后发布；如提供进度预览，必须标为不完整。已有已就绪任务持续运行。5–10 秒目标用于基础镜像和已就绪任务；新增有状态任务另外报告 time-to-ready，不能借此推迟基础镜像的新数据可见。
-- **一致性边界**：单个源事务在本地以完整提交为单位处理，巨型事务允许分段落盘但不能提前推进提交水位。本地源事务完整性、每键输出顺序和 StarRocks 跨表查询原子性是不同保证；默认不承诺多个下游表同时可见。先验证单 MySQL 实例的多表一致初始化，再开放跨表 JOIN；跨实例一致性留待后续。
+m2s 不宣称发明这些已有思想；真正需要证明的是它们在本项目场景中的**联合协议、状态放置、恢复正确性和实际成本**。
 
-### 目标架构与组件决策
+---
 
-目标数据流：一次源捕获 → 带事务边界的变化日志与共享源状态 → 有各自水位的 SQL 任务 → 持久化 outbox → StarRocks 可见性确认。源状态支持按键更新和批量扫描；CDC 不应为每个下游再次解析或捕获同一份源数据。Arrow 用于批量计算/交换，索引和稀疏更新可采用专用行布局，不要求所有状态都转成 Arrow。
+## 13. 希望外部评审重点挑刺的问题
 
-P6 不预设“RocksDB 再保存一份完整 MySQL”就是最终答案。必须实测三类 authoritative base：本地版本化状态、StarRocks 基础镜像、以及“StarRocks 列式基底 + 本地 key/index/delta”的混合方案。选择依据包括一致 fixed-W 读取、故障恢复、扫描吞吐、更新放大、磁盘占用、compaction 和对源/目标的额外压力。若目标端无法提供与 W 绑定且跨重启可恢复的一致快照，就不能把“查询当前 StarRocks”冒充版本化 source state。
+如果由另一个 AI / 工程师评审，优先检查这些问题：
 
-共享 base 与任务私有状态严格分开：新任务可以拥有自己的 generation、算子 delta、outbox 和构建进度，但不得默认复制整份 source base。多个任务需要相同 key/projection/predicate/schema epoch/collation 时，优先复用同一 arrangement/materialized subview；只有测量证明隔离更优或语义不兼容时才复制。源捕获最终必须 source-centric：decoder 将一个源事务原子提交到共享 state/changelog 后，任务从该提交序列消费；不能把“已有多少 sink”继续作为源日志持久化的基本结构。
+1. **P6A 是否真的需要 local / StarRocks / hybrid 三选一？** 是否存在更好的 authoritative base 设计？
+2. **若 StarRocks 没有足够的 time-travel/MVCC 合同，如何构造可恢复 fixed-W？** 是否必须引入显式 version/tombstone/staging generation？
+3. **`state identity` 当前字段是否足以安全共享 arrangement？** 还缺哪些 type/collation/null/order/optimizer semantics？
+4. **shared arrangement 应该如何跨 watermark 复用？** 是等待推进、增量补齐还是 fork generation？
+5. **SQL → incremental IR** 应优先采用 DBSP、OpenIVM 还是自研受限 IR？怎样避免把 SQL 方言/StarRocks 语义做错？
+6. **cost planner 的候选和指标是否足够？** 是否应加入 memory peak、recovery cost、compaction debt、network bytes、future maintenance cost？
+7. **跨 MySQL / m2s state / StarRocks 三个一致性域的原子边界是否设计合理？** 哪些地方存在 silent split-brain / stale generation 风险？
+8. **在 1/10/100 动态任务下，shared state 的 GC、热点和 refcount/watermark 设计是否会形成新的全局瓶颈？**
 
-先用当前 Python/C/DuckDB 基线贯通功能，定义稳定的事务批、状态、算子与输出接口；一次只替换一个被测量证明的瓶颈。原生运行时可以逐步接管数据路径，最终 Python/REPL/MCP 以控制为主。不会同时维护两个功能完整的生产运行时，也不为了消除所有 Python 调用而重复实现成熟协议。
-
-| 组件/技术 | 当前决策 | 引入或替换条件 |
-| --- | --- | --- |
-| 现有 Python + C | 继续作为可运行基线；复用已验证的 decoder、分区和编码内核 | 保持函数式、下划线命名，Python 不用 typing/logging，日志用 print(..., flush=True)；语义稳定后逐段替换 |
-| DuckDB + 当前 SQL 解析层 | 保留单源表达式、全量构建及参考结果能力 | 先固定方言和语义；参考 oracle 必须对齐类型/排序规则，不能只比较打印字符串 |
-| Rust / C / C++ 运行时 | 候选，尚未锁定整套重写 | 用同一完整工作负载比较 CPU、内存、恢复和维护成本；选择一种主运行时，复用现有 C，避免多个语言各自建一套 scheduler |
-| DataFusion / 自研 IVM / OpenIVM 路线 | 比较候选，而非全部引入 | 先做受限增量算子和全量 SQL oracle 对照；是否替换 planner 取决于语义兼容、增量计划和实测，不直接将 batch executor 当作 IVM |
-| RocksDB 或其他持久化状态布局 | 共享源状态的候选，尚非默认 | 比较按键更新、50M 扫描、持久化水位、重启恢复和 compaction；先一个权威数据状态域，再决定是否需要列式基底+增量层 |
-| SQLite | 保留当前运行状态，未来可承担控制目录 | 迁移前仍是现有数据状态权威；禁止先删现有 journal。跨 SQLite/catalog 与新数据引擎不能靠两个独立 commit 假装原子 |
-| Arrow C Data/Stream / IPC | 同进程批接口或进程隔离接口 | 按实际部署选择；只有同进程兼容缓冲区可直接共享，IPC、重排和变长字段分配成本都计入 |
-| PyO3 / 独立 daemon RPC | 二选一的管理边界候选 | 嵌入时才需要 PyO3；独立 daemon 用版本化控制协议。低频管理调用不作为优先优化点 |
-| 成熟 MySQL 客户端、libcurl/HTTP 客户端 | 复用认证、TLS、网络协议 | 原生接入须保留 MySQL GTID/文件位置、校验和、超时和取消语义；不为“自研”手写 TLS |
-| SIMD、压缩、PGO/LTO、NUMA、算子融合 | 按 profile 逐项评估 | 全路径收益、ISA fallback、内存和延迟一起验证；不强制每个负载使用同一批大小或编码 |
-
-不立即自研通用数据库、SQL 优化器和存储引擎。共享状态、可恢复动态初始化、有撤回的增量算法、输出顺序与调度才是核心工程投资；前沿论文提供算法候选，不能替代本项目的语义证明和测量。
-
-### 持久化、回填与恢复设计约束
-
-1. **区分三个进度**：源已持久化水位、各任务已计算水位、各目标已可见水位。源事务赋予本地递增 commit sequence，保留源 UUID/epoch、GTID 或文件位置及 schema version；GTID 用于身份/恢复，不直接当全局可比较序号。源状态、事务 changelog 和源水位必须原子持久化；每个任务的算子状态、消费水位和 outbox 必须原子持久化。可采用同一引擎原子批，或显式可重放提交协议；目录的部署意图通过幂等协调与 runtime 对账，不引入未经设计的跨库双写。
-2. **动态任务固定 W**：只从依赖源表已完成一致初始化的状态选择 W，登记任务 generation 和日志保留 pin，再从可恢复的 W 状态构建。持久化扫描范围、构建进度及重放位置；不能一边扫描不断变化的最新值，一边又从 W 全量重放导致双算。方案在持久 checkpoint、版本化状态或可重建物化基底中选择并实测。RocksDB 普通 snapshot 不跨重启持久化，checkpoint 可形成持久基底，但仍需应用层把它与 W/manifest 绑定，并计算存储保留成本。
-3. **初次镜像与新增任务分开**：初次 50M 初始化先建立可恢复的分块 low/high 水位合并和 touched/tombstone 规则，持续接收 CDC。跨表一致状态必须有经过验证的共同完成边界，不能假设各表独立完成 snapshot 就是同一个时点。源状态尚不完整时，新有状态任务等待依赖就绪；基础复制仍可提供带初始化进度的新数据。已有镜像上的新增 SQL 优先复用本地状态，不为每个下游重扫 MySQL。
-4. **追赶与发布**：初始化后按事务顺序消费 W 后变化，再以明确 cutover 水位发布 generation；旧 generation 的 writer 必须被 fencing，取消/重启不能使旧请求写入新目标；fencing 必须覆盖已发出但未确认的请求，不能只更换本地 generation 数字。独立 staging 表或版本化目标的切换机制需要在 4.1.1 实测，未验证前不承诺原子替表或跨表原子发布。主键改变视为旧键撤回、新键插入；JOIN 同一事务同时改两侧时须覆盖交叉增量项，过滤翻转及聚合撤回均纳入校验。
-5. **输出协议**：Merge Commit async 和 transaction 保留为独立路径。已测 4.1.1 的组合 header 不能证明双机制叠加，不再将叠加作为交付目标。提交接受、事务完成、查询可见三者分别记录；未知事务先查可用历史证据，再进入有界对账/修复。没有证据时不得静默标成功，也不得无限重试阻塞全部任务；将受影响有序分区隔离，其他独立任务在保留预算内继续。每次请求还须核对接受/过滤/错误行，不能只用共享 TxnId 的完成状态掩盖该请求的数据错误。每目标键或其有序分区禁止旧请求晚于新值覆盖；不确定请求未收敛前不能仅靠主键 upsert 就宣称幂等。删除修复须有 tombstone 或可验证差集，不能只重发当前存在的行。
-6. **资源和保留**：统一预算源状态、索引、changelog、任务构建基底、outbox、事务 spill、compaction 及临时文件。由最慢有效消费者/初始化 pin 决定回收边界；设定最大落后量、磁盘低水位、任务暂停/取消/重建政策，不能静默删仍需重放的数据。满盘时停止推进相应水位并诊断；源 binlog 保留不足时受控重建。调度保证 CDC 优先，同时给回填可测的非零剩余预算，避免永久饥饿；无剩余容量时报告容量不足而非承诺同时满足所有目标。
-
-## 增量架构护栏（2026-10-01）
-
-为了避免 P6 做成“每任务复制 base”、P8 做成“一类 SQL 一个手写 handler”、P9 再返工共享状态，后续实现先遵守以下稳定接口；这些是合同，不是当前生产能力声明。
-
-1. **Physical state identity**：共享状态必须由规范化 identity 描述，至少包含 kind、normalized relations、key/value expressions、predicate、schema epoch、collation 与 semantics version。只有 identity 完全兼容的状态才能直接共享；watermark 只描述实例进度，不参与语义 identity。`incremental_contract.py` 已提供确定性 identity/handle 原型。
-2. **Base/arrangement/task state 分层**：authoritative base 保存可重建当前关系所需的信息；arrangement/materialized subview 是可共享派生状态；task generation 只保存该任务私有的增量、构建和输出状态。禁止为了创建任务默认复制完整 base。
-3. **Bounded changelog retention**：GC 下界由最慢有效 consumer watermark 与所有 fixed-W pin 共同决定；没有消费者/pin 时才允许回收到 source durable watermark。容量不足时拒绝/暂停新 build，而不是删除仍被 pin 的历史。
-4. **SQL → normalized relational IR → incremental IR → physical candidates**：P8 不直接把 SQL 绑定到手写 COUNT/SUM/JOIN worker。DBSP/differential semantics、OpenIVM SQL-to-SQL、自研算子都只能作为 incremental IR/physical lowering 候选，并持续以全量 oracle 校验。
-5. **多策略而非唯一 IVM**：一个新任务至少允许产生 reuse existing state、incremental build、partial recompute、full recompute 等候选。优化器先做 Pareto 淘汰，再由明确的资源/SLO policy 选择；不能用隐藏常数把所有 workload 固定成一种策略。`incremental_contract.py` 先固定非支配候选接口，后续再接真实统计信息。
-6. **Shared arrangements 必须早于通用 JOIN**：在 P8B 开放 JOIN 前，P6C 的 arrangement identity、引用计数、水位、schema epoch、retention/GC 接口必须可用，否则相同 join/group key 会为每个任务重复建状态。
-7. **可重用物化状态进入 catalog**：后续 physical-state catalog 需要记录 identity、storage backend、watermark、bytes、owners/users、schema epoch、build generation、健康状态与 GC pin。当前 `cdc_catalog.py` 仍只承担控制目录，未提前修改持久格式。
-8. **成本模型可证伪**：time-to-ready、source/base read bytes、state bytes、steady-state CPU、write amplification、catch-up lag 均需可观测。没有实测统计时保留多个候选并报告不确定性，不能把论文或微基准常数直接写死成生产规则。
-
-当前 `tools/state_layout_benchmark.py` 的 fixed-W task copy 仅用于正确性/存储候选验证。RocksDB checkpoint 的 hardlink/SST 共享可以降低原型复制成本，但不能据此宣称多任务长期零额外空间；后续 compaction、COW、索引和 task delta 都必须计量。
-
-## 分阶段任务与验收标准
-
-保留 P0–P13 编号供实施记录引用，P6/P8/P9 拆成子阶段且不代表严格串行顺序。下一条交付主线是 **P1/P2/P3 + P10 最小闭环 → P6A/P6B/P6C → P7 → P8A/P8B → P9A/P9B/P9C**；其中 P6C 的共享 arrangement 接口必须在开放通用 JOIN 前稳定。P4/P5 只在测出瓶颈后插入。P13 的控制协议尽早定义、MCP 在动态任务稳定后接入，P11 长跑在可用闭环上逐步扩容，P12 公平对标最后执行。每阶段都交付实现、测试、命令和公开合成结果，不用测试用例数量代替故障边界覆盖。
-
-| 阶段 | 接下来做什么 | 完成必须达到的标准 | 当前状态 |
-| --- | --- | --- | --- |
-| P0 公开基线 | 保留独立可运行仓库及隐私边界 | 公共依赖、合成配置、源码/ABI 和离线回归通过；没有业务数据、配置和原有历史 | 已建立，见实施记录 |
-| P1 正确性合同 | 固定 SQL/类型/键语义、事务边界、初始化完整度与 schema 行为 | 同字节 Python/C 差分；再以真实数据库语义和事务级最终状态独立校验；DDL、键改变、过滤翻转、删除重插及多表事务覆盖；不支持项部署前拒绝 | 部分完成：原生差分与真实 MySQL 通过，完整 SQL/初始化合同待实现 |
-| P2 故障与输出协议 | 源/计算/输出各提交边界的恢复；进程 kill、断网、磁盘满、未知事务、日志过期、升级 | 至少 1,000 可重放故障案例，并逐个覆盖提交前后边界；GTID/文件模式恢复无漏无旧值覆盖；真实管线端到端校验；非法数据与暂时故障分流，不无限重启同一错误 | 部分完成：协议故障、capture 恢复和 SR 协议测试通过，完整故障矩阵未完成 |
-| P3 测量平台 | 补实际 snapshot 和 MySQL COMMIT→目标查询四层测量 | 保留 decoder/local；增加生产 reader 对照，独立 Python oracle 不能代表生产 Python 性能；同时记录 source/sink、本地 CPU、RSS、spill、磁盘实际写入与空间、积压斜率及延迟 | 部分完成：decoder/local A/B、真实 COMMIT→查询短测已有；完整性能 profile 未完成 |
-| P4 原生接入与批处理 | 按 profile 决定 socket、snapshot、组批是否下沉 | P1/P2 无回退；认证/TLS/GTID/取消/巨型事务支持明确；相同耐久性下 source-bound 与端到端验证收益，小事务不能等待不确定时长才发批；没有收益则不替换默认 | 部分完成：有界组批候选已实现；原生 socket 未实现，非 P6/P7 前置 |
-| P5 布局和融合 | 去掉有证据的重复解码、复制、分区和编码 | 窄/宽行、稀疏/密集变化均测；公布复制分配、内存和总 CPU；单核收益不得掩盖全路径回退，按性能合同晋升默认 | 计划，按瓶颈插入 |
-| P6A 权威基底选择 | 对比 local versioned state、StarRocks base mirror、hybrid base+local delta/index；源 capture 与 sink/task 拓扑解耦 | 相同语义/耐久性下比较 50M 扫描、按键更新、fixed-W 可恢复读取、磁盘与写放大；选定方案必须能证明 W 绑定，不能用“当前查询结果”代替 snapshot；源事务只持久化一次 | RocksDB/SQLite/DuckDB 候选布局已有；StarRocks/hybrid 尚未同合同验证，未选最终 backend |
-| P6B 共享 changelog 与版本 | commit sequence、schema epoch、fixed-W pin、有限日志与 GC；base/state/watermark 原子边界 | 最慢 consumer 与所有 W pin 决定 retention floor；进程 kill/满盘/日志回收均不破坏 pin；初次 50M 初始化与 CDC 并行且有一致完成边界 | fixed-W checkpoint/replay 原型已有；在线 retention/pin 尚未接 daemon |
-| P6C 共享物理状态 | 定义 arrangement/materialized-subview identity、引用/水位/健康/GC 接口；任务默认引用共享 base 而非复制 | 相同 identity 的 1/10/100 任务只维护一份共享状态；schema epoch/collation/predicate/key 不兼容时拒绝误复用；共享状态故障和回收可恢复 | `incremental_contract.py` 已固定 identity/retention/Pareto 最小合同；physical catalog/runtime 尚未实现 |
-| P7 动态新增下游 | 先完成单源投影/过滤的 W→构建→追赶→发布→取消闭环，bootstrap 从 P6 authoritative/shared state 读取 | 10 次交错部署/更新/删除/重启场景；旧任务继续运行；新目标最终逐键逐字段等于 oracle；构建进度可恢复、旧 generation 被隔离，最新行不被历史覆盖；正常 hot-add 不重新扫 MySQL | 基线在线新增下游通过四组真实数据库测试，但当前仍启动 MySQL `snapshot_worker`；本地 W/generation 闭环依赖 P6A-C |
-| P8A 增量 IR | SQL 先规范化为 relational IR，再生成带 insert/delete/retract 语义的 incremental IR；比较 DBSP/OpenIVM/自研 lowering | 同一 SQL 的 full oracle 与 delta plan 在随机事务、NULL、键改变、过滤翻转、DDL epoch 上结果一致；IR 不绑定具体 state backend | 计划；当前 catalog 仍拒绝 stateful JOIN/聚合 |
-| P8B 增量算子 | 在 P6C arrangement 接口上开放 COUNT/SUM/AVG、索引 INNER JOIN，再 LEFT JOIN、MIN/MAX、DISTINCT | 至少 10,000 组重复/NULL/撤回/跨表同事务随机用例；共享 key 不重复建等价索引；状态/输出放大可界定；窗口不隐含支持 | 计划，待 P6C/P8A |
-| P9A 共享执行 | 复用 arrangements、materialized subviews、公共扫描/子图；维护 physical-state catalog | 1/10/100 任务真实成本对照；共享状态 refcount/watermark/schema epoch/GC 正确；热点与 fanout 计入 | 计划，接口前置到 P6C |
-| P9B 成本驱动策略 | 为 reuse/incremental/partial recompute/full recompute 产生候选，先 Pareto 淘汰再按 SLO/资源策略选择 | 估算和实测都记录 time-to-ready、read bytes、state bytes、steady CPU、write amplification、catch-up lag；策略切换可恢复且结果等价 | `incremental_contract.py` 已有 backend-neutral Pareto 原型；真实统计与执行器未接入 |
-| P9C 自动物化与回收 | 根据长期 workload 决定哪些 arrangement/subview 值得创建、保留或淘汰 | 物化收益必须覆盖维护/存储成本；GC 不删除仍被任务/W pin 使用的状态；策略有审计记录并可禁用 | 计划，等待 P9A/B 多任务 profile |
-| P10 输出与回填调度 | 前置最小可用输出：顺序、可见性、未知状态恢复、预算；后续再编码优化 | 默认 SR 服务参数下回填可限速也可恢复；同键旧请求不覆盖新数据；不丢 delete；积压有界且回填不永久饥饿；merge/2PC 分开验收，不承诺消除 compaction | 四组短时端到端及真实未知响应隔离/重启通过；完整压力故障矩阵仍待验收 |
-| P11 目标规模与长跑 | 从小规模持续测试扩到 50M + 50 行/s，并动态建任务 | 固定资源连续至少 72 小时；基础镜像及已就绪任务正常时段 P95 <= 5 秒、P99 <= 10 秒；记录最大延迟和违约率，故障期单报；排空后逐键字段正确；测 time-to-ready、回填总时长和容量余量；默认 SR 参数 | 计划；机器/行宽/任务数与资源预算须固定 |
-| P12 硬件参考与对标 | 分层瓶颈上界与七系统相同语义比较 | 同资源/版本/耐久性/正确性、至少 5 次重复及区间；不支持项单列；复制、状态计算、目标导入分开比较，禁止用微基准宣称全面领先；低负载测延迟，高负载扫描饱和点及持续积压，50 行/s 本身不能证明吞吐极限 | 计划，不作为首个可用版本的阻塞条件 |
-| P13 控制接口、MCP 与发布 | 先定版本化 deploy/explain/status/cancel，再自然语言入口和可回滚发布 | MCP 复用相同校验与部署事务，不绕过权限/成本检查；状态格式迁移、升级失败/回滚及备份恢复实测；72h、恢复和目标能力 gate 通过才标对应范围生产候选 | 计划；接口先行，MCP 不要求先完成七系统对标 |
-
-### 下一轮具体交付顺序
-
-1. 补真实端到端 harness：基础表 snapshot 与 CDC 同时运行，验证更新、删除、回填覆盖、输出未知事务和压力恢复；记录可见延迟及最终状态。用现有管线建立可用基准，先小规模后放大。
-2. 先完成 P6A/P6B：用同一合同比较 local、StarRocks base mirror、hybrid 三种 authoritative base，验证 fixed-W、50M 扫描、更新/磁盘放大、故障恢复和有限 changelog retention；未完成比较前不把 RocksDB 写死为最终 backend。
-3. 完成 P6C 的 shared arrangement/physical-state identity 与 catalog/runtime 接口，再把 P7 hot-add 的历史初始化从 MySQL `snapshot_worker` 切换到 authoritative/shared state；验证正常新增任务不产生新的 MySQL snapshot 读取。
-4. 先建立 P8A normalized/incremental IR 和 full oracle，再开放 P8B 算子；同时推进 P9A 的状态共享。随后用 P9B/P9C 做 Pareto 成本选择、自动物化/GC。只有真实 profile 指向瓶颈时才推进 P4/P5；固定生产候选后完成 50M/72h、升级回滚和公平对标。
-
-## 性能合同
-
-“物理极限”是固定硬件、数据语义、持久性和目标可见性下，持续识别并减少瓶颈的工程目标。不会用某个内核的几十倍加速，推导整套系统几十倍加速。
-
-四层测试必须分开：解码器只测 raw event→变化批；local pipeline 包含路由、状态和 durable journal；snapshot 包含实际 MySQL 读取和状态准入；end-to-end 包含真实 COMMIT、StarRocks 查询确认和数据正确性。最后一层才证明 5–10 秒新数据可见。每层性能必须同时记录两进程/多线程总成本，不能把 C 子进程、compaction 或源/目标 CPU 隐藏掉。
-
-对低频增量使用时间上限触发的小批，对高吞吐使用字节/行数阈值；不能靠扩大 batch 牺牲延迟。回填调度给 CDC 留出预算，并通过队列年龄、VISIBLE 延迟、目标版本压力和本地磁盘余量调整。源停机、sink 不可用时不可能继续满足可见性 SLO，需要报告不可用时长和恢复追赶成本。
-
-资源参考上限分别测量：MySQL 拉取能力、内存读写带宽、带 fsync 的本地状态写入、网络以及 StarRocks 持续导入/compaction 能力。它们只是经验参考上界，不是对任意 SQL 的数学极限证明。关联一对多、多个下游 fanout 和聚合热点必须计入输出/状态放大。
-
-现有 `tools/partition_benchmark.py` 比较的是两种**分区算法**，不是完整 reader 的 A/B，更不是各实时计算系统的对标。数据构造和加载准备不计入内核计时；Arrow `take` 计入完整分区耗时；每次比较检查结果相等。云 runner 的微基准用于发现明显回退，生产性能 gate 必须在固定机器执行。
-
-```bash
-python tools/privacy_check.py
-python tools/partition_benchmark.py --rows 1000000 --repeats 7 \
-  --output benchmark-results/partition.json
-```
-
-性能候选晋升默认的 gate：正确性零差异；预先固定负载、资源、稳定测量区间和重复次数，报告中位数、区间及原始样本。吞吐或 P99 恶化超过 5% 触发调查，只有排除噪声后的变化才作结论；不能用一个普遍的“热点必须降低 20%”门槛替代全路径收益。新产品能力与等功能性能优化分开验收，不拿新增持久状态的成本与无此能力的解码器直接排名。存储 fsync、检查点频率、编译 ISA、压缩、源目标资源都必须列出，不允许关闭恢复能力换成绩。
-
-## 公开 CI 与隐私边界
-
-CI 使用公有仓库 runner，不限制后续需要的运行次数；每个任务有 timeout 和并发取消，避免无意义重复消耗。当前 CI 不连接任何生产服务。后续 MySQL/StarRocks 集成环境只使用隔离容器和合成数据，50M/72h 测试使用专用隔离 benchmark 机器。
-
-Actions 固定到已核实的公开发布 commit，权限仅 `contents: read`，checkout 不保留凭据。隐私 gate 只检查版本控制的文件；发布前还需检查新 commit 和 artifact 白名单。运行 catalog、日志、metrics、SQLite/WAL、真实 SQL 部署文件和 core dump 不上传。公开 artifact 仅限原生构建产物与合成 benchmark JSON。
-
-示例中的占位密码和离线测试中的短假密码仅用于合成测试，不能替换成真实配置后提交。未来引入 secret provider、依赖 SBOM、构建签名、sanitizer/fuzz 和 release 审查；公有库本身不保存业务凭据。隐私扫描只是自动 gate，不能替代发布前人工审查。
-
-## 理论与官方资料
-
-- [DBSP: Automatic Incremental View Maintenance for Rich Query Languages](https://arxiv.org/abs/2203.16684)：差分、积分和有撤回的增量语义。
-- [Enzyme: Incremental View Maintenance for Data Engineering（2026）](https://arxiv.org/abs/2603.27775)：成本驱动刷新策略和管线优化，作为策略候选而非速度保证。
-- [OpenIVM: a SQL-to-SQL Compiler for Incremental Computations](https://arxiv.org/abs/2404.16486)：评估复用 DuckDB 的增量 SQL 路线。
-- [DataFusion optimizer](https://datafusion.apache.org/library-user-guide/query-optimizer.html) 与 [SQL 扩展](https://datafusion.apache.org/library-user-guide/extending-sql.html)：复用模块与自定义计划。
-- [Arrow C Data Interface](https://arrow.apache.org/docs/format/CDataInterface.html)：同进程数据交换和资源生命周期。
-- [PyO3 performance](https://pyo3.rs/main/performance.html)：控制跨语言调用与运行时约束。
-- [RocksDB Overview](https://github.com/facebook/rocksdb/wiki/RocksDB-Overview)、[Snapshot](https://github.com/facebook/rocksdb/wiki/Snapshot) 与 [Checkpoints](https://github.com/facebook/rocksdb/wiki/Checkpoints)：原子批、WAL、快照及 compaction 成本；普通 snapshot 不跨重启，持久 checkpoint 与应用水位的绑定仍需设计。
-- [StarRocks Stream Load](https://docs.starrocks.io/docs/loading/StreamLoad/) 与 [事务接口](https://docs.starrocks.io/docs/loading/Stream_Load_transaction_interface/)：当前官方资料，固定 4.1.1 实测优先于滚动更新的 Latest 文档。
-
-每个后续里程碑都更新这里的状态和公开结果链接。提交了一份计划不等于完成计划；代码通过离线测试不等于生产认证。
-
-## 实施记录
-
-2026-09-30：新增独立 Python ROW/FULL 解码 oracle；同一 TABLE_MAP/row event 与 C decoder 对比 Arrow schema、值、NULL、操作和顺序，并交叉检查 native snapshot。合成用例覆盖 21 列、整数 signed/unsigned 边界、DECIMAL(p,p)、UTF-8/emoji、二进制、DATE/DATETIME(6)、复合键和更新主键。新增隔离 MySQL 8.4.6 的 1,000 事务差分 workflow，并将重放后的结果与真实 MySQL 最终 SELECT 比较。
-
-本地 1,000 个事件（3,332 个行镜像）和 267 个 snapshot 行差分通过；另有 1,000 个协议故障用例通过。修复 DECIMAL(p,p) snapshot 前导零误计 precision，以及截断 CONFIG 清理路径可能解引用未分配列的问题；拒绝非法类型、decimal/fsp 元数据和缺失 nullable bitmap。ASan/UBSan 与真实 MySQL 验证由 Actions 执行。此结果不是全套 P1/P2 完成，也不是生产性能证明。
-
-```bash
-python tools/binlog_parity.py --cases 1000 --faults
-# 仅对可删除 synthetic 数据库的隔离 MySQL：
-python tools/binlog_parity.py --live --cases 1000
-cmake -S native -B build/sanitized -DM2S_SANITIZERS=ON
-cmake --build build/sanitized --parallel 2
-python tools/binlog_parity.py --binary build/sanitized/mysql_arrow_reader --cases 1000 --faults
-```
-
-组批候选：`CDC_NATIVE_EVENT_GROUP_EVENTS=128` 将同一源事务内的 TABLE_MAP/row events 合并发送，在 C 内按源表共享 Arrow builder；单批达到 8,192 行或累计 16 MiB Arrow 容量后输出，源事务的 SQLite commit 仍在最终 ACK 与 COMMIT/XID 后发生。Python 输入缓存最多 4 MiB（单个更大合法事件沿用原限制）；单个源事件的峰值仍需测量。默认为 `1`，保留逐事件 A/B 和旧 decoder 兼容性，不在完整性能 gate 前默认为新路径。
-
-真实 MySQL 最终 SELECT 对照发现并修复固定长度 BINARY 的 binlog 尾部零填充与 snapshot 不一致。新增两表交错组批差分与损坏 group 故障；新增实际 `capture_binlog_native` 恢复循环测试，注入首次建连失败、事务中断和子进程 kill，确认 GTID/文件位置都从 durable cursor 重放、CONFIG 重建、SQLite 仅提交一次。
-
-```bash
-python tools/native_recovery_test.py --cases 1000
-python tools/decoder_benchmark.py --layer decoder --events 1000 --rows-per-event 1 --repeats 5
-python tools/decoder_benchmark.py --layer local --events 1000 --rows-per-event 8 --repeats 5
-```
-
-A/B 每个样本独立 Python 进程，输出 Python/C/总 CPU、wall、RSS、rows/s、IPC 字节、SQLite 文件总字节（空间占用，不等于实际写入字节或写放大）、事务批 P50/P95/P99。fixtures 构造、初始化不计 wall；C CPU 计入子进程完整生命周期。此测试不含 MySQL socket/StarRocks，不把批延迟解释为端到端延迟；RSS 无读取权限时为 unknown。local 模式保持 SQLite FULL/WAL 与相同源事务边界。
-
-`tools/starrocks_contract.py` 与 Actions 的隔离 StarRocks 4.1.1 probe 验证：2PC 在 commit 前不可见、merge async 实际共享 TxnId 并最终 VISIBLE；组合 header 需同时通过功能与无效参数负对照，不能把 HTTP success 当作双机制叠加成功。只上传合成计数和结论，不连接生产服务。
-
-### 已验证结果（2026-09-30）
-
-提交 `e7d69685a3acc76e357c414d32a06c014d8302b0` 的 [集成与 sanitizer CI](https://github.com/justgo4/m2s/actions/runs/36738492453) 和 [Python 3.12/3.14 基线 CI](https://github.com/justgo4/m2s/actions/runs/36738492665) 全部通过。真实 MySQL 测试覆盖 1,000 个事务、3,834 个行镜像，逐事件及组批解码均与同一原始事件的 Python oracle 比较，最终状态也与 MySQL SELECT 比较。每个基线版本的 1,000 次 capture 恢复测试均没有重复提交。
-
-隔离 StarRocks `4.1.1-14b7e3f` 使用镜像默认服务配置：8 个 async Merge Commit 请求实际共享 1 个事务并全部可见；2PC 只有显式 commit 后可见。事务接口接受无效 Merge Commit 参数，而普通 Stream Load 拒绝相同无效参数，说明事务接口忽略这些参数。结论是本次测试没有证明双机制叠加，运行时继续保留两条独立协议路径。
-
-新增 `Native decoder and durable pipeline A/B` workflow：decoder/local 两层 × tiny/dense/wide 三种合成负载，每种方法独立进程、随机执行顺序、5 次重复，先运行差分和故障 gate，再发布 JSON 样本。GitHub runner 性能波动较大，只用于发现回退，不作为固定机器性能验收。当前 local 包含 DuckDB 路由和 SQLite FULL/WAL，但尚未包含未来共享状态引擎。
-
-本地 tiny 解码器样本中组批减少 IPC 输出约 88%；本地 4,096 行、8 个 durable 源事务样本中，逐事件/组批 wall 中位数为 0.264/0.151 秒，总 CPU 为 0.324/0.162 秒（各 5 次）。这些仅是小规模合成测量，不能推导真实 MySQL→StarRocks 加速比，也不能证明超过其他系统。
-
-仍未通过的验收：C 直接管理 MySQL socket 的 P4 路径、P6 共享源状态、P7 动态部署水位恢复、P8 JOIN/聚合撤回、完整 snapshot/end-to-end A/B、默认参数下 50M+50 rows/s 的 72 小时长跑，以及七个系统的同机对标。当前版本不能据此称为“物理极限”或生产候选；阶段状态保留为部分完成或计划。
-
-宽行反例：同机 2,048 行、每行 4 KiB BLOB、4 个 SQLite FULL/WAL 源事务（各 5 次）中，逐事件/组批 wall 中位数 0.191/0.190 秒，总 CPU 0.224/0.211 秒，区间重叠且 Python 参考路径 wall 0.177 秒。此样本没有显著组批 wall 收益，也不能证明 native 总是更快。默认保持逐事件模式；优化选择需要负载和固定机器实测。
-
-本地完整样本：[tiny decoder](reports/local-decoder-tiny.json)、[narrow durable local](reports/local-durable-narrow.json)、[wide durable local](reports/local-durable-wide.json)。六个 CI A/B job 已全部通过：[run 36743206446](https://github.com/justgo4/m2s/actions/runs/36743206446)，Actions artifact 提供 runner 样本；每个 workload 只在自身同一 runner 内比较方法，不跨 runner 排名。
-
-
-### 2026-10-01：真实 daemon 与在线新增下游
-
-[四组端到端 CI 36787425832](https://github.com/justgo4/m2s/actions/runs/36787425832) 全部通过：MySQL 8.4.6 → 实际 `j4.py` → StarRocks 4.1.1；两种协议各测 GTID ON/OFF。合成初始 2,048 行、80 个源事务，覆盖过滤翻转、NULL、DECIMAL、主键修改、删除重插；实际断开复制连接一次；运行中用 `j4.py sql` 新建第二个不同投影/过滤的下游，两任务均持续处理增量；排空后强制退出，再产生数据并重启，两个目标的最终逐键逐字段结果均等于独立 MySQL SELECT。
-
-| 协议 | GTID | 初始阶段 P95 / P99 / 最大观察延迟（秒） | 新增任务 P99（秒） |
-|---|---|---|---|
-| transaction | ON | 1.948 / 2.197 / 2.319 | 1.657 |
-| transaction | OFF | 1.999 / 2.249 / 2.385 | 1.677 |
-| merge_async | ON | 3.614 / 3.781 / 3.865 | 3.478 |
-| merge_async | OFF | 3.473 / 3.729 / 3.816 | 3.892 |
-
-这是从客户端发起 COMMIT 到第一次成功目标查询的观察上界，包含提交往返和轮询等待；不是服务器精确提交时刻。仅为共享 runner 上的小规模功能短测，不是 50M、50 行/s 或 72 小时 SLO 认证。聚合记录见 [e2e aggregate](reports/e2e-20261001.json)，每条 marker 的完整样本见该 workflow artifacts。StarRocks 使用镜像默认服务参数；隔离测试表副本数为 1。固定测试程序逻辑内存预算 2,048 MB、每个 DuckDB 引擎 64 MB，为第二任务留出预算，不调整 StarRocks 配置。
-
-修复与诊断：虚拟地址空间限制为线程栈/Arrow 映射留出空间，RSS 仍由原有资源预算监测，不能把 RLIMIT_AS 当作即时物理内存硬限。暂时源连接故障超过重试窗口后进入可取消的低频等待，仍从 durable cursor 重建；decoder 故障计数独立，持续同一非法输入或权限/日志缺失仍会明确停止。SQL 文件部署若已经提交 catalog、但安装要求重启，CLI 返回非零并显示原因；**这不是 catalog 回滚，不能把失败码理解为未保存任务**。
-
-新增任务回填中强制退出及续建的更强测试已加入 `tools/e2e_contract.py`，与排空后的重启分开记录；[四组 CI 36787945824](https://github.com/justgo4/m2s/actions/runs/36787945824) 均已通过。即使这两种退出测试通过，也不能声称精确覆盖 HTTP 提交前后所有边界。当前基线新增下游仍会重新扫描 MySQL，不等于已完成共享本地源状态的 P6/P7。
-
-```bash
-# 仅对可删除 m2s_e2e_contract 的隔离服务执行：
-python tools/e2e_contract.py --isolated --load-mode merge_async --group-size 128
-python tools/e2e_contract.py --isolated --load-mode transaction --group-size 128
-```
-
-### P6 状态布局与固定水位原型
-
-`tools/state_layout_benchmark.py` 比较 SQLite FULL/WAL 的不可变 Arrow 批次+键引用，与 DuckDB 默认事务 WAL 的类型化最新状态。每种布局将状态、changelog 和源水位一起提交；检查同键多个镜像（包含打乱物理行顺序）、删除、NULL、Decimal、精确重放、冲突身份和非法源输入拒绝。两个布局均测试 commit 前/后 `os._exit`，恢复后没有重复提交且完整结果一致。固定 W 原型将 W 保存在持久数据库自身，从 W 副本重建并重放后缀，源继续推进也不会改变原 W；强制退出后同样验证。
-
-这仍是独立候选评测，未接入 daemon，不能标 P6 完成。固定 W 当前采用暂停写入的完整副本，不是在线 MVCC；没有实现日志 pin/GC、有限保留、多表一致初始化、任务 outbox、50M 有界扫描或字符串主键排序规则。候选 schema 为整数复合键的合成数据。禁止把这个原型当作生产状态迁移工具。
-
-[高熵宽行原始结果](reports/state-layout-20261001.json)：10,000 初始行、100 个事务、每事务 50 个变化及一个重复键最终镜像、2 KiB 合成高熵字符串、各 3 个独立进程样本。报告包含更新/扫描 CPU 与 wall、提交延迟、固定 W 副本耗时/空间、完整进程 RSS 和耐久文件空间；文件空间不等于实际 I/O 写放大，RSS 包含 fixtures 和 oracle。更新快与扫描快的布局不同，目前不据此选定生产引擎。需要补真实 churn/多任务扫描、保留和 compaction 成本后决策。
-
-```bash
-python tools/state_layout_benchmark.py --rows 1000 --transactions 10 --changes 20 --repeats 2 --faults
-python tools/state_layout_benchmark.py --rows 10000 --transactions 100 --changes 50 --width 2048 --entropy high --repeats 3 --faults
-```
-
-
-补充 P3 实际源读取测量：`tools/snapshot_benchmark.py` 在隔离 MySQL 的现有 21 列合成 fixture 上，分别运行生产 `fetch_snapshot` 的 Python tuple→Arrow 与 native packet→Arrow 路径，各 5 个新进程样本、随机先后顺序；每个样本检查 Arrow 类型/NULL/全部值和分块 op/order。记录 Python/C CPU、scan wall、读取行数、RSS 与 Python 进程 I/O 计数。source/server CPU、网络及 IPC 字节尚未记录，报告明确列为未测；不把 warm-cache 小 fixture 结果外推到 50M 或下游吞吐。该项已接入隔离 MySQL CI，验收以最新 workflow 结果为准。
-
-```bash
-# 先准备同一个隔离合成 fixture，再执行只读 benchmark：
-python tools/binlog_parity.py --live --cases 1000
-python tools/snapshot_benchmark.py --isolated --repeats 5 --batch-rows 512
-```
-
-
-### 补充 RocksDB 候选与实际 snapshot 结果
-
-[实际源读取 CI 36788920182](https://github.com/justgo4/m2s/actions/runs/36788920182) 已通过：2,166 行、21 列固定合成 fixture，Python/native 各 5 次新进程扫描；wall 中位数 0.04344 / 0.01793 秒，Arrow schema、全部业务值、NULL 和 snapshot op/order 无差异。此结果仅支持继续测量 native snapshot，不作为默认路径改动或系统加速比证明；完整样本见该 workflow 的 mysql-contract artifact。对应基础 Python 3.12/3.14 CI 亦通过。
-
-P6 候选现在可通过 `--rocks` 加测 `rocksdict==0.3.29` 的 raw bytes 布局：不可变 Arrow 批次、最新键引用、changelog 身份和 W 使用一次启用 sync WAL 的 WriteBatch 提交。使用实际 RocksDB Checkpoint，并验证重启后的固定 W 和后缀重放；内存 memtable/cache 配置明确，未关闭耐久性。仅作为状态布局实验，不是新增生产运行时，也未替换 SQLite 权威状态。
-
-[三布局同机宽行样本](reports/state-rocks-20261001.json) 的 3 次中位数：
-
-| 布局 | 100 事务更新总 wall（秒，含固定 W 创建） | 最终扫描 wall（秒） | 固定 W 创建（秒） | W 文件逻辑空间（MB） |
-|---|---|---|---|---|
-| SQLite Arrow+键索引 | 0.0773 | 0.0636 | 0.0130 | 21.05 |
-| DuckDB 类型化状态 | 0.9701 | 0.0128 | 0.0781 | 86.52 |
-| RocksDB Arrow+键索引 | 0.0810 | 0.0595 | 0.0278 | 21.03 |
-
-RocksDB 的该 checkpoint 约 21.00 MB SST 仍与源共享硬链接，因此 W 的逻辑文件大小不能直接当作额外占用。后续源 compaction、日志 pin/GC 和任务寿命仍会带来保留成本。三个布局都通过提交前/后进程退出、固定 W 重建、冲突重放和非法输入测试；小 fixture 上各有取舍，当前仍不宣布状态引擎最终选型。存储数据仍是整数复合键合成子集；业务类型、schema epoch 和真实全量初始化合同尚未接入。
-
-候选依赖单独放在 `requirements-state-benchmark.txt`，不进入生产默认 requirements。新增独立 Python 3.12/3.14 状态 CI，输出仅合成 JSON，不上传 DB/WAL/目录或源数据。
-
-```bash
-python -m pip install -r requirements.txt -r requirements-state-benchmark.txt
-python tools/state_layout_benchmark.py --rows 1000 --transactions 10 --changes 20 --repeats 2 --rocks --faults
-```
-
-
-部署诊断补充：`restart_required` 和 `rebuild_required` 均使 SQL 文件 CLI 返回非零；daemon 输出 `PLAN NOT ACTIVATED`，status metrics 与最终 summary 的 `catalog_activation` 保留版本、状态和原因。正常切换到新计划后变为 `active`。这用于区分“目录已保存”和“数据任务已运行”，不自动丢弃旧状态或触发目标表重建。验证覆盖远程文件部署返回码及阻止激活时的诊断状态。
-
-
-### 未知 Merge Commit 请求的目标隔离
-
-已将没有 durable TxnId 的未知请求从“整条管线拒绝重启”改为目标隔离：保留 `merge_uncertain` 与原 payload，冻结受影响目标的所有 lane 和后续回填读取；其他目标可以在原有积压/磁盘预算内继续处理。writer 捕获未知结果时也进入隔离，普通没有未知标记的错误仍按原规则处理。legacy sink identity 迁移完成后才从标记恢复隔离集合，避免用旧源表名隔离错目标。known TxnId 仍由原有状态/历史查询路径确认。
-
-status 和 summary 显示 `health=degraded`、`quarantined_tables` 及原因。这不表示未知请求已经解决，不重新发送旧 payload，也不自动删除标记或宣称该目标继续满足新鲜度目标。如果隔离目标长期不处理，有限 journal 填满仍会对源施加背压；不是无限持续服务保证。自动有证据对账/隔离 generation 重建仍是后续 P2/P6/P7 工作，当前不能标完整故障恢复完成。
-
-`tools/merge_quarantine_test.py` 用实际 SQLite 标记和实际 writer 循环模拟响应丢失，验证原 payload/未知标记跨重启保留、坏目标只尝试一次、独立目标 worker 继续执行，以及普通错误不会被错误地隔离。它不含真实网络，真实 HTTP 边界由下面的独立代理测试覆盖。
-
-
-真实网络验收：[CI 36795348744](https://github.com/justgo4/m2s/actions/runs/36795348744) 的 transaction/merge_async × GTID ON/OFF 四组全部通过。两组 merge_async 还运行 `tools/merge_quarantine_network_test.py`：隔离代理在实际 StarRocks 4.1.1 接受一条请求后丢弃成功响应，独立查询确认该事务最终 VISIBLE；daemon 未收到 TxnId，保留一条未知标记。原 payload 的 BE 转发次数严格为 1，受影响目标被隔离；另一个目标在硬退出前和重启后均与 MySQL 逐字段一致，源在程序退出期间的新事务也被补获。两种 GTID 模式结果相同，公开计数见 `reports/merge-quarantine-20261001.json`。
-
-同一实现的 [Python 3.12/3.14 离线回归](https://github.com/justgo4/m2s/actions/runs/36795348655) 与 [真实 MySQL/StarRocks、sanitizer、snapshot A/B](https://github.com/justgo4/m2s/actions/runs/36795348569) 全部通过。测试代理保留 `Expect` 与重定向查询参数，不主动制造非目标网络故障。独立协议 runner 清理未使用工具链来腾出磁盘，不修改 StarRocks 磁盘阈值或服务参数。
-
-本轮仅完成未知响应的安全隔离验收，未完成自动对账或目标重建；共享源状态接入 daemon（P6）、本地 W/generation 动态任务（P7）、增量聚合/JOIN（P8）、50M+50 行/s 的 72 小时验收和公平性能对标仍未完成。不能将这些短测结果称为整个路线已完成、生产认证或物理性能极限。
-
-### 2026-10-01 增量架构合同升级
-
-在现有 P6 fixed-W 原型之上新增 `incremental_contract.py` 与 `tools/incremental_contract_test.py`，先固定 backend-neutral 的共享状态 identity、实例 watermark compatibility、bounded changelog retention floor 和多策略 Pareto frontier。该模块不接管当前 daemon，也不修改 catalog 持久格式，因此不会把尚未验证的 RocksDB/StarRocks/hybrid 选择写入生产状态。
-
-CI 现在会验证：相同规范 state spec 产生稳定 identity；schema epoch/predicate/collation 变化不能误复用；fixed-W pin 会阻止过早日志 GC；被其他候选在全部成本维度支配的执行策略会被淘汰，而 time-to-ready/state/source-read 等存在真实权衡的候选同时保留。下一步把这些合同接到 P6 authoritative state 与 physical-state catalog，而不是继续扩展 task-centric MySQL snapshot。
+如果这些问题的答案导致路线变化，应先更新架构合同，再继续大规模实现。
