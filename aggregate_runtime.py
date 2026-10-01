@@ -22,6 +22,8 @@ def step(
     current=aggregate_generation.begin(
         con,sink_key,plan_version,ir,state_id)
     generation=current["generation"]
+    reused_physical=bool(
+        current.get("reused_physical",False))
 
     if current["phase"]=="bootstrap":
         result=aggregate_generation.process_next_chunk(
@@ -66,6 +68,7 @@ def step(
         consumer=consumer,
         source_applied=int(applied),
         visible_frontier=visible,
+        reused_physical=reused_physical,
         phase=(
             "bootstrap" if not generation["source_pin_released"]
             else "ready" if generation["status"]=="ready"
