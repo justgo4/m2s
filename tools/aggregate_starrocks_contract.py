@@ -394,22 +394,53 @@ def run_contract(output):
         if int(status["visible_frontier"])<3:
             raise AssertionError(
                 "aggregate target frontier did not cover seq 3")
-        final_rows=assert_target(cfg,[
+        post_move_rows=assert_target(cfg,[
             ["a",1,"20.00",20.0],
             ["b",1,"40.00",40.0],
             ["c",1,"30.00",30.0],
         ])
 
+        # Remove the last source row in group c. The aggregate outbox emits a
+        # key-only delete while COUNT is NOT NULL on the StarRocks target. This
+        # is the real 4.1.1 contract for __op=1 semantics.
+        if add_commit(con,[
+            (3,"c",Decimal("30.00"),1,1),
+        ],160)!=4:
+            raise AssertionError("unexpected fourth source sequence")
+        for _ in range(10):
+            status=aggregate_runtime.step(
+                con,SINK_KEY,PLAN_VERSION,CONSUMER_ID,ir,
+                STATE_ID,mapping,cfg)
+            if int(status["consumer"]["watermark"])==4:
+                break
+        if int(status["consumer"]["watermark"])!=4:
+            raise AssertionError("aggregate did not consume group-delete seq 4")
+        delete_deliveries=drain_target(
+            con,mapping,cfg)
+        if delete_deliveries<1:
+            raise AssertionError(
+                "aggregate group delete produced no real delivery")
+        status=aggregate_runtime.step(
+            con,SINK_KEY,PLAN_VERSION,CONSUMER_ID,ir,
+            STATE_ID,mapping,cfg)
+        if int(status["visible_frontier"])<4:
+            raise AssertionError(
+                "aggregate target frontier did not cover delete seq 4")
+        final_rows=assert_target(cfg,[
+            ["a",1,"20.00",20.0],
+            ["b",1,"40.00",40.0],
+        ])
+
         # Zero-output source transaction advances all durable frontiers with no
         # StarRocks row change and no synthetic target write.
-        if add_commit(con,None,160)!=4:
+        if add_commit(con,None,180)!=5:
             raise AssertionError("unexpected empty source sequence")
         status=aggregate_runtime.step(
             con,SINK_KEY,PLAN_VERSION,CONSUMER_ID,ir,
             STATE_ID,mapping,cfg)
         if (
-            int(status["consumer"]["watermark"])!=4
-            or int(status["visible_frontier"])!=4
+            int(status["consumer"]["watermark"])!=5
+            or int(status["visible_frontier"])!=5
         ):
             raise AssertionError(
                 "zero-output source transaction did not advance aggregate frontier")
@@ -428,10 +459,12 @@ def run_contract(output):
             restart_boundaries=2,
             first_deliveries=first_deliveries,
             second_deliveries=second_deliveries,
+            delete_deliveries=delete_deliveries,
             visible_frontier=int(status["visible_frontier"]),
             first_rows=first_rows,
+            post_move_rows=post_move_rows,
             final_rows=final_rows,
-            zero_output_frontier=4,
+            zero_output_frontier=5,
         )
         con.close()
 
