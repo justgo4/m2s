@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 from pathlib import Path
+import os
 import sqlite3
+import tempfile
 import sys
 
 import pyarrow as pa
@@ -10,8 +12,10 @@ sys.path.insert(0,str(ROOT))
 
 import aggregate_ir
 import aggregate_state
+import aggregate_task_catalog
 import join_ir
 import join_state
+import j4
 import physical_state_catalog
 import source_state
 import stateful_physical_registry
@@ -182,10 +186,72 @@ def main():
         con,retired["instance_id"])==[]
 
     con.close()
+
+    # Terminal task GC removes only task-private backing state/outbox after all
+    # refs, consumers, retirement intents and active writer jobs are gone.
+    with tempfile.TemporaryDirectory(
+        prefix="m2s-stateful-physical-gc-"
+    ) as td:
+        path=os.path.join(td,"state.sqlite3")
+        con=j4.init_state(path)
+        source_state.register_relation(
+            con,"db.orders","source-epoch-a",
+            order_schema(),["id"],schema_epoch=3)
+        aggregate_state.begin_bootstrap(
+            con,"agg-state-gc",
+            aggregate_ir.state_spec(agg_ir),0)
+        aggregate_state.bind_input_semantics(
+            con,"agg-state-gc",aggregate_ir.semantic_id(agg_ir))
+        aggregate_state.apply_bootstrap_chunk(
+            con,"agg-state-gc",0,[],None,True)
+        task=aggregate_task_catalog.register_task(
+            con,"agg-task-gc","starrocks.agg_gc",91,agg_ir,
+            "agg_gc","agg-state-gc","agg-consumer-gc",[
+                dict(
+                    name="category",type="VARCHAR(32)",
+                    nullable=False,key=True),
+                dict(
+                    name="n",type="BIGINT",
+                    nullable=False,key=False),
+                dict(
+                    name="total",type="DECIMAL(38,2)",
+                    nullable=True,key=False),
+            ])
+        task=aggregate_task_catalog.set_status(
+            con,task["task_id"],"active")
+        stateful_physical_registry.sync_ready(
+            con,"aggregate",task,0)
+        task=aggregate_task_catalog.set_status(
+            con,task["task_id"],"retired")
+        stateful_physical_registry.retire(
+            con,"aggregate",task)
+        removed=stateful_physical_registry.gc_retired(
+            con,limit=8)
+        assert [item["task_id"] for item in removed]==[
+            "agg-task-gc"]
+        try:
+            aggregate_state.state_info(
+                con,"agg-state-gc")
+            raise AssertionError(
+                "retired aggregate backing state survived physical GC")
+        except KeyError:
+            pass
+        try:
+            physical_state_catalog.state_info(
+                con,stateful_physical_registry.instance_id(
+                    "aggregate",task))
+            raise AssertionError(
+                "retired physical catalog row survived GC")
+        except KeyError:
+            pass
+        assert aggregate_task_catalog.task_info(
+            con,"agg-task-gc")["status"]=="retired"
+        con.close()
+
     print(
         "stateful_physical_registry_test ok semantic_identity "
         "schema_epoch source_epoch current_only_pin_fence "
-        "ready_advance retire_gc",
+        "ready_advance retire_gc backing_gc",
         flush=True,
     )
 
