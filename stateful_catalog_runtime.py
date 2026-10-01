@@ -444,10 +444,10 @@ def durable_mappings(con):
     result={}
     for task in aggregate_task_catalog.list_tasks(con):
         mapping=aggregate_target_mapping.mapping_from_descriptor(task)
-        result[(int(task["plan_version"]),str(task["sink_key"]))]=mapping
+        result[(stateful_task_plan.writer_plan_version(task["plan_version"]),str(task["sink_key"]))]=mapping
     for task in join_task_catalog.list_tasks(con):
         mapping=join_target_mapping.mapping_from_descriptor(task)
-        result[(int(task["plan_version"]),str(task["sink_key"]))]=mapping
+        result[(stateful_task_plan.writer_plan_version(task["plan_version"]),str(task["sink_key"]))]=mapping
     return result
 
 
