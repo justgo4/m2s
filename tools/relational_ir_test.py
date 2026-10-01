@@ -103,8 +103,22 @@ def main():
     expected = con.execute(current_sql).fetchall()
     actual = con.execute(relational_ir.to_duckdb_sql(a)).fetchall()
     assert Counter(expected) == Counter(actual)
-    assert len(actual) == 3
+    # SQL three-valued logic excludes NULL from amount > 0. Only ids 1 and 5
+    # satisfy both predicates.
+    assert len(actual) == 2
+    assert {row[0] for row in actual} == {1, 5}
     assert all(row[1] == Decimal("5.00") for row in actual)
+
+    # Bag semantics are observable only when projection collapses distinct
+    # source rows onto the same tuple. Both ids 1 and 5 must survive here.
+    bag_ir = relational_ir.mapping_ir(mapping(
+        'SELECT "amount" * 2 AS "v" '
+        'FROM arrow_batch WHERE "status" = \'paid\'',
+        '"amount" > 0',
+    ))
+    bag_actual = con.execute(
+        relational_ir.to_duckdb_sql(bag_ir)).fetchall()
+    assert Counter(bag_actual) == Counter({(Decimal("5.00"),): 2})
     con.close()
 
     broken = dict(a)
