@@ -520,7 +520,7 @@ def main():
                 ((response.get("result") or {}).get("publish") or {})
                 .get("activation") or {})
             if (
-                result.returncode!=0
+                result.returncode==0
                 or activation.get("status")!="restart_required"
             ):
                 raise AssertionError(
