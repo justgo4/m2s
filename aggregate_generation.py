@@ -22,11 +22,14 @@ def _text(value,name):
     return value
 
 
-def _expected_consumer_metadata(source_relation,plan_version,ir,state_id):
+def _expected_consumer_metadata(
+        source_relation,plan_version,ir,state_id,generation_id
+):
     return dict(
         kind="group_aggregate_v1",
         source_relation=_text(source_relation,"source_relation"),
         plan_version=int(plan_version),
+        generation_id=_text(generation_id,"generation_id"),
         aggregate_ir_id=aggregate_ir.semantic_id(ir),
         aggregate_state_id=_text(state_id,"state_id"),
         aggregate_state_spec_id=aggregate_state.semantic_id(
@@ -40,7 +43,8 @@ def _validate_existing_consumer(
     consumer=source_state.consumer_info(con,consumer_id)
     expected=_expected_consumer_metadata(
         generation["source_relation"],
-        generation["plan_version"],ir,state_id)
+        generation["plan_version"],ir,state_id,
+        generation["generation_id"])
     if consumer["metadata"]!=expected:
         raise RuntimeError(
             "aggregate generation consumer semantics changed across restart")
@@ -173,7 +177,8 @@ def activate_catchup(
         consumer=aggregate_log_consumer.ensure_consumer(
             con,consumer_id,generation["source_relation"],
             generation["plan_version"],ir,state_id,
-            generation["fixed_w"])
+            generation["fixed_w"],
+            generation_id=generation["generation_id"])
         if fault_after_consumer is not None:
             fault_after_consumer()
         generation=task_generation.finalize_history_and_release_pin(

@@ -24,12 +24,15 @@ def _text(value,name):
     return value
 
 
-def _metadata(source_relation,plan_version,ir,state_id):
+def _metadata(
+        source_relation,plan_version,ir,state_id,generation_id
+):
     aggregate_ir.validate_ir(ir)
     return dict(
         kind="group_aggregate_v1",
         source_relation=_text(source_relation,"source_relation"),
         plan_version=int(plan_version),
+        generation_id=_text(generation_id,"generation_id"),
         aggregate_ir_id=aggregate_ir.semantic_id(ir),
         aggregate_state_id=_text(state_id,"aggregate_state_id"),
         aggregate_state_spec_id=aggregate_state.semantic_id(
@@ -38,7 +41,8 @@ def _metadata(source_relation,plan_version,ir,state_id):
 
 
 def ensure_consumer(
-        con,consumer_id,source_relation,plan_version,ir,state_id,watermark
+        con,consumer_id,source_relation,plan_version,ir,state_id,watermark,
+        generation_id=None
 ):
     consumer_id=_text(consumer_id,"consumer_id")
     state_id=_text(state_id,"state_id")
@@ -50,8 +54,10 @@ def ensure_consumer(
     aggregate_physical_state.sync_instance(
         con,state_id,ir,generation=1)
     aggregate_outbox.ensure_installed(con)
-    generation_id="aggregate:%s:plan:%d" % (
-        consumer_id,int(plan_version))
+    generation_id=(
+        "aggregate:%s:plan:%d" % (consumer_id,int(plan_version))
+        if generation_id is None
+        else _text(generation_id,"generation_id"))
     aggregate_outbox.ensure_stream(
         con,consumer_id,state_id,int(plan_version),
         generation_id,watermark)
@@ -62,7 +68,8 @@ def ensure_consumer(
         raise RuntimeError(
             "aggregate state exists at a different watermark; resume from its "
             "durable watermark")
-    metadata=_metadata(source_relation,plan_version,ir,state_id)
+    metadata=_metadata(
+        source_relation,plan_version,ir,state_id,generation_id)
     try:
         current=source_state.consumer_info(con,consumer_id)
     except KeyError:
