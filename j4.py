@@ -42,6 +42,7 @@ import aggregate_task_catalog
 import cdc_catalog
 import incremental_contract
 import incremental_ir
+import join_outbox
 import physical_state_catalog
 import relational_ir
 import source_state
@@ -1550,6 +1551,12 @@ def init_state(path):
             source_seq INTEGER NOT NULL);
         CREATE INDEX IF NOT EXISTS aggregate_job_links_commit
             ON aggregate_job_links(consumer_id,source_seq,job_id);
+        CREATE TABLE IF NOT EXISTS join_job_links(
+            job_id INTEGER PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+            consumer_id TEXT NOT NULL,
+            source_seq INTEGER NOT NULL);
+        CREATE INDEX IF NOT EXISTS join_job_links_commit
+            ON join_job_links(consumer_id,source_seq,job_id);
         CREATE TABLE IF NOT EXISTS prepare_reservations(
             delivery_id TEXT PRIMARY KEY REFERENCES deliveries(id) ON DELETE CASCADE,
             reserved_bytes INTEGER NOT NULL CHECK(reserved_bytes>=0));
@@ -1616,6 +1623,7 @@ def init_state(path):
     """)
     source_state.install(con)
     aggregate_outbox.install(con)
+    join_outbox.install(con)
     aggregate_task_catalog.install(con)
     physical_state_catalog.install(con)
     task_generation.install(con)
@@ -3080,6 +3088,15 @@ def acknowledge_delivery(con, delivery):
             for row in con.execute("""
                 SELECT DISTINCT l.consumer_id,l.source_seq
                 FROM aggregate_job_links l
+                JOIN job_assignments a ON a.job_id=l.job_id
+                WHERE a.delivery_id=?
+            """,(delivery,)).fetchall()
+        ]
+        join_commits = [
+            (str(row[0]),int(row[1]))
+            for row in con.execute("""
+                SELECT DISTINCT l.consumer_id,l.source_seq
+                FROM join_job_links l
                 JOIN job_assignments a ON a.job_id=l.job_id
                 WHERE a.delivery_id=?
             """,(delivery,)).fetchall()
