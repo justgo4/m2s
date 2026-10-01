@@ -8572,6 +8572,34 @@ def run_cdc(
     state_dir = os.path.dirname(cfg["state"])
     os.makedirs(state_dir,exist_ok=True)
     with process_lock(cfg["state"]):
+        stateful_manifests=list(
+            cfg.get("catalog_stateful_tasks",()) or ())
+        if stateful_manifests and not cfg.get("shared_source_state",False):
+            raise RuntimeError(
+                "stateful catalog tasks require CDC_SHARED_SOURCE_STATE=1")
+        stateful_scope=(
+            stateful_catalog_runtime.source_scope(
+                cfg,stateful_manifests,prepared)
+            if stateful_manifests
+            else dict(
+                required_sources=[],
+                capture_mappings=list(prepared),
+                source_metadata={})
+        )
+        stateful_source_mappings=[
+            mapping
+            for mapping in stateful_scope["capture_mappings"]
+            if str(mapping["src_table"])
+               in set(stateful_scope["required_sources"])
+        ]
+        compiled_stateful=(
+            stateful_catalog_runtime.compile_catalog_tasks(
+                cfg,int(cfg.get("catalog_version",0)),
+                stateful_manifests,
+                stateful_scope["source_metadata"])
+            if stateful_manifests
+            else []
+        )
         con = init_state(cfg["state"])
         stored_fingerprint = meta_get(con,"fingerprint")
         fresh_state = stored_fingerprint is None
