@@ -9,7 +9,9 @@ ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 
 import aggregate_ir
+import aggregate_state
 import join_ir
+import join_state
 import physical_state_catalog
 import source_state
 import stateful_physical_registry
@@ -47,6 +49,8 @@ def main():
     con=sqlite3.connect(":memory:",isolation_level=None)
     con.execute("PRAGMA foreign_keys=ON")
     source_state.install(con)
+    aggregate_state.install(con)
+    join_state.install(con)
     physical_state_catalog.install(con)
     source_state.register_relation(
         con,"db.orders","source-epoch-a",
@@ -59,6 +63,13 @@ def main():
         "db.orders",ORDER_SIG,
         "SELECT category,COUNT(*) AS n,SUM(amount) AS total "
         "FROM arrow_batch GROUP BY category")
+    aggregate_state.begin_bootstrap(
+        con,"agg-state-a",
+        aggregate_ir.state_spec(agg_ir),10)
+    aggregate_state.bind_input_semantics(
+        con,"agg-state-a",aggregate_ir.semantic_id(agg_ir))
+    aggregate_state.apply_bootstrap_chunk(
+        con,"agg-state-a",10,[],None,True)
     agg_task=dict(
         task_id="agg-task-a",
         sink_key="starrocks.agg_a",
@@ -75,6 +86,8 @@ def main():
         "source-epoch-a::db.orders"]
     assert len(first["refs"]) if "refs" in first else True
 
+    aggregate_state.apply_transaction(
+        con,"agg-state-a",12,[])
     advanced=stateful_physical_registry.sync_ready(
         con,"aggregate",agg_task,12)
     assert advanced["watermark"]==12
@@ -89,6 +102,13 @@ def main():
     # A second sink with identical source semantics produces a distinct physical
     # instance but the same semantic identity, which is the prerequisite for a
     # future planner to choose reuse without conflating ownership.
+    aggregate_state.begin_bootstrap(
+        con,"agg-state-b",
+        aggregate_ir.state_spec(agg_ir),12)
+    aggregate_state.bind_input_semantics(
+        con,"agg-state-b",aggregate_ir.semantic_id(agg_ir))
+    aggregate_state.apply_bootstrap_chunk(
+        con,"agg-state-b",12,[],None,True)
     agg_task_b=dict(
         task_id="agg-task-b",
         sink_key="starrocks.agg_b",
@@ -114,6 +134,13 @@ def main():
         "SELECT l.id AS order_id,r.name AS customer_name "
         "FROM left_batch l INNER JOIN right_batch r "
         "ON l.customer_id=r.id")
+    join_state.begin_bootstrap(
+        con,"join-state-a",
+        join_ir.state_spec(join_plan),12)
+    join_state.apply_bootstrap_chunk(
+        con,"join-state-a",12,"left",[],None,True)
+    join_state.apply_bootstrap_chunk(
+        con,"join-state-a",12,"right",[],None,True)
     join_task=dict(
         task_id="join-task-a",
         sink_key="starrocks.join_a",
