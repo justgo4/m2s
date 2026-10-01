@@ -3116,6 +3116,17 @@ def acknowledge_delivery(con, delivery):
             """,(consumer_id,source_seq)).fetchone():
                 aggregate_outbox.mark_visible(
                     con,consumer_id,source_seq)
+        for consumer_id,source_seq in join_commits:
+            if not con.execute("""
+                SELECT 1
+                FROM join_job_links l
+                LEFT JOIN retired_jobs r ON r.job_id=l.job_id
+                WHERE l.consumer_id=? AND l.source_seq=?
+                  AND r.job_id IS NULL
+                LIMIT 1
+            """,(consumer_id,source_seq)).fetchone():
+                join_outbox.mark_visible(
+                    con,consumer_id,source_seq)
         con.execute("DELETE FROM load_parts WHERE delivery_id=?", (delivery,))
         con.execute("DELETE FROM load_transactions WHERE delivery_id=?", (delivery,))
         con.execute("DELETE FROM deliveries WHERE id=?", (delivery,))
