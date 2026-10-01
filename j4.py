@@ -9482,13 +9482,22 @@ def main():
             cfg = read_config()
             activate_catalog(cfg)
             apply_resource_policy(cfg["resource"])
-            preflight(
+            prepared,_,_,_,_,_=preflight(
                 cfg,create_missing=False,mapping_defs=mappings,
                 plan_macros=cfg.get("catalog_macros"),
                 plan_udfs=cfg.get("catalog_udfs"))
+            validate_stateful_catalog_plan(
+                cfg,
+                dict(
+                    version=int(cfg.get("catalog_version",0)),
+                    stateful_tasks=list(
+                        cfg.get("catalog_stateful_tasks",()) or ())),
+                prepared,
+                create_missing=False,
+                allow_missing=False)
             log(
-                "SELFTEST ONLINE CHECK OK: schema and server checks passed; "
-                "no target DDL or data was written")
+                "SELFTEST ONLINE CHECK OK: stateless/stateful schema and "
+                "server checks passed; no target DDL or data was written")
         else:
             log(
                 "SELFTEST ONLINE CHECK SKIPPED: persistent database "
@@ -9519,9 +9528,18 @@ def main():
                 plan_macros=cfg.get("catalog_macros"),
                 plan_udfs=cfg.get("catalog_udfs"))
             if mode in ("check","probe"):
+                validate_stateful_catalog_plan(
+                    cfg,
+                    dict(
+                        version=int(cfg.get("catalog_version",0)),
+                        stateful_tasks=list(
+                            cfg.get("catalog_stateful_tasks",()) or ())),
+                    prepared,
+                    create_missing=False,
+                    allow_missing=False)
                 log(
-                    "CHECK OK: schema and server checks passed; "
-                    "no target DDL or data was written")
+                    "CHECK OK: stateless/stateful schema and server checks "
+                    "passed; no target DDL or data was written")
                 return 0
             if control is not None and signal_stop_requested(control):
                 log(f"STOP before startup reason={control['reason']}")
