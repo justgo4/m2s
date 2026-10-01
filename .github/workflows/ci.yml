@@ -57,6 +57,7 @@ jobs:
           python tools/catalog_config_test.py
           python tools/incremental_contract_test.py
           python tools/incremental_ir_test.py
+          python tools/incremental_ir_state_oracle.py
           python tools/physical_state_catalog_test.py
           python tools/relational_ir_test.py
           python tools/source_base_catalog_test.py
