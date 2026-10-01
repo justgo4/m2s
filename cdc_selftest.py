@@ -714,6 +714,10 @@ def selftest():
     mapping = dict(src_table="t",sr_table="t",primary_key="id",
                    sql="SELECT id,v FROM arrow_batch",full_filter="v >= 0",
                    _schema=[("id",pa.int64()),("v",pa.int64())],
+                   _schema_signature=[
+                       ("id","bigint","bigint",None,None,False),
+                       ("v","bigint","bigint",None,None,True),
+                   ],
                    _target_sequence=False,_output_columns=["id","v"])
     validate_mapping(mapping)
     engine = transform_engine(cfg)
