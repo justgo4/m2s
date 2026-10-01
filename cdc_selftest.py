@@ -1446,6 +1446,40 @@ def selftest():
             not runtime_add_sink(mapping_u,add_cfg,add_runtime),
             "hot-add registration must be idempotent within one runtime")
 
+        retire_path = os.path.join(directory,"retire_worker.sqlite3")
+        retire_db = init_state(retire_path)
+        check(
+            sink_durable_drained(retire_db,"u"),
+            "empty retired sink must be durably drained")
+        check(
+            runtime_mark_sink_retiring(add_runtime,"u",add_cfg)
+            and runtime_sink_retiring(add_runtime,"u"),
+            "drop must put physical workers into explicit draining state")
+        check(
+            not runtime_retiring_worker_done(add_runtime,"u",add_cfg)
+            and "u" in add_runtime["worker_keys"],
+            "first merge worker exit must not tear down shared sink runtime")
+        check(
+            runtime_retiring_worker_done(add_runtime,"u",add_cfg)
+            and "u" not in add_runtime["worker_keys"]
+            and not runtime_sink_retiring(add_runtime,"u")
+            and all(
+                mapping_key(item) != "u"
+                for item in add_runtime["worker_mappings"])
+            and all(
+                key[0] != "u"
+                for key in add_runtime["lane_locks"]),
+            "last retired worker must release sink-local runtime resources")
+        expected_after_drop_cap = max(
+            1,min(
+                add_cfg["writer_max"],
+                duckdb_merge_writer_cap(add_cfg,1),
+                int(add_cfg["resource"]["cpu_target"])))
+        check(
+            add_runtime["resource_writer_cap"] == expected_after_drop_cap,
+            "retired sink cleanup must recompute the remaining writer cap")
+        retire_db.close()
+
         target_mapping_u = two_table_plan["by_table"]["u"]
         target_mapping_u["_target_ddl"] = "CREATE TABLE IF NOT EXISTS `u` (`id` BIGINT)"
         target_probe = MagicMock()

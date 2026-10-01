@@ -5382,10 +5382,110 @@ def runtime_thread_register(runtime, thread):
     return thread
 
 
+def runtime_sink_retiring(runtime, table):
+    with runtime["control_lock"]:
+        return str(table) in runtime.get("retiring_sinks",set())
+
+
+def sink_durable_drained(con, table):
+    table = str(table)
+    if con.execute(
+            "SELECT 1 FROM active_jobs WHERE table_name=? LIMIT 1",
+            (table,)).fetchone():
+        return False
+    if con.execute(
+            "SELECT 1 FROM deliveries WHERE table_name=? LIMIT 1",
+            (table,)).fetchone():
+        return False
+    if con.execute(
+            "SELECT 1 FROM merge_uncertain WHERE table_name=? LIMIT 1",
+            (table,)).fetchone():
+        return False
+    return True
+
+
+def runtime_mark_sink_retiring(runtime, table, cfg):
+    table = str(table)
+    workers = (
+        int(cfg["writer_max"])
+        if cfg["load_mode"] == "merge_async" else 1)
+    with runtime["control_lock"]:
+        retiring = runtime.setdefault("retiring_sinks",set())
+        counts = runtime.setdefault("retiring_workers",{})
+        if table in retiring:
+            return False
+        if table not in runtime.get("worker_keys",set()):
+            return False
+        retiring.add(table)
+        counts[table] = workers
+        event = runtime.get("load_events",{}).get(
+            table if cfg["load_mode"] == "merge_async" else (table,0))
+    if event is not None:
+        event.set()
+    log(
+        f"SINK RETIRING table={table} workers={workers} "
+        "policy=drain_durable_jobs_then_exit")
+    return True
+
+
+def runtime_retiring_worker_done(runtime, table, cfg):
+    table = str(table)
+    finalized = False
+    remaining = 0
+    cap = None
+    with runtime["control_lock"]:
+        retiring = runtime.setdefault("retiring_sinks",set())
+        counts = runtime.setdefault("retiring_workers",{})
+        if table not in retiring:
+            return False
+        remaining = int(counts.get(table,1))-1
+        if remaining > 0:
+            counts[table] = remaining
+            return False
+        counts.pop(table,None)
+        retiring.discard(table)
+        runtime.get("worker_keys",set()).discard(table)
+        mappings = runtime.get("worker_mappings",[])
+        mappings[:] = [
+            mapping for mapping in mappings
+            if mapping_key(mapping) != table]
+        for name in (
+                "pressure_until","table_interval","active_writers",
+                "last_pressure","last_scale","max_rowset",
+                "version_recovery","version_recovery_good",
+                "snapshot_transform_bytes_cap"):
+            runtime.get(name,{}).pop(table,None)
+        runtime.get("quarantined_tables",{}).pop(table,None)
+        events = runtime.get("load_events",{})
+        events.pop(
+            table if cfg["load_mode"] == "merge_async" else (table,0),
+            None)
+        for lane in range(int(cfg["key_partitions"])):
+            runtime.get("lane_locks",{}).pop((table,lane),None)
+        sink_count = max(1,len(runtime.get("worker_keys",())))
+        memory_cap = duckdb_merge_writer_cap(cfg,sink_count)
+        cap = max(
+            1,min(
+                int(cfg["writer_max"]),
+                int(memory_cap),
+                int(cfg["resource"]["cpu_target"])//sink_count))
+        runtime["resource_writer_cap"] = cap
+        finalized = True
+    if finalized:
+        log(
+            f"SINK DRAINED table={table} workers_remaining=0 "
+            f"active_sinks={len(runtime.get('worker_keys',()))} "
+            f"resource_writer_cap={cap}")
+    return finalized
+
+
 def runtime_add_sink(mapping, cfg, runtime):
     key = mapping_key(mapping)
     now = time.time()
     with runtime["control_lock"]:
+        if key in runtime.get("retiring_sinks",set()):
+            raise RuntimeError(
+                f"{key}: cannot re-add sink while prior workers are draining")
         if key in runtime["worker_keys"]:
             return False
         runtime["worker_keys"].add(key)
@@ -5509,6 +5609,8 @@ def activate_pending_plan(con, decoder, cfg, runtime, position):
     with runtime["plan_lock"]:
         runtime["active_plan_version"] = version
         runtime["pending_plan"] = None
+    for key in dropped:
+        runtime_mark_sink_retiring(runtime,key,cfg)
     native_reset(decoder,cfg,candidate["source_prepared"])
     for key in added:
         runtime_add_sink(candidate["by_table"][key],cfg,runtime)
@@ -6614,8 +6716,13 @@ def merge_delivery_worker(mapping, worker_id, cfg, runtime):
     table = mapping_key(mapping)
     wake = runtime["load_events"][table]
     cursor = worker_id
+    retired_exit = False
     try:
         while not stop.is_set():
+            if runtime_sink_retiring(runtime,table) and sink_durable_drained(
+                    con,table):
+                retired_exit = True
+                break
             if version_recovery_active(runtime,table):
                 wake.wait(0.1)
                 wake.clear()
@@ -6664,6 +6771,8 @@ def merge_delivery_worker(mapping, worker_id, cfg, runtime):
         handle.close()
         close_plan_engines(engines)
         con.close()
+        if retired_exit:
+            runtime_retiring_worker_done(runtime,table,cfg)
 
 
 def wake_loaders(runtime, table=None):
@@ -6908,8 +7017,13 @@ def table_delivery_worker(mapping, cfg, runtime):
     con = open_state(cfg["state"])
     engines,handle = {},pycurl.Curl()
     next_send = time.monotonic()
+    retired_exit = False
     try:
         while not stop.is_set():
+            if runtime_sink_retiring(runtime,table) and sink_durable_drained(
+                    con,table):
+                retired_exit = True
+                break
             if merge_table_quarantined(runtime,table):
                 wake.wait(1)
                 wake.clear()
@@ -6982,6 +7096,8 @@ def table_delivery_worker(mapping, cfg, runtime):
         handle.close()
         close_plan_engines(engines)
         con.close()
+        if retired_exit:
+            runtime_retiring_worker_done(runtime,table,cfg)
 
 
 
@@ -8369,6 +8485,7 @@ def run_cdc(
                 (mapping_key(mapping),0):threading.Event() for mapping in worker_mappings}
 
         now = time.time()
+        startup_retiring = set(worker_by_table)-set(active_plan["by_table"])
         runtime = dict(stop=control["stop"],reader_ready=threading.Event(),errors=[],
                        error_lock=threading.Lock(),stream=None,source_uuid=str(source_uuid),source_seen=now,
                        source_data_seen=now,heartbeat_count=0,cdc_transactions=0,
@@ -8400,6 +8517,12 @@ def run_cdc(
                        validated_catalog_plans={},
                        worker_mappings=worker_mappings,
                        worker_keys={mapping_key(m) for m in worker_mappings},
+                       retiring_sinks=set(startup_retiring),
+                       retiring_workers={
+                           key:(
+                               int(cfg["writer_max"])
+                               if cfg["load_mode"] == "merge_async" else 1)
+                           for key in startup_retiring},
                        worker_threads=[],thread_lock=threading.Lock(),
                        snapshot_executor=None)
         quarantine_pending_merges(con,runtime)
@@ -8413,8 +8536,7 @@ def run_cdc(
             catalog_version=cfg.get("catalog_version",0),
             catalog_hash=cfg.get("catalog_hash",""),
             tables=[mapping_key(m) for m in prepared],
-            draining_tables=sorted(
-                set(worker_by_table)-set(active_plan["by_table"])),
+            draining_tables=sorted(startup_retiring),
         ))
         log(f"REPORT metrics={metrics_path} summary={summary_path} "
             f"detail_logs={int(cfg['detail_logs'])}")
@@ -8445,7 +8567,7 @@ def run_cdc(
             resource_thread.start()
             threads.append(resource_thread)
             if cfg["load_mode"] == "merge_async":
-                for mapping in worker_mappings:
+                for mapping in list(worker_mappings):
                     for worker_id in range(cfg["writer_max"]):
                         thread = threading.Thread(target=guarded_worker,
                                                   args=(merge_delivery_worker,runtime,mapping,worker_id,cfg),
@@ -8459,7 +8581,7 @@ def run_cdc(
                 controller.start()
                 threads.append(controller)
             else:
-                for mapping in worker_mappings:
+                for mapping in list(worker_mappings):
                     thread = threading.Thread(target=guarded_worker,
                                               args=(table_delivery_worker,runtime,mapping,cfg),
                                               name=f"load-{mapping_key(mapping)}")
