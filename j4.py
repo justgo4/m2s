@@ -4941,28 +4941,29 @@ def runtime_plan_compatible(current, candidate):
     return True,"compatible transform/macro/UDF plan"
 
 
-def hot_add_resource_check(cfg, runtime, current, candidate):
-    change = runtime_plan_topology(current,candidate)
-    if not change["added"]:
+def hot_add_worker_resource_check(cfg, runtime, added_keys):
+    added_keys={str(item) for item in (added_keys or ())}
+    if not added_keys:
         return
-    existing_keys = set(runtime.get("worker_keys") or current["by_table"])
-    physical_sinks = max(
-        1,len(existing_keys|set(change["added"])))
-    if cfg["load_mode"] == "merge_async":
-        per_sink_writers = max(
+    existing_keys=set(runtime.get("worker_keys",()))
+    physical_sinks=max(
+        1,len(existing_keys|added_keys))
+    if cfg["load_mode"]=="merge_async":
+        per_sink_writers=max(
             1,min(
-                cfg["writer_max"],
+                int(cfg["writer_max"]),
                 int(cfg["resource"]["cpu_target"])//physical_sinks))
-        loader_slots = per_sink_writers*physical_sinks
+        loader_slots=per_sink_writers*physical_sinks
     else:
-        per_sink_writers = 1
-        loader_slots = physical_sinks
-    slots = max(
-        1,1+max(0,int(cfg.get("snapshot_workers",0)))+loader_slots*2)
-    memory_bytes = int(cfg["resource"]["memory_mb"])*1024**2
-    per_engine_cap = max(1,(memory_bytes//2)//slots)
-    current_limit = memory_limit_bytes(cfg["duckdb_memory"])
-    if current_limit > per_engine_cap:
+        per_sink_writers=1
+        loader_slots=physical_sinks
+    slots=max(
+        1,1+max(0,int(cfg.get("snapshot_workers",0)))
+        +loader_slots*2)
+    memory_bytes=int(cfg["resource"]["memory_mb"])*1024**2
+    per_engine_cap=max(1,(memory_bytes//2)//slots)
+    current_limit=memory_limit_bytes(cfg["duckdb_memory"])
+    if current_limit>per_engine_cap:
         raise RuntimeError(
             "online sink add would exceed the active-engine DuckDB memory "
             f"budget: physical_sinks={physical_sinks} "
@@ -4970,6 +4971,12 @@ def hot_add_resource_check(cfg, runtime, current, candidate):
             f"current_per_engine_mb={current_limit//1024**2} "
             f"required_cap_mb={per_engine_cap//1024**2}; restart with the "
             "published topology so resource sizing can be recomputed safely")
+
+
+def hot_add_resource_check(cfg, runtime, current, candidate):
+    change=runtime_plan_topology(current,candidate)
+    hot_add_worker_resource_check(
+        cfg,runtime,change["added"])
 
 
 def runtime_active_version(runtime):
@@ -5406,6 +5413,16 @@ def validate_hot_catalog_plan(cfg, runtime, publish_result):
         candidate["stateful_additions"]=stateful_additions
         candidate["stateful_added_manifests"]=manifests
         candidate["stateful_source_metadata"]=scope["source_metadata"]
+        try:
+            hot_add_worker_resource_check(
+                cfg,runtime,
+                [mapping_key(item["mapping"])
+                 for item in stateful_additions])
+        except RuntimeError as exc:
+            return dict(
+                status="restart_required",version=version,
+                reason=str(exc),
+                stateful_added_sinks=stateful_added)
     compatible,reason = runtime_plan_compatible(current,candidate)
     if not compatible:
         return dict(status="rebuild_required",version=version,reason=reason)
