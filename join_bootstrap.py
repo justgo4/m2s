@@ -7,6 +7,7 @@ JOIN output becomes readable only after both sides are complete.
 """
 import join_ir
 import join_log_consumer
+import join_outbox
 import join_state
 import source_state
 
@@ -120,6 +121,7 @@ def activate_consumer(
     ):
         raise RuntimeError(
             "JOIN state semantics differ before consumer activation")
+    join_outbox.ensure_installed(con)
 
     con.execute("BEGIN IMMEDIATE")
     try:
