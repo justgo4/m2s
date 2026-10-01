@@ -113,6 +113,38 @@ def main():
             assert installed["status"]=="restart_required"
             assert installed["stateful_tasks"]==1
 
+        # A running daemon also creates/binds stateful targets after the
+        # catalog commit, but keeps execution fenced until restart.
+        runtime=dict(
+            plan_lock=__import__("threading").RLock(),
+            active_plan_version=1,
+            catalog_activation={},
+        )
+        publish_result=dict(
+            version=2,plan_hash="hot-stateful",
+            stateful_tasks=[tasks[0]],
+            validation=dict(
+                status="restart_required",version=2,
+                reason="stateful restart fence"),
+        )
+        with (
+            patch.object(
+                cdc_catalog,"load_plan_version",
+                return_value=dict(stateful_tasks=[])),
+            patch.object(
+                j4,"validate_local_catalog_publish",
+                return_value=dict(
+                    status="restart_required",version=2,
+                    stateful_tasks=1,
+                    reason="created target; restart"))
+        ) as mocked:
+            activation=j4.catalog_publish_callback(
+                fake_cfg,runtime,publish_result,"install")
+            assert activation["status"]=="restart_required"
+            assert runtime["catalog_activation"]["version"]==2
+            mocked.assert_called_once_with(
+                publish_result,"install")
+
         # Stateful model views remain unsupported; only sink manifests may own
         # stateful operators in the first control-plane phase.
         expect_error(
@@ -173,7 +205,7 @@ def main():
 
     print(
         "catalog_stateful_manifest_test ok format3 "
-        "aggregate join coexist hash load show restart_fence migration",
+        "aggregate join coexist hash load show restart_fence hot_install migration",
         flush=True,
     )
 
