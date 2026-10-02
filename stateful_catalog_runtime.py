@@ -540,6 +540,39 @@ def compile_catalog_tasks(
     return compiled
 
 
+def compile_rebuild_task(
+        cfg,catalog_plan_version,manifest,source_metadata,shadow_target
+):
+    """Compile a replacement generation against an isolated shadow target.
+
+    The durable task descriptor keeps the logical target name. Only its writer
+    mapping is redirected to the shadow table until the atomic SWAP cutover.
+    Target schema is inferred from the new semantics so schema-changing
+    replacements do not have to match the currently-live table.
+    """
+    manifest=dict(manifest)
+    shadow_target=_text(
+        shadow_target,"shadow_target")
+    base=stateful_task_plan.compile_ir(
+        manifest,cfg["mysql"]["database"],
+        source_metadata)
+    target_schema=infer_target_schema(
+        base["kind"],base["ir"])
+    item=stateful_task_plan.compile_task(
+        manifest,int(catalog_plan_version),
+        cfg["mysql"]["database"],
+        source_metadata,target_schema)
+    logical_mapping=dict(item["mapping"])
+    shadow_mapping=dict(logical_mapping)
+    shadow_mapping["sr_table"]=shadow_target
+    result=dict(item)
+    result["mapping"]=shadow_mapping
+    result["logical_mapping"]=logical_mapping
+    result["shadow_target"]=shadow_target
+    result["rebuild"]=True
+    return result
+
+
 def register_compiled(con,compiled):
     result=[]
     for item in compiled or ():
