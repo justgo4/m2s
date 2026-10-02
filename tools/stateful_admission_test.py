@@ -170,7 +170,7 @@ def main():
         reserved_pending_tasks=2,
         reserved_state_bytes=200,
         waiting_tasks=0,waiting_plans=0,
-        next_retry=None)
+        next_retry=None,waiting=[])
     con.close()
 
     with tempfile.TemporaryDirectory(
@@ -189,7 +189,7 @@ def main():
                 reserved_pending_tasks=0,
                 reserved_state_bytes=0,
                 waiting_tasks=0,waiting_plans=0,
-                next_retry=None)
+                next_retry=None,waiting=[])
         finally:
             ro.close()
 
