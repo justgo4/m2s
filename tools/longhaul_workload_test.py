@@ -69,6 +69,35 @@ def main():
     assert longhaul_workload.dynamic_task_kind(
         "mixed",2)=="join"
 
+    formal_budget=longhaul_workload.topology_resource_budget(
+        memory_mb=8192,
+        cpu_cap=8,
+        cpu_target=8,
+        dynamic_tasks=10,
+        load_mode="merge_async")
+    assert formal_budget["ok"],formal_budget
+    assert formal_budget["initial_physical_sinks"]==3
+    assert formal_budget["final_physical_sinks"]==13
+    assert formal_budget["minimum_per_engine_cap_mb"]>=128
+    assert formal_budget["failing_physical_sinks"]==[]
+
+    tight_budget=longhaul_workload.topology_resource_budget(
+        memory_mb=4096,
+        cpu_cap=8,
+        cpu_target=8,
+        dynamic_tasks=2,
+        load_mode="merge_async")
+    assert not tight_budget["ok"],tight_budget
+    assert 4 in tight_budget["failing_physical_sinks"]
+
+    lower_cpu_budget=longhaul_workload.topology_resource_budget(
+        memory_mb=4096,
+        cpu_cap=4,
+        cpu_target=4,
+        dynamic_tasks=2,
+        load_mode="merge_async")
+    assert lower_cpu_budget["ok"],lower_cpu_budget
+
     certification=SimpleNamespace(
         **longhaul_workload.p11_profile.PARAMETERS,
         work_directory=None,
@@ -353,7 +382,7 @@ def main():
     print(
         "longhaul_workload_test ok percentile interval_overlap clean_worktree_probe source_ready "
         "per_transaction_sentinel continuous_source_during_fault crash_catchup "
-        "mixed_task_selection aggregate_exactness join_exactness "
+        "mixed_task_selection topology_resource_budget aggregate_exactness join_exactness "
         "work_directory_retention certification_requires_persistent_workdir "
         "checkpoint_atomic_replace evidence_copy",
         flush=True,
