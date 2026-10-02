@@ -10553,6 +10553,49 @@ def stateful_rebuild_switch_runtime(
     return old_item,new_item
 
 
+def stateful_rebuild_cutover_state(
+        con,rebuild
+):
+    if rebuild.get("frontier") is None:
+        return None
+    kind=str(rebuild["kind"])
+    old=stateful_durable_task(
+        con,kind,rebuild["old_task_id"])
+    new=stateful_durable_task(
+        con,kind,rebuild["new_task_id"])
+    try:
+        old_consumer=source_state.consumer_info(
+            con,old["consumer_id"])
+        new_consumer=source_state.consumer_info(
+            con,new["consumer_id"])
+    except KeyError:
+        return None
+    old_visible=stateful_output_frontier(
+        con,kind,old["consumer_id"])
+    new_visible=stateful_output_frontier(
+        con,kind,new["consumer_id"])
+    if not stateful_rebuild.frontier_reached(
+        rebuild,
+        old_consumer["watermark"],
+        new_consumer["watermark"],
+        old_visible,new_visible
+    ):
+        return None
+    if not (
+        stateful_rebuild_writer_drained(
+            con,rebuild["sink_key"],
+            old["plan_version"])
+        and stateful_rebuild_writer_drained(
+            con,rebuild["sink_key"],
+            new["plan_version"])
+    ):
+        return None
+    return dict(
+        kind=kind,old=old,new=new,
+        old_visible=old_visible,
+        new_visible=new_visible)
+
+
 def stateful_rebuild_try_cutover(
         con,cfg,runtime,item
 ):
@@ -10568,54 +10611,64 @@ def stateful_rebuild_try_cutover(
         }
     ):
         return False
-    frontier=int(rebuild["frontier"])
-    kind=str(rebuild["kind"])
-    old=stateful_durable_task(
-        con,kind,rebuild["old_task_id"])
-    new=stateful_durable_task(
-        con,kind,rebuild["new_task_id"])
-    try:
-        old_consumer=source_state.consumer_info(
-            con,old["consumer_id"])
-        new_consumer=source_state.consumer_info(
-            con,new["consumer_id"])
-    except KeyError:
-        return False
-    old_visible=stateful_output_frontier(
-        con,kind,old["consumer_id"])
-    new_visible=stateful_output_frontier(
-        con,kind,new["consumer_id"])
-    if not stateful_rebuild.frontier_reached(
-        rebuild,
-        old_consumer["watermark"],
-        new_consumer["watermark"],
-        old_visible,new_visible
-    ):
-        return False
-    if not (
-        stateful_rebuild_writer_drained(
-            con,rebuild["sink_key"],
-            old["plan_version"])
-        and stateful_rebuild_writer_drained(
-            con,rebuild["sink_key"],
-            new["plan_version"])
-    ):
-        return False
 
-    if rebuild["phase"]=="fencing":
-        rebuild=stateful_rebuild.mark_ready_to_swap(
-            con,rebuild["sink_key"])
-    swapped=stateful_rebuild_swap_remote(
-        cfg,rebuild)
-    rebuild=stateful_rebuild.mark_swapped(
+    cohort=stateful_rebuild_cohort.for_sink(
         con,rebuild["sink_key"])
+    if cohort is not None:
+        if cohort["phase"]=="fencing":
+            for member in cohort["members"]:
+                member_rebuild=stateful_rebuild.info(
+                    con,member["sink_key"])
+                if stateful_rebuild_cutover_state(
+                    con,member_rebuild
+                ) is None:
+                    return False
+            cohort=stateful_rebuild_cohort.mark_ready_to_swap(
+                con,cohort["cohort_id"])
+        if cohort["phase"]=="ready_to_swap":
+            cohort=stateful_rebuild_cohort.begin_swap(
+                con,cohort["cohort_id"])
+        if cohort["phase"]!="swapping":
+            return False
+        rebuild=stateful_rebuild.info(
+            con,rebuild["sink_key"])
+        cutover=stateful_rebuild_cutover_state(
+            con,rebuild)
+        if cutover is None:
+            return False
+        swapped=stateful_rebuild_swap_remote(
+            cfg,rebuild)
+        rebuild=stateful_rebuild_cohort.mark_member_swapped(
+            con,cohort["cohort_id"],
+            rebuild["sink_key"])
+        if stateful_rebuild_cohort.all_swapped(
+            con,cohort["cohort_id"]
+        ):
+            cohort=stateful_rebuild_cohort.mark_cleanup(
+                con,cohort["cohort_id"])
+    else:
+        cutover=stateful_rebuild_cutover_state(
+            con,rebuild)
+        if cutover is None:
+            return False
+        if rebuild["phase"]=="fencing":
+            rebuild=stateful_rebuild.mark_ready_to_swap(
+                con,rebuild["sink_key"])
+        swapped=stateful_rebuild_swap_remote(
+            cfg,rebuild)
+        rebuild=stateful_rebuild.mark_swapped(
+            con,rebuild["sink_key"])
 
+    frontier=int(rebuild["frontier"])
+    kind=cutover["kind"]
+    old=cutover["old"]
     candidate=runtime.get(
         "stateful_rebuild_plans",{}).get(
             rebuild["sink_key"])
     if candidate is None:
         raise RuntimeError(
             "stateful rebuild candidate plan disappeared before cutover")
+
     siblings=[
         spec for spec in candidate.get(
             "stateful_rebuilds",())
@@ -10632,6 +10685,7 @@ def stateful_rebuild_try_cutover(
         ):
             plan_complete=False
             break
+
     with state_transaction(con):
         if plan_complete:
             meta_set(
@@ -10662,19 +10716,38 @@ def stateful_rebuild_try_cutover(
         cfg,rebuild)
     stateful_rebuild.mark_complete(
         con,rebuild["sink_key"])
-    remaining=[
-        str(spec["sink"])
-        for spec in candidate.get(
-            "stateful_rebuilds",())
-        if str(spec["sink"])!=str(
-            rebuild["sink_key"])
-        and (
-            stateful_rebuild.maybe_info(
-                con,spec["sink"]) is not None
-            and stateful_rebuild.info(
-                con,spec["sink"])["phase"]!="complete"
-        )
-    ]
+
+    if cohort is not None and plan_complete:
+        durable_cohort=stateful_rebuild_cohort.info(
+            con,cohort["cohort_id"])
+        if (
+            durable_cohort["phase"]=="swapping"
+            and stateful_rebuild_cohort.all_swapped(
+                con,durable_cohort["cohort_id"])
+        ):
+            durable_cohort=stateful_rebuild_cohort.mark_cleanup(
+                con,durable_cohort["cohort_id"])
+        if durable_cohort["phase"]=="cleanup":
+            stateful_rebuild_cohort.mark_complete(
+                con,durable_cohort["cohort_id"])
+
+    remaining=[]
+    for spec in candidate.get(
+        "stateful_rebuilds",()
+    ):
+        if str(spec["sink"])==str(
+            rebuild["sink_key"]
+        ):
+            continue
+        sibling=stateful_rebuild.maybe_info(
+            con,spec["sink"])
+        if (
+            sibling is not None
+            and sibling["phase"]!="complete"
+        ):
+            remaining.append(
+                str(spec["sink"]))
+
     catalog_activation_record(
         runtime,dict(
             status=(
@@ -10689,14 +10762,20 @@ def stateful_rebuild_try_cutover(
                 else [rebuild["sink_key"]])))
     log(
         "STATEFUL REBUILD ACTIVE sink=%s frontier=%d old=%s new=%s "
-        "remote_swap=%d old_status=%s"
+        "remote_swap=%d old_status=%s cohort=%s plan_complete=%d"
         % (
             rebuild["sink_key"],frontier,
             rebuild["old_task_id"],
             rebuild["new_task_id"],
             1 if swapped else 0,
-            retired["task"]["status"]))
+            retired["task"]["status"],
+            (
+                cohort["cohort_id"]
+                if cohort is not None
+                else "single"),
+            1 if plan_complete else 0))
     return True
+
 
 
 def recover_stateful_rebuilds_startup(
