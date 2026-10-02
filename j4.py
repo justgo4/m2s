@@ -6006,6 +6006,36 @@ def ensure_stateful_hot_add_targets_empty(cfg, additions, allow_missing=False):
                         "unknown history: "+table)
 
 
+def rollback_stateful_admission(
+        cfg,additions,reason
+):
+    con=open_state(cfg["state"])
+    try:
+        releasable=[]
+        for item in additions or ():
+            task=dict(item.get("task") or {})
+            task_id=str(
+                task.get("task_id") or "")
+            if not task_id:
+                continue
+            # A durable rebuild intent owns its reservation even before the
+            # new task descriptor is registered; crash recovery must retain it.
+            if stateful_rebuild.for_task(
+                con,task_id
+            ) is not None:
+                continue
+            releasable.append(item)
+        released=stateful_admission.release_unregistered(
+            con,releasable,reason=reason)
+    finally:
+        con.close()
+    if released:
+        log(
+            "STATEFUL ADMISSION RELEASE reason=%s tasks=%s"
+            % (str(reason),",".join(released)))
+    return released
+
+
 def prepare_hot_stateful_additions(cfg, runtime, candidate):
     additions=list(candidate.get("stateful_additions",()) or ())
     if not additions:
@@ -6019,49 +6049,56 @@ def prepare_hot_stateful_additions(cfg, runtime, candidate):
     finally:
         admission_con.close()
     candidate["stateful_admission"]=admission
-    ensure_stateful_hot_add_targets_empty(
-        cfg,additions,allow_missing=True)
-    compiled=stateful_catalog_runtime.compile_catalog_tasks(
-        cfg,int(candidate["version"]),manifests,metadata,
-        create_missing=True,allow_missing=False)
-    expected={
-        item["task"]["sink_key"]:item["task"]["descriptor_hash"]
-        for item in additions
-    }
-    actual={
-        item["task"]["sink_key"]:item["task"]["descriptor_hash"]
-        for item in compiled
-    }
-    if actual!=expected:
-        raise RuntimeError(
-            "stateful hot-add target binding changed after CREATE/verify "
-            "expected=%r actual=%r" % (expected,actual))
-    ensure_stateful_hot_add_targets_empty(
-        cfg,compiled,allow_missing=False)
-    con=open_state(cfg["state"])
     try:
-        stateful_catalog_runtime.ensure_registration_safe(
-            con,cfg,compiled)
-        registered=stateful_catalog_runtime.register_compiled(
-            con,compiled)
-        with runtime["plan_lock"]:
-            existing_tasks=list(
-                runtime.get("stateful_tasks",()))
-        preferences=stateful_share_policy.plan_graph(
-            con,existing_tasks+list(registered),cfg=cfg)
-    finally:
-        con.close()
-    candidate["stateful_additions"]=registered
-    candidate["stateful_share_preferences"]=preferences
-    if "stateful_candidate_tasks" in candidate:
-        replacements=stateful_catalog_runtime.compiled_by_sink(
-            registered)
-        candidate["stateful_candidate_tasks"]=[
-            replacements.get(
-                item["task"]["sink_key"],item)
-            for item in candidate["stateful_candidate_tasks"]
-        ]
-    return registered
+        ensure_stateful_hot_add_targets_empty(
+            cfg,additions,allow_missing=True)
+        compiled=stateful_catalog_runtime.compile_catalog_tasks(
+            cfg,int(candidate["version"]),manifests,metadata,
+            create_missing=True,allow_missing=False)
+        expected={
+            item["task"]["sink_key"]:item["task"]["descriptor_hash"]
+            for item in additions
+        }
+        actual={
+            item["task"]["sink_key"]:item["task"]["descriptor_hash"]
+            for item in compiled
+        }
+        if actual!=expected:
+            raise RuntimeError(
+                "stateful hot-add target binding changed after CREATE/verify "
+                "expected=%r actual=%r" % (expected,actual))
+        ensure_stateful_hot_add_targets_empty(
+            cfg,compiled,allow_missing=False)
+        con=open_state(cfg["state"])
+        try:
+            stateful_catalog_runtime.ensure_registration_safe(
+                con,cfg,compiled)
+            registered=stateful_catalog_runtime.register_compiled(
+                con,compiled)
+            with runtime["plan_lock"]:
+                existing_tasks=list(
+                    runtime.get("stateful_tasks",()))
+            preferences=stateful_share_policy.plan_graph(
+                con,existing_tasks+list(registered),cfg=cfg)
+        finally:
+            con.close()
+        candidate["stateful_additions"]=registered
+        candidate["stateful_share_preferences"]=preferences
+        if "stateful_candidate_tasks" in candidate:
+            replacements=stateful_catalog_runtime.compiled_by_sink(
+                registered)
+            candidate["stateful_candidate_tasks"]=[
+                replacements.get(
+                    item["task"]["sink_key"],item)
+                for item in candidate["stateful_candidate_tasks"]
+            ]
+        return registered
+    except BaseException:
+        with contextlib.suppress(BaseException):
+            rollback_stateful_admission(
+                cfg,additions,
+                "hot_add_prepare_failed")
+        raise
 
 
 def activate_stateful_additions(cfg, runtime, candidate):
@@ -6327,122 +6364,129 @@ def activate_stateful_rebuild_candidate(
     finally:
         admission_con.close()
     candidate["stateful_admission"]=admission
-    if mapping_key(new["mapping"])!=sink:
-        raise RuntimeError(
-            "stateful rebuild writer sink identity changed")
-    con=open_state(cfg["state"])
     try:
-        existing=stateful_rebuild.maybe_info(
-            con,sink)
-        if existing is None:
-            original_comment=stateful_rebuild_remote_marker(
-                cfg,spec["logical_target"])
-            if original_comment is None:
+        if mapping_key(new["mapping"])!=sink:
+            raise RuntimeError(
+                "stateful rebuild writer sink identity changed")
+        con=open_state(cfg["state"])
+        try:
+            existing=stateful_rebuild.maybe_info(
+                con,sink)
+            if existing is None:
+                original_comment=stateful_rebuild_remote_marker(
+                    cfg,spec["logical_target"])
+                if original_comment is None:
+                    raise RuntimeError(
+                        "stateful rebuild logical target disappeared before "
+                        "durable intent: "+str(spec["logical_target"]))
+                intent=stateful_rebuild.begin(
+                    con,new["kind"],sink,
+                    old["task"]["task_id"],
+                    task["task_id"],
+                    spec["logical_target"],
+                    shadow=spec["shadow_target"],
+                    original_comment=original_comment)
+                existing_intent=False
+            else:
+                intent=stateful_rebuild.begin(
+                    con,new["kind"],sink,
+                    old["task"]["task_id"],
+                    task["task_id"],
+                    spec["logical_target"],
+                    shadow=spec["shadow_target"],
+                    original_comment=existing["original_comment"])
+                existing_intent=True
+            if intent["phase"] not in {
+                "building_shadow","fencing",
+                "ready_to_swap"
+            }:
                 raise RuntimeError(
-                    "stateful rebuild logical target disappeared before "
-                    "durable intent: "+str(spec["logical_target"]))
-            intent=stateful_rebuild.begin(
-                con,new["kind"],sink,
-                old["task"]["task_id"],
-                task["task_id"],
-                spec["logical_target"],
-                shadow=spec["shadow_target"],
-                original_comment=original_comment)
-            existing_intent=False
-        else:
-            intent=stateful_rebuild.begin(
-                con,new["kind"],sink,
-                old["task"]["task_id"],
-                task["task_id"],
-                spec["logical_target"],
-                shadow=spec["shadow_target"],
-                original_comment=existing["original_comment"])
-            existing_intent=True
-        if intent["phase"] not in {
-            "building_shadow","fencing",
-            "ready_to_swap"
-        }:
-            raise RuntimeError(
-                "cannot activate rebuild candidate from phase "
-                +intent["phase"])
-        ensure_stateful_rebuild_shadow(
-            cfg,spec,
-            existing_intent=existing_intent,
-            recover_unmarked=(
-                existing_intent
-                and intent["phase"]=="building_shadow"),
-            original_comment=intent["original_comment"])
-        registered=stateful_catalog_runtime.register_compiled(
-            con,[new])[0]
-        if registered["task"]["descriptor_hash"]!=task[
-            "descriptor_hash"
-        ]:
-            raise RuntimeError(
-                "stateful rebuild durable descriptor changed")
-        spec["new"]=registered
-        candidate["stateful_rebuilds"]=[spec]
-        replacements=stateful_catalog_runtime.compiled_by_sink(
-            candidate.get("stateful_candidate_tasks",()))
-        replacements[sink]=registered
-        candidate["stateful_candidate_tasks"]=[
-            replacements[name]
-            for name in sorted(replacements)
-        ]
-    finally:
-        con.close()
+                    "cannot activate rebuild candidate from phase "
+                    +intent["phase"])
+            ensure_stateful_rebuild_shadow(
+                cfg,spec,
+                existing_intent=existing_intent,
+                recover_unmarked=(
+                    existing_intent
+                    and intent["phase"]=="building_shadow"),
+                original_comment=intent["original_comment"])
+            registered=stateful_catalog_runtime.register_compiled(
+                con,[new])[0]
+            if registered["task"]["descriptor_hash"]!=task[
+                "descriptor_hash"
+            ]:
+                raise RuntimeError(
+                    "stateful rebuild durable descriptor changed")
+            spec["new"]=registered
+            candidate["stateful_rebuilds"]=[spec]
+            replacements=stateful_catalog_runtime.compiled_by_sink(
+                candidate.get("stateful_candidate_tasks",()))
+            replacements[sink]=registered
+            candidate["stateful_candidate_tasks"]=[
+                replacements[name]
+                for name in sorted(replacements)
+            ]
+        finally:
+            con.close()
 
-    mapping=spec["new"]["mapping"]
-    task=spec["new"]["task"]
-    version=stateful_task_plan.writer_plan_version(
-        task["plan_version"])
-    identity=(version,sink)
-    with runtime["plan_lock"]:
-        runtime.setdefault(
-            "stateful_mappings",{})[identity]=mapping
-        runtime.setdefault(
-            "stateful_active_task_ids",set()).add(
-            task["task_id"])
-        existing_tasks={
-            entry["task"]["task_id"]
-            for entry in runtime.setdefault(
-                "stateful_tasks",[])
-        }
-        if task["task_id"] not in existing_tasks:
-            runtime["stateful_tasks"].append(
-                spec["new"])
-        runtime.setdefault(
-            "stateful_rebuild_plans",{})[sink]=candidate
-        runtime.setdefault(
-            "stateful_rebuild_locks",{}).setdefault(
-                sink,threading.Lock())
+        mapping=spec["new"]["mapping"]
+        task=spec["new"]["task"]
+        version=stateful_task_plan.writer_plan_version(
+            task["plan_version"])
+        identity=(version,sink)
+        with runtime["plan_lock"]:
+            runtime.setdefault(
+                "stateful_mappings",{})[identity]=mapping
+            runtime.setdefault(
+                "stateful_active_task_ids",set()).add(
+                task["task_id"])
+            existing_tasks={
+                entry["task"]["task_id"]
+                for entry in runtime.setdefault(
+                    "stateful_tasks",[])
+            }
+            if task["task_id"] not in existing_tasks:
+                runtime["stateful_tasks"].append(
+                    spec["new"])
+            runtime.setdefault(
+                "stateful_rebuild_plans",{})[sink]=candidate
+            runtime.setdefault(
+                "stateful_rebuild_locks",{}).setdefault(
+                    sink,threading.Lock())
 
-    if sink not in runtime.get(
-        "worker_keys",set()
-    ):
-        runtime_add_sink(
-            mapping,cfg,runtime,
-            historical_snapshot=False)
-    thread=threading.Thread(
-        target=guarded_worker,
-        args=(
-            stateful_task_worker,runtime,
-            spec["new"],cfg),
-        name="stateful-rebuild-"
-        +str(spec["new"]["kind"])+"-"+sink)
-    runtime_thread_register(
-        runtime,thread)
-    with runtime["plan_lock"]:
-        runtime.setdefault(
-            "stateful_worker_threads",{})[
-                task["task_id"]]=thread
-    log(
-        "STATEFUL REBUILD BUILDING sink=%s old=%s new=%s shadow=%s "
-        "writer_version=%d"
-        % (
-            sink,old["task"]["task_id"],
-            task["task_id"],
-            spec["shadow_target"],version))
-    return [task["task_id"]]
+        if sink not in runtime.get(
+            "worker_keys",set()
+        ):
+            runtime_add_sink(
+                mapping,cfg,runtime,
+                historical_snapshot=False)
+        thread=threading.Thread(
+            target=guarded_worker,
+            args=(
+                stateful_task_worker,runtime,
+                spec["new"],cfg),
+            name="stateful-rebuild-"
+            +str(spec["new"]["kind"])+"-"+sink)
+        runtime_thread_register(
+            runtime,thread)
+        with runtime["plan_lock"]:
+            runtime.setdefault(
+                "stateful_worker_threads",{})[
+                    task["task_id"]]=thread
+        log(
+            "STATEFUL REBUILD BUILDING sink=%s old=%s new=%s shadow=%s "
+            "writer_version=%d"
+            % (
+                sink,old["task"]["task_id"],
+                task["task_id"],
+                spec["shadow_target"],version))
+        return [task["task_id"]]
+    except BaseException:
+        with contextlib.suppress(BaseException):
+            rollback_stateful_admission(
+                cfg,[new],
+                "rebuild_activation_failed")
+        raise
 
 
 def install_stateful_rebuild_plan(
