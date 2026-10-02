@@ -53,6 +53,14 @@ def retire(con,kind,task):
         return None
     physical_state_catalog.release_state(
         con,identity,str(task["task_id"]),"owner")
+    refs=physical_state_catalog.state_refs(
+        con,identity)
+    if refs:
+        # A shared physical state stays live until the final owner/dependency
+        # releases it. Retiring one task must never terminalize state still
+        # referenced by another task.
+        return physical_state_catalog.state_info(
+            con,identity)
     return physical_state_catalog.set_health(
         con,identity,"retired")
 
