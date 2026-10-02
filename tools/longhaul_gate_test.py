@@ -31,7 +31,10 @@ def summary():
                     cdc_age_seconds=dict(
                         n=1000,total_n=1000,
                         p95=4.9,p99=9.9),
-                    lag_over_10=3,
+                    exact_cdc_age_seconds=dict(
+                        n=1000,avg=1.5,max=12.0),
+                    lag_over_5=50,
+                    lag_over_10=10,
                 )
             )
         ),
@@ -192,11 +195,34 @@ def main():
     assert good["evidence"]["max_snapshot_rows"]==50_000_000
     assert good["evidence"]["cdc_samples"]==1000
 
+    # Lifetime exact threshold counts, not the bounded recent quantile
+    # window, decide the default 5s/10s SLO gate.
+    recent_only=summary()
+    recent_only["tables"]["sink"]["total"]["cdc_age_seconds"]["p99"]=99.0
+    result=evaluate(recent_only)
+    assert result["ok"],result
+    assert (
+        result["evidence"]["tables"]["sink"]["slo_scope"]
+        =="lifetime_exact_threshold_counts"
+    )
+
     bad=summary()
-    bad["tables"]["sink"]["total"]["cdc_age_seconds"]["p99"]=10.01
+    bad["tables"]["sink"]["total"]["lag_over_10"]=11
     result=evaluate(bad)
     assert not result["ok"]
     assert "sink:p99" in result["failures"]
+
+    bad=summary()
+    bad["tables"]["sink"]["total"]["lag_over_5"]=51
+    result=evaluate(bad)
+    assert not result["ok"]
+    assert "sink:p95" in result["failures"]
+
+    bad=summary()
+    del bad["tables"]["sink"]["total"]["lag_over_5"]
+    result=evaluate(bad)
+    assert not result["ok"]
+    assert "sink:exact_slo_counters_missing" in result["failures"]
 
     bad=summary()
     bad["source_run"]["log_stats"]["mysql.events"]["event_rows"]=100
@@ -321,7 +347,7 @@ def main():
         assert reason in full["failures"],full
 
     print(
-        "longhaul_gate_test ok 50m_72h 50rps p95_p99 cross_restart "
+        "longhaul_gate_test ok 50m_72h 50rps lifetime_exact_p95_p99 cross_restart "
         "healthy_recovery_latency drain stateful_health space_version_debt "
         "rowset_recovery overflow_fail_closed",
         flush=True,
