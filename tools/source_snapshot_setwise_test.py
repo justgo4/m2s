@@ -129,6 +129,8 @@ def main():
             SELECT COUNT(*)
             FROM source_snapshot_rows
         """).fetchone()[0]==0
+        assert source_state.status(con)[
+            "pipeline_stats"]["snapshot_staging_rows"]==0
 
         # Replaying the same source snapshot page is idempotent at the backing
         # relation: current/touched anti-joins suppress duplicate base rows.
