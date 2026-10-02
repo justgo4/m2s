@@ -999,6 +999,138 @@ def _rows_digest(rows):
     return hashlib.sha256(payload).hexdigest()
 
 
+def _partition_digest_update(hasher,partition,rows):
+    digest=_rows_digest(rows)
+    hasher.update(
+        ("%d:%d:%s\n" % (
+            int(partition),len(rows),digest
+        )).encode("ascii"))
+    return digest
+
+
+def _partitioned_exactness(
+        source,cfg,tables,source_rows,target_rows,
+        partitions=None
+):
+    """Compare complete projected rows in bounded key partitions.
+
+    The stable key columns are part of every row tuple. This keeps memory
+    bounded for the 50M profile while still detecting swaps/duplicates/deletes
+    that preserve COUNT/SUM/MIN/MAX summaries.
+    """
+    partitions=(
+        range(1024)
+        if partitions is None
+        else list(partitions)
+    )
+    expected_hasher=hashlib.sha256()
+    expected_rows=0
+    checks={
+        str(table):dict(
+            rows=0,
+            hasher=hashlib.sha256(),
+            mismatches=[],
+        )
+        for table in tables
+    }
+    for partition in partitions:
+        expected=list(
+            source_rows(source,int(partition)))
+        expected_digest=_partition_digest_update(
+            expected_hasher,partition,expected)
+        expected_rows+=len(expected)
+        for table in tables:
+            key=str(table)
+            actual=list(
+                target_rows(
+                    cfg,table,int(partition)))
+            actual_digest=_partition_digest_update(
+                checks[key]["hasher"],
+                partition,actual)
+            checks[key]["rows"]+=len(actual)
+            if actual!=expected and len(
+                checks[key]["mismatches"]
+            )<8:
+                checks[key]["mismatches"].append(
+                    dict(
+                        partition=int(partition),
+                        expected_rows=len(expected),
+                        actual_rows=len(actual),
+                        expected_digest=expected_digest,
+                        actual_digest=actual_digest,
+                        expected_sample=expected[:3],
+                        actual_sample=actual[:3],
+                    ))
+    expected_digest=expected_hasher.hexdigest()
+    tables_out={}
+    for table,value in checks.items():
+        digest=value["hasher"].hexdigest()
+        tables_out[table]=dict(
+            rows=int(value["rows"]),
+            digest=digest,
+            match=(
+                not value["mismatches"]
+                and int(value["rows"])==expected_rows
+                and digest==expected_digest
+            ),
+            mismatches=value["mismatches"],
+        )
+    return dict(
+        comparison="partitioned_full_rows_v1",
+        partitions=len(partitions),
+        expected_rows=int(expected_rows),
+        expected_digest=expected_digest,
+        tables=tables_out,
+        all_match=bool(tables_out) and all(
+            item["match"]
+            for item in tables_out.values()
+        ),
+    )
+
+
+def _event_rows_source(source,bucket):
+    with source.cursor() as cur:
+        cur.execute(
+            "SELECT id,bucket,v,payload "
+            "FROM "+DATABASE+".events "
+            "WHERE bucket=%s ORDER BY id",
+            (int(bucket),))
+        return [
+            (
+                int(row[0]),int(row[1]),
+                int(row[2]),
+                None if row[3] is None else str(row[3]),
+            )
+            for row in cur.fetchall()
+        ]
+
+
+def _event_rows_target(cfg,table,bucket):
+    rows,_=execute(
+        cfg,
+        "SELECT id,bucket,v,payload FROM "
+        +DATABASE+"."+str(table)
+        +" WHERE bucket="+str(int(bucket))
+        +" ORDER BY id")
+    return [
+        (
+            int(row[0]),int(row[1]),
+            int(row[2]),
+            None if row[3] is None else str(row[3]),
+        )
+        for row in rows
+    ]
+
+
+def event_exactness(
+        source,cfg,tables=("events",),partitions=None
+):
+    return _partitioned_exactness(
+        source,cfg,tables,
+        _event_rows_source,_event_rows_target,
+        partitions=partitions)
+
+
 def aggregate_exactness(source,cfg,tables):
     expected=_aggregate_rows_source(source)
     expected_digest=_rows_digest(expected)
@@ -1026,73 +1158,47 @@ def aggregate_exactness(source,cfg,tables):
     )
 
 
-def _join_rows_source(source):
+def _join_rows_source(source,bucket):
     with source.cursor() as cur:
         cur.execute(
-            "SELECT e.bucket,COUNT(*),SUM(e.id),SUM(e.v),"
-            "MIN(d.label),MAX(d.label) "
+            "SELECT e.id,e.bucket,d.label,e.v "
             "FROM "+DATABASE+".events e "
             "INNER JOIN "+DATABASE+".dimensions d "
             "ON e.bucket=d.bucket "
-            "GROUP BY e.bucket ORDER BY e.bucket")
+            "WHERE e.bucket=%s ORDER BY e.id",
+            (int(bucket),))
         return [
             (
-                int(row[0]),
-                int(row[1]),
-                int(row[2] or 0),
-                int(row[3] or 0),
-                str(row[4]),
-                str(row[5]),
+                int(row[0]),int(row[1]),
+                str(row[2]),int(row[3]),
             )
             for row in cur.fetchall()
         ]
 
 
-def _join_rows_target(cfg,table):
+def _join_rows_target(cfg,table,bucket):
     rows,_=execute(
         cfg,
-        "SELECT bucket,COUNT(*),SUM(event_id),SUM(v),"
-        "MIN(label),MAX(label) FROM "
+        "SELECT event_id,bucket,label,v FROM "
         +DATABASE+"."+str(table)
-        +" GROUP BY bucket ORDER BY bucket")
+        +" WHERE bucket="+str(int(bucket))
+        +" ORDER BY event_id")
     return [
         (
-            int(row[0]),
-            int(row[1]),
-            int(row[2] or 0),
-            int(row[3] or 0),
-            str(row[4]),
-            str(row[5]),
+            int(row[0]),int(row[1]),
+            str(row[2]),int(row[3]),
         )
         for row in rows
     ]
 
 
-def join_exactness(source,cfg,tables):
-    expected=_join_rows_source(source)
-    expected_digest=_rows_digest(expected)
-    checks={}
-    for table in tables:
-        actual=_join_rows_target(
-            cfg,table)
-        digest=_rows_digest(actual)
-        checks[str(table)]=dict(
-            rows=len(actual),
-            digest=digest,
-            match=(
-                len(actual)==len(expected)
-                and digest==expected_digest
-                and actual==expected
-            ),
-        )
-    return dict(
-        expected_rows=len(expected),
-        expected_digest=expected_digest,
-        tables=checks,
-        all_match=all(
-            item["match"] for item in checks.values()
-        ),
-    )
+def join_exactness(
+        source,cfg,tables,partitions=None
+):
+    return _partitioned_exactness(
+        source,cfg,tables,
+        _join_rows_source,_join_rows_target,
+        partitions=partitions)
 
 
 def collect_final_debt(state_path):
@@ -1721,6 +1827,12 @@ def run(args):
                     "longhaul source/target totals differ "
                     "expected=%r actual=%r"
                     % (expected,actual))
+            event_checks=event_exactness(
+                source,cfg,["events"])
+            if not event_checks["all_match"]:
+                raise AssertionError(
+                    "longhaul raw event target differs from source "
+                    +repr(event_checks))
             aggregate_checks=aggregate_exactness(
                 source,cfg,
                 ["agg_000"]+[
@@ -1846,6 +1958,7 @@ def run(args):
                 debt=debt,
                 source_totals=expected,
                 target_totals=actual,
+                event_checks=event_checks,
                 aggregate_checks=aggregate_checks,
                 join_checks=join_checks,
                 share_mode=args.share_mode,
