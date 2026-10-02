@@ -1240,6 +1240,9 @@ def read_config():
             "CDC_STATEFUL_SHARE_MAX_FOLLOWERS",1000,minimum=1,maximum=1000000),
         stateful_share_max_surplus=env_int(
             "CDC_STATEFUL_SHARE_MAX_SURPLUS",64,minimum=0,maximum=1000000),
+        stateful_share_max_observed_visible_lag=env_int(
+            "CDC_STATEFUL_SHARE_MAX_OBSERVED_VISIBLE_LAG",
+            10000,minimum=0,maximum=1000000000),
         plan_retain=env_int("CDC_PLAN_RETAIN",32,minimum=4,maximum=10000),
         metrics_max_bytes=env_int(
             "CDC_METRICS_MAX_BYTES",64*1024**2,
