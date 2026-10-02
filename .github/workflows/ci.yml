@@ -79,6 +79,7 @@ jobs:
           python tools/stateful_share_policy_test.py
           python tools/stateful_share_graph_test.py
           python tools/stateful_admission_test.py
+          python tools/stateful_admission_integration_test.py
           python tools/status_test.py
           python tools/shared_state_scale_test.py
           python tools/shared_follower_gc_scale_test.py
