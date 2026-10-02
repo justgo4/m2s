@@ -55,6 +55,69 @@ def snapshot_values(con, pin, expected):
     assert values == expected, (values, expected)
 
 
+def assert_log_stats_migration(directory):
+    path=os.path.join(
+        directory,"log-stats-migration.sqlite3")
+    con=open_db(path)
+    source_state.register_relation(
+        con,"db.orders","source-migration",
+        source_schema(),["id"])
+    p1=source_state.prepare_part(
+        "db.orders",batch([
+            (0,1,"a"),(0,2,"b"),
+        ]))
+    p2=source_state.prepare_part(
+        "db.orders",batch([
+            (1,1,"a"),(0,1,"a2"),
+            (0,3,"c"),
+        ]))
+    assert source_state.log_commit(
+        con,"source-migration",
+        ("binlog.000009",100),None,[p1])==1
+    assert source_state.log_commit(
+        con,"source-migration",
+        ("binlog.000009",120),None,[p2])==2
+    before=source_state.status(con)
+    stats=before["log_stats"]["db.orders"]
+    assert stats["commits"]==2
+    assert stats["event_rows"]==5
+    assert stats["payload_bytes"]>0
+    assert before["log_stats_started_seq"]==1
+    assert before["log_stats_started_at"] is not None
+
+    # Simulate an interrupted/old counter migration. Reinstall must derive
+    # exact retained evidence under one transaction before marking v1 done.
+    con.execute("""
+        UPDATE source_log_stats
+        SET commits=999,event_rows=999,payload_bytes=999
+        WHERE table_name='db.orders'
+    """)
+    con.execute("""
+        DELETE FROM source_state_meta
+        WHERE key IN (
+            'log_stats_v1',
+            'log_stats_started_seq',
+            'log_stats_started_at'
+        )
+    """)
+    source_state.install(con)
+    rebuilt=source_state.status(con)
+    assert rebuilt["log_stats"]["db.orders"]==stats
+    assert rebuilt["log_stats_started_seq"]==1
+    assert rebuilt["log_stats_started_at"] is not None
+    assert source_state._meta_int(
+        con,"log_stats_v1",0)==1
+
+    # Empty source transactions advance the authoritative sequence but do not
+    # invent row-rate evidence because no table part exists.
+    assert source_state.log_commit(
+        con,"source-migration",
+        ("binlog.000009",140),None,[])==3
+    after=source_state.status(con)
+    assert after["log_stats"]["db.orders"]==stats
+    con.close()
+
+
 def child_crash_after_log(path):
     con = open_db(path)
     source_state.register_relation(
@@ -75,6 +138,7 @@ def main():
         child_crash_after_log(sys.argv[2])
 
     with tempfile.TemporaryDirectory(prefix="m2s-source-state-") as td:
+        assert_log_stats_migration(td)
         path = os.path.join(td, "state.sqlite3")
         con = open_db(path)
         source_state.register_relation(
@@ -220,7 +284,11 @@ def main():
         assert source_state.status(con)["consumers"] == []
         con.close()
 
-    print("source_state_protocol_test ok", flush=True)
+    print(
+        "source_state_protocol_test ok fixed_w gc crash_replay "
+        "consumer_frontier source_rate_migration",
+        flush=True,
+    )
 
 
 if __name__ == "__main__":
