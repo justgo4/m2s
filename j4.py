@@ -6676,6 +6676,8 @@ def retry_waiting_stateful_admission(
     con=open_state(cfg["state"])
     try:
         waiting=stateful_admission.waiting_plans(
+            con,now=now,due_only=False)
+        due=stateful_admission.waiting_plans(
             con,now=now,due_only=True)
     finally:
         con.close()
@@ -6686,26 +6688,35 @@ def retry_waiting_stateful_admission(
         cfg["catalog"],cfg.get("catalog_seed"))
     latest_version=int(latest["version"])
     outcomes=[]
+
+    # Superseded plans are dead control-plane work, not backoff candidates.
+    # Clear them immediately even when their next_retry is far in the future;
+    # otherwise durable status can report phantom waits for minutes after a
+    # replacement plan has already become authoritative.
     for item in waiting:
         version=int(item["plan_version"])
-        if version!=latest_version:
-            con=open_state(cfg["state"])
-            try:
-                cleared=stateful_admission.clear_wait(
-                    con,plan_version=version)
-            finally:
-                con.close()
-            log(
-                "STATEFUL ADMISSION SUPERSEDED "
-                f"plan={version} latest={latest_version} "
-                f"cleared_tasks={cleared}")
-            outcomes.append(dict(
-                status="superseded",
-                version=version,
-                latest_version=latest_version,
-                cleared_tasks=cleared))
+        if version==latest_version:
             continue
+        con=open_state(cfg["state"])
+        try:
+            cleared=stateful_admission.clear_wait(
+                con,plan_version=version)
+        finally:
+            con.close()
+        log(
+            "STATEFUL ADMISSION SUPERSEDED "
+            f"plan={version} latest={latest_version} "
+            f"cleared_tasks={cleared}")
+        outcomes.append(dict(
+            status="superseded",
+            version=version,
+            latest_version=latest_version,
+            cleared_tasks=cleared))
 
+    for item in due:
+        version=int(item["plan_version"])
+        if version!=latest_version:
+            continue
         result=queue_hot_catalog_plan(
             cfg,runtime,dict(
                 version=version,
