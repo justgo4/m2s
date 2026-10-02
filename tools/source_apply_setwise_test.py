@@ -88,6 +88,16 @@ def main():
         con.set_trace_callback(trace.append)
         assert source_state.apply_pending(con)==1
         con.set_trace_callback(None)
+        assert con.execute("""
+            SELECT 1 FROM sqlite_temp_master
+            WHERE type='table' AND name='source_apply_actions'
+        """).fetchone() is not None
+        assert con.execute(
+            "SELECT COUNT(*) FROM temp.source_apply_actions"
+        ).fetchone()[0]==0
+        assert con.execute(
+            "SELECT COUNT(*) FROM main.source_apply_actions"
+        ).fetchone()[0]==0
 
         normalized=[
             " ".join(item.split()).upper()
@@ -163,9 +173,12 @@ def main():
         assert source_state.base_applied_seq(con)==2
         assert con.execute("""
             SELECT COUNT(*)
-            FROM source_apply_actions
+            FROM temp.source_apply_actions
             WHERE seq=3
         """).fetchone()[0]==0
+        assert con.execute(
+            "SELECT COUNT(*) FROM main.source_apply_actions"
+        ).fetchone()[0]==0
         con.execute("""
             UPDATE source_commit_parts
             SET nrows=nrows-1
@@ -230,9 +243,12 @@ def main():
         assert source_state.base_applied_seq(con)==3
         assert con.execute("""
             SELECT COUNT(*)
-            FROM source_apply_actions
+            FROM temp.source_apply_actions
             WHERE seq=4
         """).fetchone()[0]==0
+        assert con.execute(
+            "SELECT COUNT(*) FROM main.source_apply_actions"
+        ).fetchone()[0]==0
         assert con.execute("""
             SELECT base_applied
             FROM source_commits
@@ -242,7 +258,7 @@ def main():
 
     print(
         "source_apply_setwise_test ok constant_dml "
-        "net_change fail_closed_corruption",
+        "net_change temp_staging fail_closed_corruption",
         flush=True,
     )
 

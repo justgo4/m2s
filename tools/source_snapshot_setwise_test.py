@@ -126,9 +126,15 @@ def main():
         assert len(base_inserts)==1,base_inserts
         assert not row_probes,row_probes
         assert con.execute("""
-            SELECT COUNT(*)
-            FROM source_snapshot_rows
-        """).fetchone()[0]==0
+            SELECT 1 FROM sqlite_temp_master
+            WHERE type='table' AND name='source_snapshot_rows'
+        """).fetchone() is not None
+        assert con.execute(
+            "SELECT COUNT(*) FROM temp.source_snapshot_rows"
+        ).fetchone()[0]==0
+        assert con.execute(
+            "SELECT COUNT(*) FROM main.source_snapshot_rows"
+        ).fetchone()[0]==0
         assert source_state.status(con)[
             "pipeline_stats"]["snapshot_staging_rows"]==0
 
@@ -162,10 +168,12 @@ def main():
                 "duplicate snapshot primary key was accepted")
         except sqlite3.IntegrityError:
             pass
-        assert con.execute("""
-            SELECT COUNT(*)
-            FROM source_snapshot_rows
-        """).fetchone()[0]==0
+        assert con.execute(
+            "SELECT COUNT(*) FROM temp.source_snapshot_rows"
+        ).fetchone()[0]==0
+        assert con.execute(
+            "SELECT COUNT(*) FROM main.source_snapshot_rows"
+        ).fetchone()[0]==0
         assert con.execute("""
             SELECT COUNT(*)
             FROM source_versions
@@ -186,7 +194,7 @@ def main():
 
     print(
         "source_snapshot_setwise_test ok "
-        "constant_probe cdc_wins idempotent rollback",
+        "constant_probe cdc_wins idempotent temp_staging rollback",
         flush=True,
     )
 

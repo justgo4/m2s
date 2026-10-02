@@ -555,6 +555,36 @@ def _values_key(values, row_index, pk_columns):
         for name in pk_columns)
 
 
+def _ensure_apply_staging(con):
+    # Durable replay comes from source_commit_parts. This is one-transaction
+    # scratch, so keeping it in the main WAL only duplicates write traffic.
+    con.execute("""
+        CREATE TEMP TABLE IF NOT EXISTS source_apply_actions(
+            seq INTEGER NOT NULL,
+            table_name TEXT NOT NULL,
+            pk BLOB NOT NULL,
+            deleted INTEGER NOT NULL,
+            row_payload BLOB,
+            schema_epoch INTEGER NOT NULL,
+            PRIMARY KEY(seq,table_name,pk)
+        ) WITHOUT ROWID
+    """)
+
+
+def _ensure_snapshot_staging(con):
+    # Snapshot cursor/source_versions are durable. Page scratch is rebuildable
+    # and therefore belongs in the connection-local TEMP schema.
+    con.execute("""
+        CREATE TEMP TABLE IF NOT EXISTS source_snapshot_rows(
+            table_name TEXT NOT NULL,
+            pk BLOB NOT NULL,
+            row_payload BLOB NOT NULL,
+            schema_epoch INTEGER NOT NULL,
+            PRIMARY KEY(table_name,pk)
+        ) WITHOUT ROWID
+    """)
+
+
 def _stage_commit_actions(con, seq):
     """Net one source transaction into SQLite without materializing a Python dict."""
     seq=int(seq)
@@ -655,6 +685,7 @@ def apply_one(con, seq):
     """,(seq,)).fetchone()
     input_rows=int(input_rows or 0)
     input_payload_bytes=int(input_payload_bytes or 0)
+    _ensure_apply_staging(con)
     with transaction(con):
         applied=base_applied_seq(con)
         if seq<=applied:
@@ -872,6 +903,7 @@ def _baseline_rows(con, table_name, batch):
 
 def stage_snapshot_batch(con, table_name, batch, cursor, is_last=False):
     table_name = str(table_name)
+    _ensure_snapshot_staging(con)
     with transaction(con):
         info = relation_info(con, table_name)
         if info["complete_seq"] is not None:
