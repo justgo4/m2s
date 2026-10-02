@@ -189,6 +189,193 @@ def evaluate(
     )
 
 
+def evaluate_workload(
+        report,
+        min_elapsed_seconds=72*3600,
+        min_initial_rows=50_000_000,
+        min_cdc_rows_per_second=49.0,
+        max_p95_seconds=5.0,
+        max_p99_seconds=10.0,
+        min_latency_samples_per_second=0.90,
+        min_dynamic_tasks=10,
+        min_faults=1,
+        require_drained=True,
+        require_sharing=True,
+):
+    failures=[]
+    evidence=dict()
+    if not isinstance(report,dict):
+        return dict(
+            ok=False,
+            failures=["report_not_object"],
+            evidence={})
+    if report.get("kind")!="m2s_longhaul_workload":
+        failures.append("not_longhaul_workload")
+
+    elapsed=_number(
+        report.get("duration_seconds"),
+        "duration_seconds")
+    initial_rows=_integer(
+        report.get("initial_rows"),
+        "initial_rows")
+    live_rows=_integer(
+        report.get("live_rows"),
+        "live_rows")
+    configured_rate=_number(
+        report.get("rows_per_second"),
+        "rows_per_second")
+    observed_rate=(
+        float(live_rows)/elapsed
+        if elapsed>0 else 0.0)
+    samples=_integer(
+        report.get("latency_samples"),
+        "latency_samples")
+    sample_rate=(
+        float(samples)/elapsed
+        if elapsed>0 else 0.0)
+    p95=_number(
+        report.get("latency_p95_seconds"),
+        "latency_p95_seconds")
+    p99=_number(
+        report.get("latency_p99_seconds"),
+        "latency_p99_seconds")
+
+    evidence.update(
+        elapsed_seconds=elapsed,
+        initial_rows=initial_rows,
+        live_rows=live_rows,
+        configured_rows_per_second=configured_rate,
+        observed_rows_per_second=observed_rate,
+        latency_samples=samples,
+        latency_samples_per_second=sample_rate,
+        latency_p95_seconds=p95,
+        latency_p99_seconds=p99,
+    )
+    if elapsed<float(min_elapsed_seconds):
+        failures.append("elapsed_seconds")
+    if initial_rows<int(min_initial_rows):
+        failures.append("initial_rows")
+    if configured_rate<50.0:
+        failures.append("configured_rows_per_second")
+    if observed_rate<float(min_cdc_rows_per_second):
+        failures.append("observed_rows_per_second")
+    if sample_rate<float(min_latency_samples_per_second):
+        failures.append("latency_sample_density")
+    if p95>float(max_p95_seconds):
+        failures.append("latency_p95")
+    if p99>float(max_p99_seconds):
+        failures.append("latency_p99")
+
+    dynamic_tasks=_integer(
+        report.get("dynamic_tasks",0),
+        "dynamic_tasks")
+    ready=dict(
+        report.get("dynamic_task_ready_seconds") or {})
+    ready_values={}
+    for sink,value in sorted(ready.items()):
+        ready_values[str(sink)]=_number(
+            value,str(sink)+".time_to_ready")
+    evidence["dynamic_tasks"]=dict(
+        requested=dynamic_tasks,
+        ready=len(ready_values),
+        time_to_ready_seconds=ready_values,
+        max_time_to_ready_seconds=(
+            max(ready_values.values())
+            if ready_values else None),
+    )
+    if dynamic_tasks<int(min_dynamic_tasks):
+        failures.append("dynamic_tasks")
+    if len(ready_values)!=dynamic_tasks:
+        failures.append("dynamic_tasks_not_ready")
+
+    faults=list(report.get("faults") or ())
+    recovery=[]
+    for index,item in enumerate(faults):
+        item=dict(item or {})
+        recovery.append(_number(
+            item.get("restart_seconds"),
+            "fault_%d.restart_seconds" % index))
+    evidence["faults"]=dict(
+        count=len(faults),
+        restart_seconds=recovery,
+        max_restart_seconds=(
+            max(recovery) if recovery else None),
+    )
+    if len(faults)<int(min_faults):
+        failures.append("fault_injection")
+
+    final_state=dict(report.get("final_state") or {})
+    if not final_state:
+        failures.append("final_state_missing")
+    else:
+        pending=_integer(
+            final_state.get("pending",0),
+            "final_state.pending")
+        deliveries=_integer(
+            final_state.get("deliveries",0),
+            "final_state.deliveries")
+        durable=_integer(
+            final_state.get("log_durable_seq",0),
+            "final_state.log_durable_seq")
+        applied=_integer(
+            final_state.get("base_applied_seq",0),
+            "final_state.base_applied_seq")
+        followers=_integer(
+            final_state.get("shared_followers",0),
+            "final_state.shared_followers")
+        evidence["final_state"]=dict(
+            pending=pending,
+            deliveries=deliveries,
+            log_durable_seq=durable,
+            base_applied_seq=applied,
+            shared_followers=followers,
+        )
+        if require_drained and pending:
+            failures.append("pending_jobs")
+        if require_drained and deliveries:
+            failures.append("inflight")
+        if durable!=applied:
+            failures.append("source_base_not_caught_up")
+        if (
+            require_sharing
+            and dynamic_tasks
+            and str(report.get("share_mode"))!="off"
+            and followers<dynamic_tasks
+        ):
+            failures.append("shared_followers")
+
+    source_totals=report.get("source_totals")
+    target_totals=report.get("target_totals")
+    evidence["source_target_exact"]=(
+        source_totals==target_totals
+        and source_totals is not None)
+    if source_totals is None or target_totals is None:
+        failures.append("source_target_totals_missing")
+    elif source_totals!=target_totals:
+        failures.append("source_target_mismatch")
+
+    return dict(
+        ok=not failures,
+        failures=sorted(set(failures)),
+        evidence=evidence,
+        thresholds=dict(
+            min_elapsed_seconds=float(
+                min_elapsed_seconds),
+            min_initial_rows=int(min_initial_rows),
+            min_cdc_rows_per_second=float(
+                min_cdc_rows_per_second),
+            max_p95_seconds=float(max_p95_seconds),
+            max_p99_seconds=float(max_p99_seconds),
+            min_latency_samples_per_second=float(
+                min_latency_samples_per_second),
+            min_dynamic_tasks=int(min_dynamic_tasks),
+            min_faults=int(min_faults),
+            require_drained=bool(require_drained),
+            require_sharing=bool(require_sharing),
+        ),
+    )
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("summary",type=Path)
@@ -213,21 +400,50 @@ def main():
     parser.add_argument(
         "--allow-undrained",action="store_true")
     parser.add_argument(
+        "--min-latency-samples-per-second",
+        type=float,default=0.90)
+    parser.add_argument(
+        "--min-dynamic-tasks",type=int,
+        default=10)
+    parser.add_argument(
+        "--min-faults",type=int,
+        default=1)
+    parser.add_argument(
+        "--allow-private-state",
+        action="store_true")
+    parser.add_argument(
         "--output",type=Path)
     args=parser.parse_args()
 
     summary=json.loads(
         args.summary.read_text(encoding="utf-8"))
-    result=evaluate(
-        summary,
-        min_elapsed_seconds=args.min_elapsed_seconds,
-        min_snapshot_rows=args.min_snapshot_rows,
-        max_p95_seconds=args.max_p95_seconds,
-        max_p99_seconds=args.max_p99_seconds,
-        min_cdc_samples=args.min_cdc_samples,
-        min_cdc_rows_per_second=args.min_cdc_rows_per_second,
-        require_drained=not args.allow_undrained,
-    )
+    if summary.get("kind")=="m2s_longhaul_workload":
+        result=evaluate_workload(
+            summary,
+            min_elapsed_seconds=args.min_elapsed_seconds,
+            min_initial_rows=args.min_snapshot_rows,
+            min_cdc_rows_per_second=(
+                args.min_cdc_rows_per_second),
+            max_p95_seconds=args.max_p95_seconds,
+            max_p99_seconds=args.max_p99_seconds,
+            min_latency_samples_per_second=(
+                args.min_latency_samples_per_second),
+            min_dynamic_tasks=args.min_dynamic_tasks,
+            min_faults=args.min_faults,
+            require_drained=not args.allow_undrained,
+            require_sharing=not args.allow_private_state,
+        )
+    else:
+        result=evaluate(
+            summary,
+            min_elapsed_seconds=args.min_elapsed_seconds,
+            min_snapshot_rows=args.min_snapshot_rows,
+            max_p95_seconds=args.max_p95_seconds,
+            max_p99_seconds=args.max_p99_seconds,
+            min_cdc_samples=args.min_cdc_samples,
+            min_cdc_rows_per_second=args.min_cdc_rows_per_second,
+            require_drained=not args.allow_undrained,
+        )
     payload=json.dumps(
         result,indent=2,sort_keys=True)+"\n"
     if args.output is not None:
