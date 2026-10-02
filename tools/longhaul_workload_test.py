@@ -185,6 +185,39 @@ def main():
         assert not disposable.exists()
 
     with tempfile.TemporaryDirectory(
+        prefix="m2s-longhaul-checkpoint-test-"
+    ) as td:
+        directory=Path(td)
+        output=directory/"results"/"workload.json"
+        first=dict(
+            format_version=1,
+            kind="m2s_longhaul_checkpoint",
+            live_rows=50)
+        path=longhaul_workload.write_checkpoint(
+            output,first)
+        assert path==(
+            output.parent/
+            "workload-checkpoint.json")
+        assert json.loads(
+            path.read_text(
+                encoding="utf-8")
+        )==first
+        assert not Path(
+            str(path)+".tmp"
+        ).exists()
+        second=dict(
+            format_version=1,
+            kind="m2s_longhaul_checkpoint",
+            live_rows=100)
+        replaced=longhaul_workload.write_checkpoint(
+            output,second)
+        assert replaced==path
+        assert json.loads(
+            path.read_text(
+                encoding="utf-8")
+        )["live_rows"]==100
+
+    with tempfile.TemporaryDirectory(
         prefix="m2s-longhaul-helper-"
     ) as td:
         directory=Path(td)
@@ -240,7 +273,7 @@ def main():
     print(
         "longhaul_workload_test ok percentile source_ready "
         "per_transaction_sentinel continuous_source_during_fault crash_catchup aggregate_exactness "
-        "work_directory_retention evidence_copy",
+        "work_directory_retention checkpoint_atomic_replace evidence_copy",
         flush=True,
     )
 
