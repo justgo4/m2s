@@ -55,7 +55,7 @@ def agg_schema(ir):
     for item in ir["aggregates"]:
         result.append(dict(
             name=item["output"],type="BIGINT",
-            nullable=False,key=False))
+            nullable=(item["function"]!="count"),key=False))
     return result
 
 
