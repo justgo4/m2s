@@ -131,18 +131,34 @@ def _observed_visible_lag(con,kind,leader_task_id):
     return int(row[0] or 0)
 
 
-def _state_rows(con,kind,state_id):
+def _state_stats(con,kind,state_id):
+    state_id=str(state_id)
     if kind=="aggregate":
-        table="aggregate_groups"
+        row=con.execute("""
+            SELECT COUNT(*),
+                   COALESCE(SUM(
+                       length(key_blob)+length(key_payload)
+                       +length(accum_payload)),0)
+            FROM aggregate_groups
+            WHERE state_id=?
+        """,(state_id,)).fetchone()
     elif kind=="inner_join":
-        table="join_rows"
+        row=con.execute("""
+            SELECT COUNT(*),
+                   COALESCE(SUM(
+                       length(pk_blob)
+                       +COALESCE(length(join_blob),0)
+                       +length(row_payload)),0)
+            FROM join_rows
+            WHERE state_id=?
+        """,(state_id,)).fetchone()
     else:
         raise ValueError(
             "unsupported stateful sharing kind: "+str(kind))
-    return int(con.execute(
-        "SELECT COUNT(*) FROM "+table+" WHERE state_id=?",
-        (str(state_id),)
-    ).fetchone()[0])
+    return dict(
+        rows=int(row[0]),
+        payload_bytes=int(row[1]),
+    )
 
 
 def candidate_metrics(con,kind,candidate):
@@ -152,6 +168,8 @@ def candidate_metrics(con,kind,candidate):
     surplus=int(
         reuse.get("surplus_aggregates",
         reuse.get("surplus_projections",0)))
+    state_stats=_state_stats(
+        con,kind,leader["state_id"])
     return dict(
         leader_task_id=str(leader["task_id"]),
         state_id=str(leader["state_id"]),
@@ -162,8 +180,8 @@ def candidate_metrics(con,kind,candidate):
             con,kind,leader["task_id"]),
         observed_visible_lag=_observed_visible_lag(
             con,kind,leader["task_id"]),
-        state_rows=_state_rows(
-            con,kind,leader["state_id"]),
+        state_rows=state_stats["rows"],
+        state_payload_bytes=state_stats["payload_bytes"],
         physical_health=str(physical["health"]),
         watermark=watermark,
         source_applied=applied,
@@ -593,7 +611,8 @@ def choose(con,kind,task,candidates,cfg=None):
             metrics["surplus"],
             metrics["lag"],
             metrics["observed_visible_lag"],
-            -metrics["state_rows"],
+            metrics["state_payload_bytes"],
+            metrics["state_rows"],
             metrics["followers"],
             metrics["leader_task_id"],
         )
