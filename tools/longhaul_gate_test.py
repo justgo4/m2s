@@ -71,7 +71,11 @@ def workload():
     # against the scheduled source window.
     elapsed=source_schedule+601
     tasks={
-        "starrocks.agg_%03d" % index:30.0+index
+        (
+            "starrocks.agg_%03d" % index
+            if index%2
+            else "starrocks.join_%03d" % index
+        ):30.0+index
         for index in range(1,11)
     }
     return dict(
@@ -180,6 +184,7 @@ def workload():
         recovery_latency_p99_seconds=20.0,
         recovery_latency_max_seconds=22.0,
         dynamic_tasks=10,
+        dynamic_task_mix="mixed",
         dynamic_task_ready_seconds=tasks,
         faults=[
             dict(
@@ -231,52 +236,63 @@ def workload():
         ),
         aggregate_checks=dict(
             expected_rows=1024,
-            expected_digest="source-digest",
+            expected_digest="source-aggregate-digest",
             all_match=True,
             tables={
                 "agg_000":dict(
                     rows=1024,
-                    digest="digest-000",
+                    digest="digest-agg-000",
                     match=True),
                 "agg_001":dict(
                     rows=1024,
-                    digest="digest-001",
-                    match=True),
-                "agg_002":dict(
-                    rows=1024,
-                    digest="digest-002",
+                    digest="digest-agg-001",
                     match=True),
                 "agg_003":dict(
                     rows=1024,
-                    digest="digest-003",
-                    match=True),
-                "agg_004":dict(
-                    rows=1024,
-                    digest="digest-004",
+                    digest="digest-agg-003",
                     match=True),
                 "agg_005":dict(
                     rows=1024,
-                    digest="digest-005",
-                    match=True),
-                "agg_006":dict(
-                    rows=1024,
-                    digest="digest-006",
+                    digest="digest-agg-005",
                     match=True),
                 "agg_007":dict(
                     rows=1024,
-                    digest="digest-007",
-                    match=True),
-                "agg_008":dict(
-                    rows=1024,
-                    digest="digest-008",
+                    digest="digest-agg-007",
                     match=True),
                 "agg_009":dict(
                     rows=1024,
-                    digest="digest-009",
+                    digest="digest-agg-009",
                     match=True),
-                "agg_010":dict(
+            },
+        ),
+        join_checks=dict(
+            expected_rows=1024,
+            expected_digest="source-join-digest",
+            all_match=True,
+            tables={
+                "join_000":dict(
                     rows=1024,
-                    digest="digest-010",
+                    digest="digest-join-000",
+                    match=True),
+                "join_002":dict(
+                    rows=1024,
+                    digest="digest-join-002",
+                    match=True),
+                "join_004":dict(
+                    rows=1024,
+                    digest="digest-join-004",
+                    match=True),
+                "join_006":dict(
+                    rows=1024,
+                    digest="digest-join-006",
+                    match=True),
+                "join_008":dict(
+                    rows=1024,
+                    digest="digest-join-008",
+                    match=True),
+                "join_010":dict(
+                    rows=1024,
+                    digest="digest-join-010",
                     match=True),
             },
         ),
@@ -374,6 +390,11 @@ def main():
     assert full["evidence"]["faults"][
         "source_rows_during_fault"]==[200,250]
     assert full["evidence"]["dynamic_tasks"]["ready"]==10
+    assert full["evidence"]["dynamic_tasks"]["mix"]=="mixed"
+    assert full["evidence"]["dynamic_tasks"]["aggregate_ready"]==5
+    assert full["evidence"]["dynamic_tasks"]["join_ready"]==5
+    assert full["evidence"]["aggregate_exactness"]["checked_targets"]==6
+    assert full["evidence"]["join_exactness"]["checked_targets"]==6
     assert full["evidence"]["latency_over_10_seconds"]==20
     assert (
         full["evidence"]["source_schedule_seconds"]
@@ -623,12 +644,14 @@ def main():
     bad["live_rows"]=100
     bad["latency_p99_seconds"]=10.01
     bad["dynamic_task_ready_seconds"].pop(
-        "starrocks.agg_010")
+        "starrocks.join_010")
     bad["faults"]=[]
     bad["final_state"]["pending"]=1
     bad["target_totals"]=[1,2]
     bad["aggregate_checks"]["all_match"]=False
-    bad["aggregate_checks"]["tables"]["agg_010"]["match"]=False
+    bad["aggregate_checks"]["tables"]["agg_009"]["match"]=False
+    bad["join_checks"]["all_match"]=False
+    bad["join_checks"]["tables"]["join_010"]["match"]=False
     full=evaluate_workload(bad)
     assert not full["ok"]
     for reason in (
@@ -639,6 +662,7 @@ def main():
         "pending_jobs",
         "source_target_mismatch",
         "aggregate_target_mismatch",
+        "join_target_mismatch",
     ):
         assert reason in full["failures"],full
 
@@ -648,7 +672,8 @@ def main():
         "rowset_recovery overflow_fail_closed reproducible_resource_fingerprint "
         "daemon_process_resource_evidence daemon_rss_budget source_sink_resource_evidence "
         "service_limit_drift_fail_closed scope_overlap_fail_closed exact_profile_gate "
-        "clean_worktree_gate software_fingerprint healthy_observation_window",
+        "clean_worktree_gate software_fingerprint healthy_observation_window "
+        "mixed_aggregate_join_exactness",
         flush=True,
     )
 
