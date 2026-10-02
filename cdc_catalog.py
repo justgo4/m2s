@@ -1445,6 +1445,71 @@ def execute_batch(
         active_version=int(active_version or 0))
 
 
+def preview_batch(path,commands,persistent_only=True):
+    """Compile a script inside one transaction and always roll it back.
+
+    The returned candidate deliberately omits configured values and Arrow UDF
+    source text. This is a control-plane dry run, not server/schema validation.
+    """
+    normalized=[
+        item.strip().rstrip(";").strip()
+        for item in commands
+        if item and item.strip().rstrip(";").strip()]
+    con=catalog_open(path)
+    candidate=None
+    config_names=set()
+    plan_changed=False
+    publish_requested=False
+    try:
+        _transaction(con)
+        for command in normalized:
+            if persistent_only:
+                _reject_script_ephemeral(command)
+            if re.fullmatch(
+                    r"(?is)(?:HELP|CALL\s+cdc_help\s*\(\s*\))",
+                    command):
+                continue
+            if _publish_command(command):
+                publish_requested=True
+                continue
+            result=_execute_con(con,command)
+            plan_changed=(
+                plan_changed
+                or _plan_mutation(result))
+            if result.get("status")=="configured":
+                config_names.add(str(result.get("name","")))
+        candidate=_publish_candidate(con)
+    finally:
+        with contextlib.suppress(sqlite3.Error):
+            _rollback(con)
+        con.close()
+
+    safe_udfs=[]
+    for item in candidate.get("udfs",()) or ():
+        item=dict(item)
+        item.pop("source",None)
+        safe_udfs.append(item)
+    return dict(
+        status="preview",
+        version=int(candidate["version"]),
+        revision=int(candidate["revision"]),
+        config_revision=int(candidate["config_revision"]),
+        plan_hash=str(candidate["plan_hash"]),
+        changed=bool(candidate.get("changed")),
+        is_new=bool(candidate.get("is_new")),
+        plan_changed=bool(plan_changed),
+        publish_requested=bool(publish_requested),
+        statements=len(normalized),
+        configuration_variables=sorted(
+            name for name in config_names if name),
+        mappings=list(candidate.get("mappings",()) or ()),
+        stateful_tasks=list(
+            candidate.get("stateful_tasks",()) or ()),
+        macros=list(candidate.get("macros",()) or ()),
+        udfs=safe_udfs,
+    )
+
+
 def _persistent_plan_command(command):
     text = command.strip()
     if re.match(
