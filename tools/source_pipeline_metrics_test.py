@@ -57,6 +57,39 @@ def main():
         ==first
     )
 
+    # A duplicate source position is idempotent only for the exact same
+    # transaction identity/content. Never convert binlog position reuse or
+    # corruption into a silent successful replay.
+    try:
+        source_state.log_commit(
+            con,"epoch-1",("binlog.000001",100),
+            "gtid-other",[part])
+        raise AssertionError(
+            "duplicate source position accepted a different GTID")
+    except RuntimeError as exc:
+        assert "GTID mismatch" in str(exc)
+
+    changed=pa.table({
+        "id":pa.array([1,2],type=pa.int64()),
+        "value":pa.array(["changed","b"],type=pa.string()),
+        "_sync_op":pa.array([0,0],type=pa.int8()),
+        "_sync_order":pa.array([0,1],type=pa.int64()),
+    })
+    changed_part=source_state.prepare_part(
+        "mysql.events",changed)
+    try:
+        source_state.log_commit(
+            con,"epoch-1",("binlog.000001",100),
+            "gtid-1",[changed_part])
+        raise AssertionError(
+            "duplicate source position accepted different content")
+    except RuntimeError as exc:
+        assert "differs from the durable commit" in str(exc)
+    assert (
+        source_state.status(con)["pipeline_stats"]
+        ==first
+    )
+
     assert source_state.apply_pending(con)==1
     applied=source_state.status(con)["pipeline_stats"]
     assert applied["log_commits"]==1

@@ -440,6 +440,53 @@ def prepare_part(table_name, table, schema_epoch=1):
     )
 
 
+def _validate_commit_replay(con, seq, gtid, parts):
+    seq=int(seq)
+    stored=con.execute(
+        "SELECT gtid FROM source_commits WHERE seq=?",
+        (seq,)
+    ).fetchone()
+    if stored is None:
+        raise RuntimeError(
+            "source commit disappeared during replay validation")
+    incoming_gtid=(
+        None if gtid is None else str(gtid))
+    if stored[0]!=incoming_gtid:
+        raise RuntimeError(
+            "source position replay GTID mismatch")
+    incoming=iter(parts)
+    durable=con.execute("""
+        SELECT part,table_name,schema_epoch,payload,nrows
+        FROM source_commit_parts
+        WHERE seq=?
+        ORDER BY part
+    """,(seq,))
+    for part_no,table_name,schema_epoch,payload,nrows in durable:
+        try:
+            part=next(incoming)
+        except StopIteration as exc:
+            raise RuntimeError(
+                "source position replay has fewer parts "
+                "than the durable commit") from exc
+        incoming_payload=sqlite_blob(part["payload"])
+        if (
+            int(part_no)<0
+            or str(part["table_name"])!=str(table_name)
+            or int(part["schema_epoch"])!=int(schema_epoch)
+            or int(part["nrows"])!=int(nrows)
+            or incoming_payload!=bytes(payload)
+        ):
+            raise RuntimeError(
+                "source position replay differs from the durable commit")
+    try:
+        next(incoming)
+    except StopIteration:
+        return seq
+    raise RuntimeError(
+        "source position replay has more parts "
+        "than the durable commit")
+
+
 def log_commit_tx(con, source_epoch, position, gtid, parts):
     source_epoch = str(source_epoch)
     source_file, source_pos = str(position[0]), int(position[1])
@@ -448,7 +495,8 @@ def log_commit_tx(con, source_epoch, position, gtid, parts):
         WHERE source_epoch=? AND source_file=? AND source_pos=?
     """, (source_epoch, source_file, source_pos)).fetchone()
     if existing:
-        return int(existing[0])
+        return _validate_commit_replay(
+            con,int(existing[0]),gtid,parts)
 
     started_ns=time.perf_counter_ns()
     part_count=0
