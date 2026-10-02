@@ -5,6 +5,7 @@ The gate intentionally uses durable, cheap-to-read counters only. It does not
 pretend to predict future operator cardinality. Limits default to zero (off),
 so existing deployments keep their current behavior until a budget is set.
 """
+import contextlib
 import json
 import time
 
@@ -25,6 +26,8 @@ def install(con):
             task_id TEXT PRIMARY KEY,
             sink_key TEXT NOT NULL,
             admitted INTEGER NOT NULL CHECK(admitted IN (0,1)),
+            reserved_state_bytes INTEGER NOT NULL DEFAULT 0
+                CHECK(reserved_state_bytes>=0),
             reason TEXT NOT NULL,
             metrics_json TEXT NOT NULL,
             limits_json TEXT NOT NULL,
@@ -33,6 +36,32 @@ def install(con):
         CREATE INDEX IF NOT EXISTS stateful_admission_decisions_admitted
             ON stateful_admission_decisions(admitted,updated,task_id);
     """)
+    columns={
+        str(row[1])
+        for row in con.execute(
+            "PRAGMA table_info(stateful_admission_decisions)"
+        ).fetchall()
+    }
+    if "reserved_state_bytes" not in columns:
+        con.execute("""
+            ALTER TABLE stateful_admission_decisions
+            ADD COLUMN reserved_state_bytes INTEGER NOT NULL DEFAULT 0
+        """)
+
+
+@contextlib.contextmanager
+def _write_transaction(con):
+    own=not con.in_transaction
+    if own:
+        con.execute("BEGIN IMMEDIATE")
+    try:
+        yield
+        if own:
+            con.execute("COMMIT")
+    except BaseException:
+        if own and con.in_transaction:
+            con.execute("ROLLBACK")
+        raise
 
 
 def _table_exists(con,name):
@@ -64,7 +93,7 @@ def _descriptor_rows(con,table):
     ]
 
 
-def _existing_tasks(con):
+def _task_statuses(con):
     rows=(
         _descriptor_rows(con,"aggregate_task_descriptors")
         +_descriptor_rows(con,"join_task_descriptors")
@@ -72,8 +101,38 @@ def _existing_tasks(con):
     return {
         task_id:status
         for task_id,status in rows
+    }
+
+
+def _existing_tasks(con):
+    return {
+        task_id:status
+        for task_id,status in _task_statuses(con).items()
         if status not in {"retired","failed"}
     }
+
+
+def _pending_reservations(con,statuses=None):
+    if not _table_exists(
+        con,"stateful_admission_decisions"
+    ):
+        return {}
+    statuses=(
+        _task_statuses(con)
+        if statuses is None else dict(statuses))
+    rows=con.execute("""
+        SELECT task_id,reserved_state_bytes
+        FROM stateful_admission_decisions
+        WHERE admitted=1 AND reserved_state_bytes>0
+        ORDER BY task_id
+    """).fetchall()
+    result={}
+    for task_id,reserved in rows:
+        task_id=str(task_id)
+        status=statuses.get(task_id)
+        if status is None or status=="candidate":
+            result[task_id]=int(reserved)
+    return result
 
 
 def _state_bytes(con):
@@ -116,7 +175,19 @@ def _source_seq(con,key):
 
 
 def snapshot(con,additions=()):
-    existing=_existing_tasks(con)
+    statuses=_task_statuses(con)
+    existing={
+        task_id:status
+        for task_id,status in statuses.items()
+        if status not in {"retired","failed"}
+    }
+    reservations=_pending_reservations(
+        con,statuses=statuses)
+    reserved_missing={
+        task_id:reserved
+        for task_id,reserved in reservations.items()
+        if task_id not in statuses
+    }
     requested=[]
     sinks={}
     for item in additions or ():
@@ -128,15 +199,27 @@ def snapshot(con,additions=()):
         if not sink:
             raise ValueError("stateful admission sink_key must be non-empty")
         sinks[task_id]=sink
-        if task_id not in existing and task_id not in requested:
+        if (
+            task_id not in existing
+            and task_id not in reservations
+            and task_id not in requested
+        ):
             requested.append(task_id)
     durable=_source_seq(con,"log_durable_seq")
     applied=_source_seq(con,"base_applied_seq")
     return dict(
-        current_tasks=len(existing),
-        current_building=sum(
-            1 for status in existing.values()
-            if status=="candidate"),
+        current_tasks=(
+            len(existing)+len(reserved_missing)),
+        current_building=(
+            sum(
+                1 for status in existing.values()
+                if status=="candidate")
+            +len(reserved_missing)
+        ),
+        reserved_pending_tasks=len(reservations),
+        reserved_state_bytes=sum(
+            int(value)
+            for value in reservations.values()),
         requested_tasks=len(requested),
         requested_task_ids=sorted(requested),
         requested_sinks={
@@ -156,6 +239,7 @@ def _reasons(metrics,limits):
     requested=int(metrics["requested_tasks"])
     projected_state=(
         int(metrics["state_bytes"])
+        +int(metrics.get("reserved_state_bytes",0))
         +requested*int(limits["reserve_state_bytes"])
     )
     # Admission controls creation of new durable work. Existing generations
@@ -193,22 +277,27 @@ def _reasons(metrics,limits):
     return reasons,projected_state
 
 
-def _record(con,task_id,sink,ok,reason,metrics,limits):
+def _record(
+        con,task_id,sink,ok,reason,metrics,limits,
+        reserved_state_bytes=0
+):
     now=time.time()
     con.execute("""
         INSERT INTO stateful_admission_decisions(
-            task_id,sink_key,admitted,reason,
+            task_id,sink_key,admitted,reserved_state_bytes,reason,
             metrics_json,limits_json,created,updated)
-        VALUES(?,?,?,?,?,?,?,?)
+        VALUES(?,?,?,?,?,?,?,?,?)
         ON CONFLICT(task_id) DO UPDATE SET
             sink_key=excluded.sink_key,
             admitted=excluded.admitted,
+            reserved_state_bytes=excluded.reserved_state_bytes,
             reason=excluded.reason,
             metrics_json=excluded.metrics_json,
             limits_json=excluded.limits_json,
             updated=excluded.updated
     """,(
-        str(task_id),str(sink),1 if ok else 0,str(reason),
+        str(task_id),str(sink),1 if ok else 0,
+        int(reserved_state_bytes),str(reason),
         json.dumps(metrics,sort_keys=True,separators=(",",":")),
         json.dumps(limits,sort_keys=True,separators=(",",":")),
         now,now,
@@ -219,28 +308,39 @@ def admit(con,additions,cfg=None):
     install(con)
     additions=list(additions or ())
     limits=_limits(cfg)
-    metrics=snapshot(con,additions)
-    reasons,projected_state=_reasons(metrics,limits)
-    metrics=dict(metrics)
-    metrics["projected_state_bytes"]=projected_state
-    ok=not reasons
-    reason="admitted" if ok else ",".join(reasons)
-    requested=set(metrics["requested_task_ids"])
-    for item in additions:
-        task=dict(item.get("task") or {})
-        task_id=str(task.get("task_id") or "")
-        if task_id not in requested:
-            continue
-        _record(
-            con,task_id,task["sink_key"],
-            ok,reason,metrics,limits)
-    return dict(
-        ok=ok,
-        reason=reason,
-        reasons=list(reasons),
-        metrics=metrics,
-        limits=limits,
-    )
+    with _write_transaction(con):
+        metrics=snapshot(con,additions)
+        reasons,projected_state=_reasons(
+            metrics,limits)
+        metrics=dict(metrics)
+        metrics["projected_state_bytes"]=projected_state
+        ok=not reasons
+        reason=(
+            "already_admitted"
+            if ok and not metrics["requested_tasks"]
+            else "admitted"
+            if ok
+            else ",".join(reasons)
+        )
+        requested=set(metrics["requested_task_ids"])
+        for item in additions:
+            task=dict(item.get("task") or {})
+            task_id=str(task.get("task_id") or "")
+            if task_id not in requested:
+                continue
+            _record(
+                con,task_id,task["sink_key"],
+                ok,reason,metrics,limits,
+                reserved_state_bytes=(
+                    limits["reserve_state_bytes"]
+                    if ok else 0))
+        return dict(
+            ok=ok,
+            reason=reason,
+            reasons=list(reasons),
+            metrics=metrics,
+            limits=limits,
+        )
 
 
 def admit_or_raise(con,additions,cfg=None):
@@ -261,11 +361,49 @@ def admit_or_raise(con,additions,cfg=None):
     )
 
 
+def release_unregistered(
+        con,additions,reason="registration_failed"
+):
+    install(con)
+    task_ids=[
+        str((item.get("task") or {}).get("task_id") or "")
+        for item in (additions or ())
+    ]
+    released=[]
+    with _write_transaction(con):
+        statuses=_task_statuses(con)
+        for task_id in task_ids:
+            if not task_id or task_id in statuses:
+                continue
+            row=con.execute("""
+                SELECT admitted,reserved_state_bytes
+                FROM stateful_admission_decisions
+                WHERE task_id=?
+            """,(task_id,)).fetchone()
+            if (
+                row is None
+                or not int(row[0])
+                or int(row[1])<=0
+            ):
+                continue
+            con.execute("""
+                UPDATE stateful_admission_decisions
+                SET reserved_state_bytes=0,
+                    reason=?,
+                    updated=?
+                WHERE task_id=?
+            """,(
+                "released:"+str(reason),
+                time.time(),task_id))
+            released.append(task_id)
+    return sorted(released)
+
+
 def decision_info(con,task_id):
     if not _table_exists(con,"stateful_admission_decisions"):
         raise KeyError("stateful admission decision does not exist")
     row=con.execute("""
-        SELECT sink_key,admitted,reason,
+        SELECT sink_key,admitted,reserved_state_bytes,reason,
                metrics_json,limits_json,created,updated
         FROM stateful_admission_decisions
         WHERE task_id=?
@@ -276,25 +414,43 @@ def decision_info(con,task_id):
         task_id=str(task_id),
         sink_key=str(row[0]),
         admitted=bool(row[1]),
-        reason=str(row[2]),
-        metrics=json.loads(row[3]),
-        limits=json.loads(row[4]),
-        created=float(row[5]),
-        updated=float(row[6]),
+        reserved_state_bytes=int(row[2]),
+        reason=str(row[3]),
+        metrics=json.loads(row[4]),
+        limits=json.loads(row[5]),
+        created=float(row[6]),
+        updated=float(row[7]),
     )
 
 
 def status(con):
     if not _table_exists(con,"stateful_admission_decisions"):
-        return dict(decisions=0,admitted=0,rejected=0)
+        return dict(
+            decisions=0,admitted=0,rejected=0,
+            reserved_pending_tasks=0,
+            reserved_state_bytes=0)
     total,admitted,rejected=con.execute("""
         SELECT COUNT(*),
                COALESCE(SUM(admitted),0),
                COALESCE(SUM(CASE WHEN admitted=0 THEN 1 ELSE 0 END),0)
         FROM stateful_admission_decisions
     """).fetchone()
+    columns={
+        str(row[1])
+        for row in con.execute(
+            "PRAGMA table_info(stateful_admission_decisions)"
+        ).fetchall()
+    }
+    pending=(
+        _pending_reservations(con)
+        if "reserved_state_bytes" in columns
+        else {}
+    )
     return dict(
         decisions=int(total),
         admitted=int(admitted),
         rejected=int(rejected),
+        reserved_pending_tasks=len(pending),
+        reserved_state_bytes=sum(
+            int(value) for value in pending.values()),
     )
