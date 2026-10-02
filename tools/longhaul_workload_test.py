@@ -140,6 +140,52 @@ def main():
     assert len(calls)==3
     assert all("MAX(" not in sql for sql in calls)
 
+    class JoinCursor:
+        def __enter__(self):
+            return self
+        def __exit__(self,*_args):
+            return False
+        def execute(self,sql,args):
+            assert "COUNT(*)" in sql
+            assert args==(7,)
+        def fetchone(self):
+            return (5,)
+
+    class JoinSource:
+        def cursor(self):
+            return JoinCursor()
+
+    with patch.object(
+        longhaul_workload,
+        "execute",
+        return_value=(
+            [(5,"fault-label","fault-label")],
+            ["count","min","max"])
+    ):
+        right=longhaul_workload.join_right_visibility(
+            JoinSource(),{},
+            dict(bucket=7,label="fault-label"))
+    assert right==dict(
+        visible=True,
+        bucket=7,
+        source_rows=5,
+        target_rows=5,
+        label_match=True)
+
+    with patch.object(
+        longhaul_workload,
+        "execute",
+        return_value=(
+            [(4,"fault-label","fault-label")],
+            ["count","min","max"])
+    ):
+        right=longhaul_workload.join_right_visibility(
+            JoinSource(),{},
+            dict(bucket=7,label="fault-label"))
+    assert not right["visible"]
+    assert right["source_rows"]==5
+    assert right["target_rows"]==4
+
     # Recovery must keep accepting source progress and include markers
     # created after the fault started in the catch-up boundary.
     commit_times={
@@ -179,6 +225,55 @@ def main():
     assert commit_times=={}
     assert len(recovered["latencies"])==2
     assert recovered["state"]["base_applied_seq"]==7
+
+    join_clock=[100.0]
+    def join_monotonic():
+        join_clock[0]+=0.1
+        return join_clock[0]
+
+    with patch.object(
+        longhaul_workload,"assert_live"
+    ), patch.object(
+        longhaul_workload,"visible_markers",
+        return_value=set()
+    ), patch.object(
+        longhaul_workload,"read_state",
+        return_value=dict(
+            log_durable_seq=9,
+            base_applied_seq=9)
+    ), patch.object(
+        longhaul_workload,
+        "join_right_visibility",
+        side_effect=[
+            dict(
+                visible=False,bucket=2,
+                source_rows=5,target_rows=4,
+                label_match=True),
+            dict(
+                visible=True,bucket=2,
+                source_rows=5,target_rows=5,
+                label_match=True),
+        ]
+    ) as join_probe, patch.object(
+        longhaul_workload.time,"monotonic",
+        side_effect=join_monotonic
+    ), patch.object(
+        longhaul_workload.time,"sleep"
+    ):
+        recovered=longhaul_workload.recover_after_fault(
+            object(),Path("daemon.log"),
+            Path("state.sqlite3"),{},
+            {},10,
+            join_right_update=dict(
+                bucket=2,
+                label="fault-label",
+                committed_at=100.0),
+            source=object())
+    assert join_probe.call_count==2
+    assert recovered["join_right"]["visible"]
+    assert recovered["join_right"]["source_rows"]==5
+    assert recovered["join_right"]["target_rows"]==5
+    assert recovered["join_right"]["recovery_seconds"]>0
 
     startup_progress=[]
     startup_clock=iter([20.0,20.1,20.2])
@@ -381,7 +476,8 @@ def main():
 
     print(
         "longhaul_workload_test ok percentile interval_overlap clean_worktree_probe source_ready "
-        "per_transaction_sentinel continuous_source_during_fault crash_catchup "
+        "per_transaction_sentinel join_right_full_fanout continuous_source_during_fault "
+        "crash_catchup join_right_recovery_barrier "
         "mixed_task_selection topology_resource_budget aggregate_exactness join_exactness "
         "work_directory_retention certification_requires_persistent_workdir "
         "checkpoint_atomic_replace evidence_copy",
