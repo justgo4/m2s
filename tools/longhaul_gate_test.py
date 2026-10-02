@@ -89,6 +89,7 @@ def workload():
         source_schedule_seconds=source_schedule,
         healthy_observation_seconds=source_schedule,
         memory_mb=8192,
+        work_directory_persistent=True,
         topology_resource_preflight=dict(
             ok=True,
             requested_memory_mb=8192,
@@ -597,6 +598,16 @@ def main():
     )
 
     bad=workload()
+    bad["work_directory_persistent"]=False
+    full=evaluate_workload(
+        bad,require_profile=p11_profile.NAME)
+    assert not full["ok"]
+    assert (
+        "persistent_work_directory_missing"
+        in full["failures"]
+    )
+
+    bad=workload()
     bad["software_fingerprint"]["code_worktree_clean"]=False
     full=evaluate_workload(
         bad,require_profile=p11_profile.NAME)
@@ -779,7 +790,8 @@ def main():
         "rowset_recovery overflow_fail_closed reproducible_resource_fingerprint "
         "daemon_process_resource_evidence daemon_rss_budget source_sink_resource_evidence "
         "service_limit_drift_fail_closed scope_overlap_fail_closed exact_profile_gate "
-        "clean_worktree_gate independent_profile_parameter_gate topology_preflight_gate "
+        "clean_worktree_gate persistent_workdir_gate independent_profile_parameter_gate "
+        "topology_preflight_gate "
         "software_fingerprint healthy_observation_window "
         "mixed_aggregate_join_exactness",
         flush=True,
