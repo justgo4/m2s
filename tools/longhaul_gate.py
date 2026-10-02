@@ -290,12 +290,42 @@ def evaluate_workload(
     observed_rate=(
         float(live_rows)/elapsed
         if elapsed>0 else 0.0)
+    latency_scope=str(
+        report.get("latency_scope") or "")
+    healthy_ready=report.get(
+        "healthy_ready_seconds")
+    healthy_duration=report.get(
+        "healthy_duration_seconds")
+    if healthy_ready is not None:
+        healthy_ready=_number(
+            healthy_ready,
+            "healthy_ready_seconds")
+    if healthy_duration is not None:
+        healthy_duration=_number(
+            healthy_duration,
+            "healthy_duration_seconds")
+    if require_profile is not None:
+        if latency_scope!="steady_state_ready_non_recovery":
+            failures.append(
+                "latency_scope_mismatch")
+        if (
+            healthy_ready is None
+            or healthy_duration is None
+            or healthy_duration<=0
+        ):
+            failures.append(
+                "healthy_interval_missing")
     samples=_integer(
         report.get("latency_samples"),
         "latency_samples")
+    sample_denominator=(
+        healthy_duration
+        if healthy_duration is not None
+        and healthy_duration>0
+        else elapsed)
     sample_rate=(
-        float(samples)/elapsed
-        if elapsed>0 else 0.0)
+        float(samples)/sample_denominator
+        if sample_denominator>0 else 0.0)
     p95=_number(
         report.get("latency_p95_seconds"),
         "latency_p95_seconds")
@@ -334,8 +364,12 @@ def evaluate_workload(
         live_rows=live_rows,
         configured_rows_per_second=configured_rate,
         observed_rows_per_second=observed_rate,
+        latency_scope=latency_scope or None,
+        healthy_ready_seconds=healthy_ready,
+        healthy_duration_seconds=healthy_duration,
         latency_samples=samples,
         latency_samples_per_second=sample_rate,
+        latency_sample_denominator_seconds=sample_denominator,
         latency_p95_seconds=p95,
         latency_p99_seconds=p99,
         latency_over_5_seconds=over5,
