@@ -1443,6 +1443,46 @@ def main():
                 raise AssertionError(
                     "retired JOIN superset target changed after source advanced")
 
+            # Rebuild the retained JOIN follower in place with a different
+            # equi-key while preserving its public projection schema. This
+            # exercises the JOIN branch of the same shadow/fence/SWAP protocol.
+            result,response,activation=run_catalog_sql(
+                directory,env,"rebuild-join-subview",
+                "CREATE OR REPLACE TABLE starrocks.joined_subview AS "
+                "SELECT c.name AS customer_name,o.amount AS amount "
+                "FROM mysql.orders o INNER JOIN mysql.customers c "
+                "ON o.id=c.id;")
+            if (
+                result.returncode!=0
+                or activation.get("status")!="rebuild_pending"
+            ):
+                raise AssertionError(
+                    "JOIN semantic rebuild was not accepted online: "
+                    +json.dumps(response,sort_keys=True))
+            join_rebuild_state,join_rebuild_before=wait_join_rebuild_exact(
+                proc,log,directory,source,cfg)
+            join_shadows,_=execute(
+                cfg,
+                "SELECT TABLE_NAME FROM information_schema.TABLES "
+                "WHERE TABLE_SCHEMA="+literal(DATABASE)
+                +" AND TABLE_NAME LIKE '__j4_rebuild_joined_subview_%'")
+            if join_shadows:
+                raise AssertionError(
+                    "JOIN semantic rebuild shadow table leaked: "
+                    +repr(join_shadows))
+            daemon_text=log.read_text(errors="replace")
+            if (
+                "STATEFUL REBUILD ACTIVE sink=starrocks.joined_subview"
+                not in daemon_text
+            ):
+                raise AssertionError(
+                    "JOIN semantic rebuild cutover was not observed in "
+                    "daemon diagnostics="+daemon_text[-10000:])
+
+            mutate_after_join_rebuild(source)
+            join_rebuild_live_state,join_rebuild_after=wait_join_rebuild_exact(
+                proc,log,directory,source,cfg)
+
             result,response,activation=run_catalog_sql(
                 directory,env,"drop-join-subview",
                 "DROP TABLE starrocks.joined_subview;")
