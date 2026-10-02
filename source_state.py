@@ -1054,9 +1054,16 @@ def status(con):
     )
     if pipeline_row is None:
         pipeline_row=(0,0,0,0,0,0,0,0,0)
-    apply_staging_rows=int(con.execute(
-        "SELECT COUNT(*) FROM source_apply_actions"
-    ).fetchone()[0])
+    has_apply_staging=con.execute("""
+        SELECT 1 FROM sqlite_master
+        WHERE type='table' AND name='source_apply_actions'
+    """).fetchone() is not None
+    apply_staging_rows=(
+        int(con.execute(
+            "SELECT COUNT(*) FROM source_apply_actions"
+        ).fetchone()[0])
+        if has_apply_staging else 0
+    )
     pipeline=dict(
         log_commits=int(pipeline_row[0]),
         log_parts=int(pipeline_row[1]),
