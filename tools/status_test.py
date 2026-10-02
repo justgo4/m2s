@@ -8,6 +8,7 @@ ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 
 import j4
+import stateful_admission
 import stateful_catalog_runtime
 import stateful_rebuild
 
@@ -35,6 +36,13 @@ def main():
                 task_id="retiring-task",
                 sink_key="starrocks.old"),
             11)
+        stateful_admission.queue_wait(
+            con,[dict(task=dict(
+                task_id="waiting-task",
+                sink_key="starrocks.waiting"))],
+            plan_version=8,
+            reason="max_state_bytes",
+            retry_seconds=30)
         con.close()
 
         status=j4.durable_status_snapshot(path)
@@ -60,10 +68,14 @@ def main():
             )
         ]
         assert status["sharing"]["decisions"]==0
+        assert status["admission"]["waiting_tasks"]==1
+        assert status["admission"]["waiting_plans"]==1
+        assert status["admission"]["waiting"][0]["plan_version"]==8
+        assert status["admission"]["waiting"][0]["retry_count"]==0
 
     print(
         "status_test ok missing_state read_only_snapshot "
-        "rebuild retirement source jobs sharing physical",
+        "rebuild retirement source jobs sharing admission physical",
         flush=True,
     )
 
