@@ -12040,11 +12040,25 @@ def durable_status_snapshot(state_path):
         con.close()
 
 
+def canonical_catalog_sink(value):
+    value=str(value or "").strip()
+    if not value:
+        raise ValueError("catalog sink is required")
+    if "." not in value:
+        value="starrocks."+value
+    if not re.fullmatch(
+            r"(?i)starrocks\.[A-Za-z_][A-Za-z0-9_$]*",
+            value):
+        raise ValueError(
+            "catalog sink must be starrocks.<identifier>")
+    return "starrocks."+value.split(".",1)[1].lower()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "command",nargs="?",default="run",
-        choices=("run","cli","sql","check","probe","status","explain","selftest"))
+        choices=("run","cli","sql","check","probe","status","explain","cancel","selftest"))
     parser.add_argument("sql_file",nargs="?")
     args = parser.parse_args()
 
@@ -12060,6 +12074,28 @@ def main():
             ).decode("utf-8"),
             flush=True)
         return 0
+
+    if args.command == "cancel":
+        if not args.sql_file:
+            parser.error(
+                "python j4.py cancel requires a starrocks sink")
+        try:
+            sink=canonical_catalog_sink(
+                args.sql_file)
+        except ValueError as exc:
+            parser.error(str(exc))
+        bootstrap=cdc_catalog.catalog_paths(
+            __file__)
+        variables=cdc_catalog.variables_get(
+            bootstrap["catalog"])
+        paths=cdc_catalog.catalog_paths(
+            __file__,variables=variables)
+        return cdc_catalog.shell(
+            paths["catalog"],paths["socket"],
+            paths["seed"],
+            command="DROP TABLE "+sink,
+            publish_callback=
+                validate_local_catalog_publish)
 
     if args.command == "explain":
         bootstrap=cdc_catalog.catalog_paths(__file__)
@@ -12127,9 +12163,10 @@ def main():
 
     if args.sql_file:
         parser.error(
-            "a SQL file is valid only with "
-            "'python j4.py sql <file.sql>' or "
-            "'python j4.py explain <file.sql>'")
+            "the second argument is valid only with "
+            "'python j4.py sql <file.sql>', "
+            "'python j4.py explain <file.sql>', or "
+            "'python j4.py cancel <starrocks.sink>'")
 
     if args.command == "selftest":
         if cdc_catalog.selftest():
