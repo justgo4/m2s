@@ -200,6 +200,43 @@ def main():
             ==2048*1024)
         assert (
             fallback["process_count"]==1)
+        fallback_tracker=(
+            service_resource_probe.new_tracker(
+                dict(
+                    source="explicit_pid",
+                    reason="resolved")))
+        service_resource_probe.observe(
+            fallback_tracker,fallback)
+        (proc/"100"/"stat").write_text(
+            stat_line(100,1,160,70,1000),
+            encoding="utf-8")
+        (proc/"100"/"status").write_text(
+            "Name:\tmysqld\nVmRSS:\t3072 kB\n",
+            encoding="utf-8")
+        (proc/"100"/"io").write_text(
+            "read_bytes: 6000\n"
+            "write_bytes: 10000\n",
+            encoding="utf-8")
+        with patch.object(
+            service_resource_probe
+                .process_resource_probe.os,
+            "sysconf",return_value=100
+        ):
+            service_resource_probe.observe(
+                fallback_tracker,
+                service_resource_probe.service_sample(
+                    100,proc_root=proc,
+                    cgroup_root=cgroup))
+        fallback_report=(
+            service_resource_probe.report(
+                fallback_tracker))
+        assert abs(
+            fallback_report["cpu_seconds"]-.8)<1e-9
+        assert fallback_report["read_bytes"]==1904
+        assert fallback_report["write_bytes"]==1808
+        assert (
+            fallback_report["peak_memory_bytes"]
+            ==3072*1024)
 
         missing=(
             service_resource_probe
