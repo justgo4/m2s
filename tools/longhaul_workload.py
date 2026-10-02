@@ -10,6 +10,7 @@ copies the daemon's final durable summary/metrics into benchmark-results.
 Use only disposable MySQL/StarRocks services; --isolated is mandatory.
 """
 import argparse
+import contextlib
 import hashlib
 import json
 import os
@@ -767,6 +768,41 @@ def collect_final_debt(state_path):
     )
 
 
+
+@contextlib.contextmanager
+def work_directory(path=None):
+    """Use a disposable workspace unless an explicit empty directory is supplied.
+
+    Formal 72h runs can pass --work-directory so SQLite state, daemon logs and
+    catalog artifacts survive a workload-driver failure. Existing non-empty
+    directories are rejected because this harness drops and recreates its
+    isolated databases and must never silently reuse stale run state.
+    """
+    if path is None:
+        with tempfile.TemporaryDirectory(
+            prefix="m2s-longhaul-"
+        ) as td:
+            yield Path(td)
+        return
+
+    directory=Path(path).expanduser().resolve()
+    if directory.exists():
+        if not directory.is_dir():
+            raise ValueError(
+                "longhaul work directory is not a directory")
+        if any(directory.iterdir()):
+            raise RuntimeError(
+                "longhaul work directory must be empty: "
+                +str(directory))
+    else:
+        directory.mkdir(
+            parents=True,exist_ok=False)
+    (directory/".m2s-longhaul-workdir").write_text(
+        "format_version=1\n",
+        encoding="utf-8")
+    yield directory
+
+
 def copy_evidence(directory,output):
     state_path=directory/"state.sqlite3"
     summary=Path(
@@ -824,10 +860,9 @@ def run(args):
             for name,selection in service_selections.items()
         }
 
-        with tempfile.TemporaryDirectory(
-            prefix="m2s-longhaul-"
-        ) as td:
-            directory=Path(td)
+        with work_directory(
+            getattr(args,"work_directory",None)
+        ) as directory:
             catalog,env=setup_catalog(
                 directory,cfg,opts,args.load_mode,
                 args.snapshot_rows,args.memory_mb,
@@ -1137,6 +1172,8 @@ def run(args):
                     args.rows_per_second),
                 duration_seconds=elapsed,
                 memory_mb=int(args.memory_mb),
+                work_directory_persistent=bool(
+                    getattr(args,"work_directory",None)),
                 resource_fingerprint=machine_resource_fingerprint(),
                 software_fingerprint=software,
                 daemon_resources=process_resource_probe.report(
@@ -1271,6 +1308,11 @@ def main():
     parser.add_argument(
         "--drain-timeout-seconds",
         type=float,default=1800)
+    parser.add_argument(
+        "--work-directory",type=Path,
+        help=(
+            "optional empty directory to preserve catalog/state/logs "
+            "after the run; omitted uses a disposable temporary directory"))
     parser.add_argument(
         "--output",type=Path,
         default=Path(
