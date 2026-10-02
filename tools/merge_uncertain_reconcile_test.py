@@ -61,6 +61,15 @@ def runtime(table):
             )
         },
         load_events={table:threading.Event()},
+        metrics=dict(
+            lock=threading.Lock(),
+            tables={
+                table:dict(
+                    total=j4.metric_bucket(),
+                    interval=j4.metric_bucket(),
+                )
+            },
+        ),
     )
 
 
@@ -203,6 +212,23 @@ def visible_reconcile_contract():
             assert not j4.merge_table_quarantined(
                 state,seeded["table"])
             assert state["load_events"][seeded["table"]].is_set()
+            metrics=j4.metric_bucket_summary(
+                state["metrics"]["tables"][
+                    seeded["table"]]["total"],
+                include_quantiles=False)
+            assert metrics["merge_uncertain_replays"]==1,metrics
+            assert (
+                metrics["merge_uncertain_replay_visible"]
+                ==1
+            ),metrics
+            assert (
+                metrics["merge_uncertain_replay_aborted"]
+                ==0
+            ),metrics
+            assert (
+                metrics["merge_uncertain_replay_blocked"]
+                ==0
+            ),metrics
         finally:
             con.close()
 
@@ -243,6 +269,15 @@ def pre_send_failure_contract():
                 "SELECT visible,txn_id FROM load_parts"
             ).fetchone()
             assert part==(0,None),part
+            metrics=j4.metric_bucket_summary(
+                state["metrics"]["tables"][
+                    seeded["table"]]["total"],
+                include_quantiles=False)
+            assert metrics["merge_uncertain_replays"]==1,metrics
+            assert (
+                metrics["merge_uncertain_replay_visible"]
+                ==0
+            ),metrics
         finally:
             con.close()
 
