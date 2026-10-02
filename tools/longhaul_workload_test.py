@@ -41,6 +41,40 @@ def main():
             returncode=128,stdout="",stderr="failed")
     ):
         assert longhaul_workload.code_worktree_clean() is None
+    class FakeCursor:
+        def __init__(self,source):
+            self.source=source
+        def __enter__(self):
+            return self
+        def __exit__(self,*_):
+            return False
+        def execute(self,sql):
+            if sql.startswith(
+                "SET SESSION sql_log_bin="
+            ):
+                self.source.binlog=int(
+                    sql.rsplit("=",1)[1])
+        def fetchone(self):
+            return (self.source.binlog,)
+
+    class FakeSource:
+        def __init__(self):
+            self.binlog=1
+            self.commits=0
+        def commit(self):
+            self.commits+=1
+        def cursor(self):
+            return FakeCursor(self)
+
+    fake_source=FakeSource()
+    longhaul_workload.set_session_binlog(
+        fake_source,False)
+    assert fake_source.binlog==0
+    longhaul_workload.set_session_binlog(
+        fake_source,True)
+    assert fake_source.binlog==1
+    assert fake_source.commits==2
+
     assert not longhaul_workload.source_ready(None)
     assert not longhaul_workload.source_ready(dict(source=[]))
     assert not longhaul_workload.source_ready(
@@ -322,7 +356,8 @@ def main():
         ).exists()
 
     print(
-        "longhaul_workload_test ok percentile clean_worktree_probe source_ready baseline_ready "
+        "longhaul_workload_test ok percentile clean_worktree_probe seed_binlog_toggle "
+        "source_ready baseline_ready "
         "per_transaction_sentinel continuous_source_during_fault crash_catchup aggregate_exactness "
         "work_directory_privacy_boundary work_directory_retention "
         "checkpoint_atomic_replace evidence_copy",
