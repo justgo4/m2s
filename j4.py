@@ -158,6 +158,47 @@ def source_log_stats_delta(start,current):
     )
 
 
+def source_pipeline_stats_delta(start,current):
+    start=dict(start or {})
+    current=dict(current or {})
+    counter_names=(
+        "log_commits","log_parts","log_rows",
+        "log_payload_bytes","apply_commits",
+        "apply_input_rows","apply_actions",
+    )
+    time_names=(
+        "log_work_seconds","apply_work_seconds",
+    )
+    delta={}
+    regressions=[]
+    for name in counter_names:
+        left=int(start.get(name,0) or 0)
+        right=int(current.get(name,0) or 0)
+        if right<left:
+            regressions.append(
+                "%s:%d>%d" % (
+                    name,left,right))
+        delta[name]=max(0,right-left)
+    for name in time_names:
+        left=float(start.get(name,0.0) or 0.0)
+        right=float(current.get(name,0.0) or 0.0)
+        if right+1e-12<left:
+            regressions.append(
+                "%s:%.9f>%.9f" % (
+                    name,left,right))
+        delta[name]=max(0.0,right-left)
+    delta["log_rows_per_second"]=(
+        delta["log_rows"]/delta["log_work_seconds"]
+        if delta["log_work_seconds"]>0 else None)
+    delta["apply_rows_per_second"]=(
+        delta["apply_input_rows"]/delta["apply_work_seconds"]
+        if delta["apply_work_seconds"]>0 else None)
+    return dict(
+        pipeline_stats=delta,
+        counter_regressions=regressions,
+    )
+
+
 def metric_quantiles(values):
     if not values:
         return dict(n=0,p50=None,p95=None,p99=None,max=None,avg=None)
@@ -508,6 +549,13 @@ def final_run_summary(runtime, cfg, prepared, con, reason):
     source_run=source_log_stats_delta(
         metrics.get("source_log_stats_start",{}),
         source.get("log_stats",{}))
+    pipeline_run=source_pipeline_stats_delta(
+        metrics.get("source_pipeline_stats_start",{}),
+        source.get("pipeline_stats",{}))
+    source_run["pipeline_stats"]=pipeline_run[
+        "pipeline_stats"]
+    source_run["counter_regressions"].extend(
+        pipeline_run["counter_regressions"])
     summary = dict(
         event="run_summary",run_id=metrics["run_id"],timestamp=now,
         started=metrics["started"],elapsed_seconds=now-metrics["started"],reason=reason,
@@ -11400,8 +11448,11 @@ def run_cdc(
         runtime["plan_loader"] = lambda version: prepare_runtime_catalog_plan(
             cfg,cdc_catalog.load_plan_version(cfg["catalog"],version))
         runtime["metrics"] = init_run_metrics(worker_mappings)
+        source_metrics_start=source_state.status(con)
         runtime["metrics"]["source_log_stats_start"] = dict(
-            source_state.status(con).get("log_stats") or {})
+            source_metrics_start.get("log_stats") or {})
+        runtime["metrics"]["source_pipeline_stats_start"] = dict(
+            source_metrics_start.get("pipeline_stats") or {})
         metrics_path,summary_path = report_paths(cfg)
         append_report(metrics_path,dict(
             event="run_start",run_id=runtime["metrics"]["run_id"],
