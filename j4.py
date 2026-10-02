@@ -132,6 +132,30 @@ def init_run_metrics(prepared):
     )
 
 
+def source_log_stats_delta(start,current):
+    start=dict(start or {})
+    current=dict(current or {})
+    tables={}
+    regressions=[]
+    for table in sorted(set(start)|set(current)):
+        before=dict(start.get(table) or {})
+        after=dict(current.get(table) or {})
+        delta={}
+        for name in ("commits","event_rows","payload_bytes"):
+            left=int(before.get(name,0))
+            right=int(after.get(name,0))
+            if right<left:
+                regressions.append(
+                    "%s.%s:%d>%d" % (
+                        table,name,left,right))
+            delta[name]=max(0,right-left)
+        tables[str(table)]=delta
+    return dict(
+        log_stats=tables,
+        counter_regressions=regressions,
+    )
+
+
 def metric_quantiles(values):
     if not values:
         return dict(n=0,p50=None,p95=None,p99=None,max=None,avg=None)
@@ -474,6 +498,10 @@ def final_run_summary(runtime, cfg, prepared, con, reason):
     overflows = con.execute("SELECT COUNT(*) FROM field_overflow").fetchone()[0]
     uncertain = con.execute("SELECT COUNT(*) FROM merge_uncertain").fetchone()[0]
     read = meta_get(con,"read_position")
+    source=source_state.status(con)
+    source_run=source_log_stats_delta(
+        metrics.get("source_log_stats_start",{}),
+        source.get("log_stats",{}))
     summary = dict(
         event="run_summary",run_id=metrics["run_id"],timestamp=now,
         started=metrics["started"],elapsed_seconds=now-metrics["started"],reason=reason,
@@ -494,7 +522,8 @@ def final_run_summary(runtime, cfg, prepared, con, reason):
             quarantined_tables=dict(runtime.get("quarantined_tables",{})),
             health="degraded" if runtime.get("quarantined_tables") else "normal",
         ),
-        source=source_state.status(con),
+        source=source,
+        source_run=source_run,
         stateful=stateful_runtime_summary(con),
     )
     metrics_path,summary_path = report_paths(cfg)
@@ -10760,6 +10789,8 @@ def run_cdc(
         runtime["plan_loader"] = lambda version: prepare_runtime_catalog_plan(
             cfg,cdc_catalog.load_plan_version(cfg["catalog"],version))
         runtime["metrics"] = init_run_metrics(worker_mappings)
+        runtime["metrics"]["source_log_stats_start"] = dict(
+            source_state.status(con).get("log_stats") or {})
         metrics_path,summary_path = report_paths(cfg)
         append_report(metrics_path,dict(
             event="run_start",run_id=runtime["metrics"]["run_id"],
