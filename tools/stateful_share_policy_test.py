@@ -117,11 +117,32 @@ def main():
         assert "surplus" in (
             decision["metrics"]["rejected"][0]["reasons"])
 
+        first=stateful_share_policy.observe(
+            con,"follower",10,9,10,8,
+            copied_sequences=1)
+        assert first["samples"]==1
+        assert first["max_leader_lag"]==1
+        assert first["max_source_lag"]==1
+        assert first["max_visible_lag"]==1
+        assert first["copied_sequences"]==1
+        second=stateful_share_policy.observe(
+            con,"follower",12,10,13,7,
+            copied_sequences=2)
+        assert second["samples"]==2
+        assert second["max_leader_lag"]==2
+        assert second["max_source_lag"]==3
+        assert second["max_visible_lag"]==3
+        assert second["copied_sequences"]==3
+        status=stateful_share_policy.status(con)
+        assert status["decisions"]==1
+        assert status["samples"]==2
+        assert status["copied_sequences"]==3
+
         con.close()
 
     print(
         "stateful_share_policy_test ok off compatible adaptive "
-        "lag fanout surplus durable_decision",
+        "lag fanout surplus durable_decision runtime_feedback",
         flush=True,
     )
 
