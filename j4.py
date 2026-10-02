@@ -6245,6 +6245,9 @@ def activate_stateful_rebuild_candidate(
                 spec["new"])
         runtime.setdefault(
             "stateful_rebuild_plans",{})[sink]=candidate
+        runtime.setdefault(
+            "stateful_rebuild_locks",{}).setdefault(
+                sink,threading.Lock())
 
     if sink not in runtime.get(
         "worker_keys",set()
