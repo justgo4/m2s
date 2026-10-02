@@ -19,6 +19,10 @@ on:
         description: Identical aggregate tasks added online
         default: '3'
         required: true
+      fault_every_seconds:
+        description: Hard-restart interval; production profile defaults to 21600
+        default: '120'
+        required: true
       protocol:
         description: StarRocks output protocol
         type: choice
@@ -45,6 +49,7 @@ jobs:
       LONGHAUL_DURATION: ${{ inputs.duration_seconds }}
       LONGHAUL_RATE: ${{ inputs.rows_per_second }}
       LONGHAUL_TASKS: ${{ inputs.dynamic_tasks }}
+      LONGHAUL_FAULT_EVERY: ${{ inputs.fault_every_seconds }}
       LONGHAUL_PROTOCOL: ${{ inputs.protocol }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -93,16 +98,20 @@ jobs:
             --rows-per-second "$LONGHAUL_RATE" \
             --duration-seconds "$LONGHAUL_DURATION" \
             --dynamic-tasks "$LONGHAUL_TASKS" \
+            --fault-every-seconds "$LONGHAUL_FAULT_EVERY" \
             --memory-mb 4096 \
             --output benchmark-results/longhaul-workload.json
       - name: Evaluate smoke evidence with production SLO latency thresholds
         run: |
-          python tools/longhaul_gate.py benchmark-results/longhaul-daemon-summary.json \
+          python tools/longhaul_gate.py benchmark-results/longhaul-workload.json \
             --min-elapsed-seconds 1 \
             --min-snapshot-rows "$LONGHAUL_ROWS" \
+            --min-cdc-rows-per-second 40 \
             --max-p95-seconds 5 \
             --max-p99-seconds 10 \
-            --min-cdc-samples 1 \
+            --min-latency-samples-per-second 0.75 \
+            --min-dynamic-tasks "$LONGHAUL_TASKS" \
+            --min-faults 1 \
             --output benchmark-results/longhaul-gate.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
