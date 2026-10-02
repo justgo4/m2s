@@ -368,6 +368,7 @@ def evaluate_workload(
     faults=list(report.get("faults") or ())
     restart_seconds=[]
     catchup_seconds=[]
+    source_rows_during_fault=[]
     frontiers=[]
     for index,item in enumerate(faults):
         item=dict(item or {})
@@ -377,6 +378,12 @@ def evaluate_workload(
         catchup_seconds.append(_number(
             item.get("catchup_seconds"),
             "fault_%d.catchup_seconds" % index))
+        produced=_integer(
+            item.get("source_rows_during_fault",0),
+            "fault_%d.source_rows_during_fault" % index)
+        source_rows_during_fault.append(produced)
+        if produced<=0:
+            failures.append("fault_source_stalled")
         frontier=dict(
             item.get("source_frontier") or {})
         durable=_integer(
@@ -394,6 +401,7 @@ def evaluate_workload(
         count=len(faults),
         restart_seconds=restart_seconds,
         catchup_seconds=catchup_seconds,
+        source_rows_during_fault=source_rows_during_fault,
         source_frontiers=frontiers,
         max_restart_seconds=(
             max(restart_seconds)
