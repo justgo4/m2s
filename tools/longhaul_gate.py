@@ -328,6 +328,66 @@ def evaluate_workload(
         recovery_latency_p99_seconds=recovery_p99,
         recovery_latency_max_seconds=recovery_max,
     )
+
+    configured_memory_mb=_integer(
+        report.get("memory_mb"),
+        "memory_mb")
+    resources=report.get("resource_fingerprint")
+    if not isinstance(resources,dict) or not resources:
+        failures.append("resource_fingerprint_missing")
+        evidence["resources"]=dict(
+            configured_memory_mb=configured_memory_mb)
+    else:
+        architecture=str(
+            resources.get("architecture") or "").strip()
+        system=str(
+            resources.get("system") or "").strip()
+        python_version=str(
+            resources.get("python_version") or "").strip()
+        logical_cpus=_integer(
+            resources.get("logical_cpus",0),
+            "resource_fingerprint.logical_cpus")
+        cpu_quota=resources.get(
+            "cgroup_cpu_quota_cores")
+        if cpu_quota is not None:
+            cpu_quota=_number(
+                cpu_quota,
+                "resource_fingerprint.cgroup_cpu_quota_cores")
+        memory_limit=resources.get(
+            "cgroup_memory_limit_bytes")
+        if memory_limit is not None:
+            memory_limit=_integer(
+                memory_limit,
+                "resource_fingerprint.cgroup_memory_limit_bytes")
+        if (
+            not architecture
+            or not system
+            or not python_version
+            or logical_cpus<=0
+        ):
+            failures.append(
+                "resource_fingerprint_incomplete")
+        if configured_memory_mb<=0:
+            failures.append(
+                "configured_memory_mb")
+        if (
+            memory_limit is not None
+            and configured_memory_mb*1024**2
+                >memory_limit
+        ):
+            failures.append(
+                "configured_memory_exceeds_cgroup")
+        evidence["resources"]=dict(
+            configured_memory_mb=configured_memory_mb,
+            architecture=architecture,
+            system=system,
+            kernel_release=str(
+                resources.get("kernel_release") or ""),
+            python_version=python_version,
+            logical_cpus=logical_cpus,
+            cgroup_cpu_quota_cores=cpu_quota,
+            cgroup_memory_limit_bytes=memory_limit,
+        )
     if elapsed<float(min_elapsed_seconds):
         failures.append("elapsed_seconds")
     if initial_rows<int(min_initial_rows):
