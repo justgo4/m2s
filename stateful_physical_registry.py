@@ -68,6 +68,17 @@ def retire(con,kind,task):
 def sync_runtime_result(con,item,result):
     task=result.get("task") or item["task"]
     generation=result.get("generation") or {}
+    if result.get("shared_physical"):
+        if item["kind"]!="aggregate":
+            raise RuntimeError(
+                "unsupported shared physical runtime kind: "
+                +str(item["kind"]))
+        binding=result.get("shared_state_id")
+        if not binding:
+            raise RuntimeError(
+                "shared aggregate runtime omitted physical state identity")
+        return physical_state_catalog.state_info(
+            con,aggregate_physical_state.instance_id(binding))
     if (
         str(task.get("status"))=="active"
         and str(generation.get("status"))=="ready"
