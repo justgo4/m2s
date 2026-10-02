@@ -36,6 +36,7 @@ def install(con):
             new_task_id TEXT NOT NULL UNIQUE,
             logical_target TEXT NOT NULL,
             shadow_target TEXT NOT NULL UNIQUE,
+            original_comment TEXT NOT NULL DEFAULT '',
             frontier INTEGER,
             phase TEXT NOT NULL,
             error TEXT NOT NULL DEFAULT '',
@@ -44,6 +45,15 @@ def install(con):
         CREATE INDEX IF NOT EXISTS stateful_rebuilds_phase
             ON stateful_rebuilds(phase,updated);
     """)
+    columns={
+        str(row[1])
+        for row in con.execute(
+            "PRAGMA table_info(stateful_rebuilds)")
+    }
+    if "original_comment" not in columns:
+        con.execute(
+            "ALTER TABLE stateful_rebuilds "
+            "ADD COLUMN original_comment TEXT NOT NULL DEFAULT ''")
 
 
 def _text(value,name):
@@ -87,13 +97,14 @@ def _row(row):
         new_task_id=str(row[3]),
         logical_target=str(row[4]),
         shadow_target=str(row[5]),
+        original_comment=str(row[6] or ""),
         frontier=(
-            None if row[6] is None
-            else int(row[6])),
-        phase=str(row[7]),
-        error=str(row[8] or ""),
-        created=float(row[9]),
-        updated=float(row[10]),
+            None if row[7] is None
+            else int(row[7])),
+        phase=str(row[8]),
+        error=str(row[9] or ""),
+        created=float(row[10]),
+        updated=float(row[11]),
     )
     if value["phase"] not in PHASES:
         raise RuntimeError(
@@ -113,8 +124,8 @@ def _row(row):
 def info(con,sink_key):
     row=con.execute("""
         SELECT sink_key,kind,old_task_id,new_task_id,
-               logical_target,shadow_target,frontier,phase,error,
-               created,updated
+               logical_target,shadow_target,original_comment,
+               frontier,phase,error,created,updated
         FROM stateful_rebuilds
         WHERE sink_key=?
     """,(_text(sink_key,"sink_key"),)).fetchone()
@@ -130,7 +141,7 @@ def maybe_info(con,sink_key):
 
 def begin(
         con,kind,sink_key,old_task_id,new_task_id,
-        logical_target,shadow=None
+        logical_target,shadow=None,original_comment=""
 ):
     kind=_text(kind,"kind")
     if kind not in {"aggregate","inner_join"}:
@@ -147,6 +158,8 @@ def begin(
         shadow_target(logical_target,new_task_id)
         if shadow is None
         else _text(shadow,"shadow_target"))
+    original_comment=str(
+        original_comment or "")
     if old_task_id==new_task_id:
         raise ValueError(
             "stateful rebuild requires a new task generation")
@@ -156,13 +169,14 @@ def begin(
     current=maybe_info(con,sink_key)
     expected=(
         kind,old_task_id,new_task_id,
-        logical_target,shadow)
+        logical_target,shadow,original_comment)
     if current is not None:
         actual=(
             current["kind"],current["old_task_id"],
             current["new_task_id"],
             current["logical_target"],
-            current["shadow_target"])
+            current["shadow_target"],
+            current["original_comment"])
         if actual!=expected:
             raise RuntimeError(
                 "stateful rebuild identity changed across restart "
@@ -176,12 +190,12 @@ def begin(
     con.execute("""
         INSERT INTO stateful_rebuilds(
             sink_key,kind,old_task_id,new_task_id,
-            logical_target,shadow_target,frontier,phase,error,
-            created,updated)
-        VALUES(?,?,?,?,?,?,NULL,'building_shadow','',?,?)
+            logical_target,shadow_target,original_comment,
+            frontier,phase,error,created,updated)
+        VALUES(?,?,?,?,?,?,?,NULL,'building_shadow','',?,?)
     """,(
         sink_key,kind,old_task_id,new_task_id,
-        logical_target,shadow,now,now))
+        logical_target,shadow,original_comment,now,now))
     return info(con,sink_key)
 
 
