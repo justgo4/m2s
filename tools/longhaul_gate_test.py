@@ -65,7 +65,11 @@ def summary():
 
 
 def workload():
-    elapsed=72*3600+1
+    source_schedule=72*3600
+    # Final drain/recovery is allowed to extend wall time beyond the source
+    # generation window. Throughput/sample density must still be measured
+    # against the scheduled source window.
+    elapsed=source_schedule+601
     tasks={
         "starrocks.agg_%03d" % index:30.0+index
         for index in range(1,11)
@@ -78,6 +82,7 @@ def workload():
         initial_rows=50_000_000,
         rows_per_second=50,
         duration_seconds=elapsed,
+        source_schedule_seconds=source_schedule,
         memory_mb=4096,
         resource_fingerprint=dict(
             architecture="x86_64",
@@ -161,8 +166,8 @@ def workload():
                 write_bytes=30*1024**3,
             ),
         },
-        live_rows=int(50*elapsed),
-        latency_samples=int(elapsed),
+        live_rows=int(50*source_schedule),
+        latency_samples=int(source_schedule),
         latency_p50_seconds=1.0,
         latency_p95_seconds=4.9,
         latency_p99_seconds=9.9,
@@ -369,6 +374,18 @@ def main():
         "source_rows_during_fault"]==[200,250]
     assert full["evidence"]["dynamic_tasks"]["ready"]==10
     assert full["evidence"]["latency_over_10_seconds"]==20
+    assert (
+        full["evidence"]["source_schedule_seconds"]
+        ==72*3600
+    )
+    assert (
+        full["evidence"]["observed_rows_per_second"]
+        ==50.0
+    )
+    assert (
+        full["evidence"]["latency_samples_per_second"]
+        ==1.0
+    )
     assert full["evidence"]["recovery_latency_samples"]==8
     assert full["evidence"]["debt"]["max_rowset"]==73
     assert full["evidence"]["resources"]["logical_cpus"]==8
@@ -555,6 +572,16 @@ def main():
     full=evaluate_workload(bad)
     assert not full["ok"]
     assert "fault_source_stalled" in full["failures"]
+
+    bad=workload()
+    bad["source_schedule_seconds"]=(
+        bad["duration_seconds"]+2)
+    full=evaluate_workload(bad)
+    assert not full["ok"]
+    assert (
+        "source_schedule_exceeds_elapsed"
+        in full["failures"]
+    )
 
     bad=workload()
     bad["live_rows"]=100
