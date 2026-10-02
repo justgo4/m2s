@@ -422,6 +422,11 @@ def evaluate_workload(
             "debt.stateful_payload_bytes")
         max_rowset=int(
             debt.get("max_rowset",-1))
+        rowset_red=_integer(
+            debt.get("rowset_red",0),
+            "debt.rowset_red")
+        version_recovery_active=bool(
+            debt.get("version_recovery_active",False))
         pending_bytes=_integer(
             debt.get("pending_bytes",0),
             "debt.pending_bytes")
@@ -436,8 +441,12 @@ def evaluate_workload(
             stateful_rows=stateful_rows,
             stateful_payload_bytes=stateful_payload_bytes,
             max_rowset=max_rowset,
+            rowset_red=rowset_red,
             per_table_max_rowset=dict(
                 debt.get("per_table_max_rowset") or {}),
+            per_table_version_recovery=dict(
+                debt.get("per_table_version_recovery") or {}),
+            version_recovery_active=version_recovery_active,
             pending_bytes=pending_bytes,
             prepared_budget_used=prepared_budget_used,
             field_overflow_rows=field_overflow_rows,
@@ -450,8 +459,14 @@ def evaluate_workload(
         ):
             failures.append(
                 "stateful_space_debt_unknown")
-        if max_rowset<0:
+        if max_rowset<0 or rowset_red<=0:
             failures.append("version_debt_unknown")
+        elif max_rowset>=rowset_red:
+            failures.append("rowset_red_exceeded")
+        if version_recovery_active:
+            failures.append("version_recovery_active")
+        if field_overflow_rows:
+            failures.append("field_overflow_rows")
         if require_drained and (
             pending_bytes
             or prepared_budget_used
