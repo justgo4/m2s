@@ -1010,19 +1010,25 @@ def _partition_digest_update(hasher,partition,rows):
 
 def _partitioned_exactness(
         source,cfg,tables,source_rows,target_rows,
+        source_total_rows,target_total_rows,
         partitions=None
 ):
-    """Compare complete projected rows in bounded key partitions.
-
-    The stable key columns are part of every row tuple. This keeps memory
-    bounded for the 50M profile while still detecting swaps/duplicates/deletes
-    that preserve COUNT/SUM/MIN/MAX summaries.
-    """
-    partitions=(
+    """Compare full projected rows and prove the partition scan covered all rows."""
+    partitions=list(
         range(1024)
         if partitions is None
-        else list(partitions)
+        else partitions
     )
+    partitions=[
+        int(value) for value in partitions
+    ]
+    if not partitions:
+        raise ValueError(
+            "exactness partitions cannot be empty")
+    if len(partitions)!=len(set(partitions)):
+        raise ValueError(
+            "exactness partitions must be unique")
+
     expected_hasher=hashlib.sha256()
     expected_rows=0
     checks={
@@ -1035,7 +1041,7 @@ def _partitioned_exactness(
     }
     for partition in partitions:
         expected=list(
-            source_rows(source,int(partition)))
+            source_rows(source,partition))
         expected_digest=_partition_digest_update(
             expected_hasher,partition,expected)
         expected_rows+=len(expected)
@@ -1043,7 +1049,7 @@ def _partitioned_exactness(
             key=str(table)
             actual=list(
                 target_rows(
-                    cfg,table,int(partition)))
+                    cfg,table,partition))
             actual_digest=_partition_digest_update(
                 checks[key]["hasher"],
                 partition,actual)
@@ -1053,7 +1059,7 @@ def _partitioned_exactness(
             )<8:
                 checks[key]["mismatches"].append(
                     dict(
-                        partition=int(partition),
+                        partition=partition,
                         expected_rows=len(expected),
                         actual_rows=len(actual),
                         expected_digest=expected_digest,
@@ -1061,29 +1067,56 @@ def _partitioned_exactness(
                         expected_sample=expected[:3],
                         actual_sample=actual[:3],
                     ))
+
     expected_digest=expected_hasher.hexdigest()
+    source_total=int(
+        source_total_rows(source))
+    source_uncovered=(
+        source_total-int(expected_rows))
     tables_out={}
     for table,value in checks.items():
         digest=value["hasher"].hexdigest()
+        total_rows=int(
+            target_total_rows(cfg,table))
+        uncovered_rows=(
+            total_rows-int(value["rows"]))
         tables_out[table]=dict(
             rows=int(value["rows"]),
+            total_rows=total_rows,
+            uncovered_rows=uncovered_rows,
             digest=digest,
             match=(
-                not value["mismatches"]
+                source_uncovered==0
+                and uncovered_rows==0
+                and not value["mismatches"]
                 and int(value["rows"])==expected_rows
                 and digest==expected_digest
             ),
             mismatches=value["mismatches"],
         )
+    coverage_complete=(
+        source_uncovered==0
+        and bool(tables_out)
+        and all(
+            int(item["uncovered_rows"])==0
+            for item in tables_out.values()
+        )
+    )
     return dict(
-        comparison="partitioned_full_rows_v1",
+        comparison="partitioned_full_rows_v2",
         partitions=len(partitions),
         expected_rows=int(expected_rows),
+        source_total_rows=source_total,
+        source_uncovered_rows=source_uncovered,
         expected_digest=expected_digest,
+        coverage_complete=coverage_complete,
         tables=tables_out,
-        all_match=bool(tables_out) and all(
-            item["match"]
-            for item in tables_out.values()
+        all_match=(
+            coverage_complete
+            and all(
+                item["match"]
+                for item in tables_out.values()
+            )
         ),
     )
 
@@ -1122,12 +1155,33 @@ def _event_rows_target(cfg,table,bucket):
     ]
 
 
+def _event_source_total_rows(source):
+    with source.cursor() as cur:
+        cur.execute(
+            "SELECT COUNT(*) FROM "
+            +DATABASE+".events")
+        return int(cur.fetchone()[0])
+
+
+def _target_total_rows(cfg,table):
+    rows,_=execute(
+        cfg,
+        "SELECT COUNT(*) FROM "
+        +DATABASE+"."+str(table))
+    if len(rows)!=1:
+        raise RuntimeError(
+            "exactness target count returned "
+            +str(len(rows))+" rows")
+    return int(rows[0][0])
+
+
 def event_exactness(
         source,cfg,tables=("events",),partitions=None
 ):
     return _partitioned_exactness(
         source,cfg,tables,
         _event_rows_source,_event_rows_target,
+        _event_source_total_rows,_target_total_rows,
         partitions=partitions)
 
 
@@ -1192,12 +1246,23 @@ def _join_rows_target(cfg,table,bucket):
     ]
 
 
+def _join_source_total_rows(source):
+    with source.cursor() as cur:
+        cur.execute(
+            "SELECT COUNT(*) "
+            "FROM "+DATABASE+".events e "
+            "INNER JOIN "+DATABASE+".dimensions d "
+            "ON e.bucket=d.bucket")
+        return int(cur.fetchone()[0])
+
+
 def join_exactness(
         source,cfg,tables,partitions=None
 ):
     return _partitioned_exactness(
         source,cfg,tables,
         _join_rows_source,_join_rows_target,
+        _join_source_total_rows,_target_total_rows,
         partitions=partitions)
 
 
