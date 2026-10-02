@@ -60,6 +60,14 @@ def main():
         dict(source=[("db.events",None)]))
     assert longhaul_workload.source_ready(
         dict(source=[("db.events",7)]))
+    assert longhaul_workload.dynamic_task_kind(
+        "aggregate",2)=="aggregate"
+    assert longhaul_workload.dynamic_task_kind(
+        "join",1)=="join"
+    assert longhaul_workload.dynamic_task_kind(
+        "mixed",1)=="aggregate"
+    assert longhaul_workload.dynamic_task_kind(
+        "mixed",2)=="join"
 
     certification=SimpleNamespace(
         **longhaul_workload.p11_profile.PARAMETERS,
@@ -188,6 +196,31 @@ def main():
     assert checks["expected_digest"]==longhaul_workload._rows_digest(
         expected)
 
+    join_expected=[
+        (0,2,10,10,"dim-0000","dim-0000"),
+        (1,3,20,20,"dim-0001","dim-0001"),
+    ]
+    with patch.object(
+        longhaul_workload,
+        "_join_rows_source",
+        return_value=join_expected
+    ), patch.object(
+        longhaul_workload,
+        "_join_rows_target",
+        side_effect=[
+            list(join_expected),
+            [
+                (0,2,10,10,"dim-0000","dim-0000"),
+                (1,3,20,21,"dim-0001","dim-0001"),
+            ],
+        ]
+    ):
+        join_checks=longhaul_workload.join_exactness(
+            object(),{},["join_000","join_002"])
+    assert join_checks["expected_rows"]==2
+    assert join_checks["tables"]["join_000"]["match"]
+    assert not join_checks["tables"]["join_002"]["match"]
+    assert not join_checks["all_match"]
 
     with tempfile.TemporaryDirectory(
         prefix="m2s-longhaul-workdir-test-"
@@ -319,7 +352,8 @@ def main():
 
     print(
         "longhaul_workload_test ok percentile interval_overlap clean_worktree_probe source_ready "
-        "per_transaction_sentinel continuous_source_during_fault crash_catchup aggregate_exactness "
+        "per_transaction_sentinel continuous_source_during_fault crash_catchup "
+        "mixed_task_selection aggregate_exactness join_exactness "
         "work_directory_retention certification_requires_persistent_workdir "
         "checkpoint_atomic_replace evidence_copy",
         flush=True,
