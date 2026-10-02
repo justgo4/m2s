@@ -35,6 +35,19 @@ def install(con):
             updated REAL NOT NULL);
         CREATE INDEX IF NOT EXISTS stateful_admission_decisions_admitted
             ON stateful_admission_decisions(admitted,updated,task_id);
+        CREATE TABLE IF NOT EXISTS stateful_admission_waiting(
+            task_id TEXT PRIMARY KEY,
+            plan_version INTEGER NOT NULL CHECK(plan_version>0),
+            sink_key TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            retry_count INTEGER NOT NULL DEFAULT 0 CHECK(retry_count>=0),
+            next_retry REAL NOT NULL DEFAULT 0,
+            created REAL NOT NULL,
+            updated REAL NOT NULL);
+        CREATE INDEX IF NOT EXISTS stateful_admission_waiting_due
+            ON stateful_admission_waiting(next_retry,plan_version,task_id);
+        CREATE INDEX IF NOT EXISTS stateful_admission_waiting_plan
+            ON stateful_admission_waiting(plan_version,task_id);
     """)
     columns={
         str(row[1])
@@ -334,6 +347,14 @@ def admit(con,additions,cfg=None):
                 reserved_state_bytes=(
                     limits["reserve_state_bytes"]
                     if ok else 0))
+        if ok and requested and _table_exists(
+            con,"stateful_admission_waiting"
+        ):
+            marks=",".join("?" for _ in requested)
+            con.execute(
+                "DELETE FROM stateful_admission_waiting "
+                "WHERE task_id IN ("+marks+")",
+                tuple(sorted(requested)))
         return dict(
             ok=ok,
             reason=reason,
@@ -399,6 +420,144 @@ def release_unregistered(
     return sorted(released)
 
 
+def queue_wait(
+        con,additions,plan_version,reason,
+        retry_seconds=5.0
+):
+    install(con)
+    additions=list(additions or ())
+    plan_version=int(plan_version)
+    if plan_version<=0:
+        raise ValueError(
+            "stateful admission wait plan_version must be positive")
+    retry_seconds=max(0.0,float(retry_seconds))
+    now=time.time()
+    next_retry=now+retry_seconds
+    queued=[]
+    with _write_transaction(con):
+        for item in additions:
+            task=dict(item.get("task") or {})
+            task_id=str(task.get("task_id") or "").strip()
+            sink=str(task.get("sink_key") or "").strip()
+            if not task_id or not sink:
+                raise ValueError(
+                    "stateful admission waiting task identity is incomplete")
+            con.execute("""
+                INSERT INTO stateful_admission_waiting(
+                    task_id,plan_version,sink_key,reason,
+                    retry_count,next_retry,created,updated)
+                VALUES(?,?,?,?,0,?,?,?)
+                ON CONFLICT(task_id) DO UPDATE SET
+                    plan_version=excluded.plan_version,
+                    sink_key=excluded.sink_key,
+                    reason=excluded.reason,
+                    retry_count=stateful_admission_waiting.retry_count+1,
+                    next_retry=excluded.next_retry,
+                    updated=excluded.updated
+            """,(
+                task_id,plan_version,sink,str(reason),
+                next_retry,now,now))
+            queued.append(task_id)
+    return sorted(queued)
+
+
+def waiting_plans(con,now=None,due_only=False):
+    if not _table_exists(
+        con,"stateful_admission_waiting"
+    ):
+        return []
+    now=time.time() if now is None else float(now)
+    where=(
+        " WHERE next_retry<=?"
+        if due_only else "")
+    params=(now,) if due_only else ()
+    rows=con.execute("""
+        SELECT plan_version,COUNT(*),MIN(next_retry),
+               MAX(retry_count),MIN(created),MAX(updated)
+        FROM stateful_admission_waiting
+    """+where+"""
+        GROUP BY plan_version
+        ORDER BY MIN(next_retry),plan_version
+    """,params).fetchall()
+    return [
+        dict(
+            plan_version=int(row[0]),
+            tasks=int(row[1]),
+            next_retry=float(row[2]),
+            retry_count=int(row[3]),
+            created=float(row[4]),
+            updated=float(row[5]),
+        )
+        for row in rows
+    ]
+
+
+def waiting_tasks(con,plan_version=None):
+    if not _table_exists(
+        con,"stateful_admission_waiting"
+    ):
+        return []
+    sql="""
+        SELECT task_id,plan_version,sink_key,reason,
+               retry_count,next_retry,created,updated
+        FROM stateful_admission_waiting
+    """
+    params=()
+    if plan_version is not None:
+        sql+=" WHERE plan_version=?"
+        params=(int(plan_version),)
+    sql+=" ORDER BY next_retry,plan_version,task_id"
+    return [
+        dict(
+            task_id=str(row[0]),
+            plan_version=int(row[1]),
+            sink_key=str(row[2]),
+            reason=str(row[3]),
+            retry_count=int(row[4]),
+            next_retry=float(row[5]),
+            created=float(row[6]),
+            updated=float(row[7]),
+        )
+        for row in con.execute(sql,params).fetchall()
+    ]
+
+
+def clear_wait(
+        con,additions=None,task_ids=None,
+        plan_version=None
+):
+    install(con)
+    ids={
+        str(value).strip()
+        for value in (task_ids or ())
+        if str(value).strip()
+    }
+    for item in additions or ():
+        task=dict(item.get("task") or {})
+        task_id=str(task.get("task_id") or "").strip()
+        if task_id:
+            ids.add(task_id)
+    with _write_transaction(con):
+        if ids:
+            marks=",".join("?" for _ in ids)
+            params=list(sorted(ids))
+            sql=(
+                "DELETE FROM stateful_admission_waiting "
+                "WHERE task_id IN ("+marks+")")
+            if plan_version is not None:
+                sql+=" AND plan_version=?"
+                params.append(int(plan_version))
+            cur=con.execute(sql,tuple(params))
+        elif plan_version is not None:
+            cur=con.execute(
+                "DELETE FROM stateful_admission_waiting "
+                "WHERE plan_version=?",
+                (int(plan_version),))
+        else:
+            return 0
+    return int(cur.rowcount)
+
+
 def decision_info(con,task_id):
     if not _table_exists(con,"stateful_admission_decisions"):
         raise KeyError("stateful admission decision does not exist")
@@ -425,10 +584,19 @@ def decision_info(con,task_id):
 
 def status(con):
     if not _table_exists(con,"stateful_admission_decisions"):
+        waiting=waiting_plans(con)
         return dict(
             decisions=0,admitted=0,rejected=0,
             reserved_pending_tasks=0,
-            reserved_state_bytes=0)
+            reserved_state_bytes=0,
+            waiting_tasks=sum(
+                int(item["tasks"]) for item in waiting),
+            waiting_plans=len(waiting),
+            next_retry=(
+                None if not waiting
+                else min(
+                    float(item["next_retry"])
+                    for item in waiting)))
     total,admitted,rejected=con.execute("""
         SELECT COUNT(*),
                COALESCE(SUM(admitted),0),
@@ -446,6 +614,7 @@ def status(con):
         if "reserved_state_bytes" in columns
         else {}
     )
+    waiting=waiting_plans(con)
     return dict(
         decisions=int(total),
         admitted=int(admitted),
@@ -453,4 +622,12 @@ def status(con):
         reserved_pending_tasks=len(pending),
         reserved_state_bytes=sum(
             int(value) for value in pending.values()),
+        waiting_tasks=sum(
+            int(item["tasks"]) for item in waiting),
+        waiting_plans=len(waiting),
+        next_retry=(
+            None if not waiting
+            else min(
+                float(item["next_retry"])
+                for item in waiting)),
     )
