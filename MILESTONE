@@ -1,0 +1,13 @@
+milestone: p11-preflight-v1
+purpose: fixed-sha preflight before 50m-50rps-72h certification
+includes:
+  - streamed full-table exactness oracle and strict gate evidence
+  - disk-backed source transaction capture
+  - disk-backed net-change apply staging
+  - set-wise source base apply
+scope:
+  - public baseline CI
+  - native contracts and isolated MySQL
+  - 8-cell MySQL-to-StarRocks E2E
+  - stateful lifecycle and merge quarantine
+note: this milestone is a preflight evidence point, not P11 production certification
