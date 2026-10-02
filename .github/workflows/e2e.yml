@@ -142,7 +142,7 @@ jobs:
           python tools/longhaul_workload.py --isolated --load-mode merge_async \
             --rows 5000 --rows-per-second 50 --duration-seconds 60 \
             --dynamic-tasks 2 --fault-every-seconds 20 --sample-seconds 0.5 \
-            --snapshot-rows 512 --memory-mb 2048 \
+            --snapshot-rows 512 --memory-mb 4096 \
             --mysql-resource-pid "$MYSQL_RESOURCE_PID" \
             --starrocks-fe-resource-pid "$STARROCKS_RESOURCE_PID" \
             --starrocks-be-resource-pid "$STARROCKS_RESOURCE_PID" \
