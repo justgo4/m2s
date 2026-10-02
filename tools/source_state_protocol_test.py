@@ -23,6 +23,31 @@ def open_db(path):
     return con
 
 
+def assert_gc_index_contract(directory):
+    path=os.path.join(
+        directory,"gc-index.sqlite3")
+    con=open_db(path)
+    sql=con.execute("""
+        SELECT sql FROM sqlite_master
+        WHERE type='index' AND name='source_versions_gc'
+    """).fetchone()
+    assert sql is not None
+    normalized=" ".join(str(sql[0]).split()).upper()
+    assert "ON SOURCE_VERSIONS(VALID_TO)" in normalized
+    assert "WHERE VALID_TO IS NOT NULL" in normalized
+    plan=" ".join(
+        str(row[3])
+        for row in con.execute("""
+            EXPLAIN QUERY PLAN
+            DELETE FROM source_versions
+            WHERE valid_to IS NOT NULL
+              AND valid_to<=?
+        """,(100,))
+    )
+    assert "source_versions_gc" in plan,plan
+    con.close()
+
+
 def source_schema():
     return pa.schema([
         pa.field("id", pa.int64()),
@@ -229,6 +254,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="m2s-source-state-") as td:
         assert_log_stats_migration(td)
         assert_apply_staging_atomicity(td)
+        assert_gc_index_contract(td)
         path = os.path.join(td, "state.sqlite3")
         con = open_db(path)
         source_state.register_relation(
@@ -375,7 +401,7 @@ def main():
         con.close()
 
     print(
-        "source_state_protocol_test ok fixed_w gc crash_replay "
+        "source_state_protocol_test ok fixed_w gc gc_index crash_replay "
         "consumer_frontier source_rate_migration",
         flush=True,
     )
