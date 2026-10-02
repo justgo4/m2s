@@ -379,6 +379,23 @@ def aggregate_subview_expected(source):
     ]
 
 
+def aggregate_subview_filtered_expected(source):
+    with source.cursor() as cur:
+        cur.execute(
+            "SELECT category,COUNT(*),SUM(amount) "
+            "FROM "+DATABASE+".orders "
+            "WHERE amount IS NOT NULL "
+            "GROUP BY category ORDER BY category")
+        rows=cur.fetchall()
+    return [
+        (
+            str(row[0]),int(row[1]),
+            normalize_decimal(row[2]),
+        )
+        for row in rows
+    ]
+
+
 def aggregate_subview_actual(cfg,table="agg_subview"):
     rows,_=execute(
         cfg,
