@@ -121,6 +121,35 @@ def main():
         con=j4.open_state(state)
         try:
             assert not stateful_admission.waiting_tasks(con)
+            # Supersession is independent of retry due time. A long-backoff
+            # stale plan must disappear as soon as a newer catalog version is
+            # authoritative, rather than lingering in durable status.
+            stateful_admission.queue_wait(
+                con,[task("wait-future","starrocks.wait_future")],
+                plan_version=7,reason="max_tasks",
+                retry_seconds=3600,max_retry_seconds=3600)
+        finally:
+            con.close()
+        with patch.object(
+            j4.cdc_catalog,"load_plan",
+            return_value=dict(
+                version=8,plan_hash="latest")
+        ), patch.object(
+            j4,"queue_hot_catalog_plan",
+            side_effect=AssertionError(
+                "future superseded plan must not be installed")
+        ):
+            result=j4.retry_waiting_stateful_admission(
+                cfg,runtime,now=0)
+        assert result==[dict(
+            status="superseded",
+            version=7,
+            latest_version=8,
+            cleared_tasks=1,
+        )],result
+        con=j4.open_state(state)
+        try:
+            assert not stateful_admission.waiting_tasks(con)
         finally:
             con.close()
 
@@ -188,7 +217,8 @@ def main():
     print(
         "stateful_admission_retry_test ok durable_defer "
         "superseded_plan_fence current_plan_retry "
-        "control_plane_nonfatal_wait bounded_retry_backoff plan_retry_reset",
+        "control_plane_nonfatal_wait bounded_retry_backoff plan_retry_reset "
+        "immediate_superseded_cleanup",
         flush=True,
     )
 
