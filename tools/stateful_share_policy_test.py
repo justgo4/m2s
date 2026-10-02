@@ -8,7 +8,9 @@ import sys
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 
+import aggregate_state
 import j4
+import join_state
 import stateful_share_policy
 
 
@@ -37,6 +39,89 @@ def main():
             VALUES('base_applied_seq','10')
         """)
         task=dict(task_id="follower")
+
+        aggregate_state.create_state(
+            con,"size-agg",
+            aggregate_state.aggregate_spec(
+                ["k"],[
+                    dict(
+                        output="n",
+                        function="count",
+                        input="*"),
+                ]),
+            0)
+        con.execute("""
+            INSERT INTO aggregate_groups(
+                state_id,key_blob,key_payload,row_count,accum_payload)
+            VALUES('size-agg',X'01',X'0203',1,X'040506')
+        """)
+        assert stateful_share_policy._state_stats(
+            con,"aggregate","size-agg"
+        )==dict(rows=1,payload_bytes=6)
+        con.execute("""
+            UPDATE aggregate_groups
+            SET accum_payload=X'04050607'
+            WHERE state_id='size-agg' AND key_blob=X'01'
+        """)
+        assert stateful_share_policy._state_stats(
+            con,"aggregate","size-agg"
+        )==dict(rows=1,payload_bytes=7)
+        con.execute("""
+            DELETE FROM aggregate_groups
+            WHERE state_id='size-agg' AND key_blob=X'01'
+        """)
+        assert stateful_share_policy._state_stats(
+            con,"aggregate","size-agg"
+        )==dict(rows=0,payload_bytes=0)
+
+        join_spec=dict(
+            format_version=1,
+            kind="inner_join_state",
+            sources=dict(
+                left=dict(
+                    relation="db.left",
+                    primary_key=["id"],
+                    join_key=["k"]),
+                right=dict(
+                    relation="db.right",
+                    primary_key=["id"],
+                    join_key=["k"]),
+            ),
+            projections=[
+                dict(
+                    output="v",
+                    source="left",
+                    column="v"),
+            ],
+            semantics=dict(
+                bag=True,nulls="sql",
+                retract="source_pk_pair_identity"),
+        )
+        join_state.create_state(
+            con,"size-join",join_spec,0)
+        con.execute("""
+            INSERT INTO join_rows(
+                state_id,side,pk_blob,join_blob,row_payload)
+            VALUES('size-join','left',X'01',X'0203',X'040506')
+        """)
+        assert stateful_share_policy._state_stats(
+            con,"inner_join","size-join"
+        )==dict(rows=1,payload_bytes=6)
+        con.execute("""
+            UPDATE join_rows
+            SET join_blob=NULL,row_payload=X'04050607'
+            WHERE state_id='size-join' AND side='left' AND pk_blob=X'01'
+        """)
+        assert stateful_share_policy._state_stats(
+            con,"inner_join","size-join"
+        )==dict(rows=1,payload_bytes=5)
+        con.execute("""
+            DELETE FROM join_rows
+            WHERE state_id='size-join' AND side='left' AND pk_blob=X'01'
+        """)
+        assert stateful_share_policy._state_stats(
+            con,"inner_join","size-join"
+        )==dict(rows=0,payload_bytes=0)
 
         exact=candidate(
             "leader-exact","state-exact",9,"exact",0)
@@ -197,8 +282,8 @@ def main():
 
     print(
         "stateful_share_policy_test ok off compatible adaptive "
-        "lag fanout surplus lazy_state_size state_size observed_visible_lag "
-        "durable_decision runtime_feedback",
+        "lag fanout surplus incremental_state_size lazy_state_size "
+        "state_size observed_visible_lag durable_decision runtime_feedback",
         flush=True,
     )
 
