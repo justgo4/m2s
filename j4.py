@@ -6080,14 +6080,38 @@ def catalog_activation_record(runtime, validation):
     return validation
 
 
+def stateful_rebuild_remote_marker(cfg,table):
+    table=str(table)
+    with mysql_connect(cfg,target=True) as target:
+        with target.cursor() as cur:
+            cur.execute("""
+                SELECT TABLE_COMMENT
+                FROM information_schema.TABLES
+                WHERE TABLE_SCHEMA=%s AND TABLE_NAME=%s
+            """,(cfg["sr"]["database"],table))
+            row=cur.fetchone()
+            if row is None:
+                return None
+            return str(row[0] or "")
+
+
 def ensure_stateful_rebuild_shadow(
         cfg,spec,existing_intent=False
 ):
     item=spec["new"]
     task=item["task"]
+    logical=str(spec["logical_target"])
     shadow=str(spec["shadow_target"])
+    marker=stateful_rebuild.remote_marker(
+        task["task_id"])
     with mysql_connect(cfg,target=True) as target:
         with target.cursor() as cur:
+            if not target_table_exists(
+                cur,cfg,logical
+            ):
+                raise RuntimeError(
+                    "stateful rebuild logical target disappeared: "
+                    +logical)
             exists=target_table_exists(
                 cur,cfg,shadow)
             if exists and not existing_intent:
@@ -6095,15 +6119,35 @@ def ensure_stateful_rebuild_shadow(
                     "stateful rebuild shadow target already exists without "
                     "durable ownership: "+shadow)
             if not exists:
-                ddl=stateful_catalog_runtime.target_ddl(
-                    shadow,task["target_schema"])
-                cur.execute(ddl)
+                cur.execute(
+                    "CREATE TABLE "
+                    +sql_name(shadow,True)
+                    +" LIKE "+sql_name(logical,True))
                 if not target_table_exists(
                     cur,cfg,shadow
                 ):
                     raise RuntimeError(
-                        "stateful rebuild shadow CREATE returned without "
+                        "stateful rebuild shadow CREATE LIKE returned without "
                         "a visible table: "+shadow)
+                cur.execute(
+                    "ALTER TABLE "
+                    +sql_name(shadow,True)
+                    +" COMMENT %s",
+                    (marker,))
+            else:
+                cur.execute("""
+                    SELECT TABLE_COMMENT
+                    FROM information_schema.TABLES
+                    WHERE TABLE_SCHEMA=%s AND TABLE_NAME=%s
+                """,(cfg["sr"]["database"],shadow))
+                row=cur.fetchone()
+                actual_marker=(
+                    "" if row is None
+                    else str(row[0] or ""))
+                if actual_marker!=marker:
+                    raise RuntimeError(
+                        "durable stateful rebuild shadow marker differs: "
+                        +shadow)
     actual=stateful_catalog_runtime.resolve_target_schema(
         cfg,item["kind"],task["ir"],shadow)
     if list(actual)!=list(task["target_schema"]):
