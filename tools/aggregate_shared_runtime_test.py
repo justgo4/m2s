@@ -87,7 +87,7 @@ def mapping(task):
     return dict(
         src_table="orders",
         sr_table=task["target_table"],
-        _sink_key=task["sink_key"],
+        _catalog_sink=task["sink_key"],
         _plan_version=task["plan_version"],
         primary_key="category",
         _output_columns=["category","n","total"],
