@@ -106,6 +106,19 @@ def workload():
         ),
         source_totals=[62_960_000,12345],
         target_totals=[62_960_000,12345],
+        debt=dict(
+            state_storage_bytes=512*1024*1024,
+            stateful_rows=1024,
+            stateful_payload_bytes=32*1024*1024,
+            max_rowset=73,
+            per_table_max_rowset={
+                "starrocks.events":73,
+                "starrocks.agg_000":31,
+            },
+            pending_bytes=0,
+            prepared_budget_used=0,
+            field_overflow_rows=0,
+        ),
         aggregate_checks=dict(
             expected_rows=1024,
             expected_digest="source-digest",
@@ -220,6 +233,19 @@ def main():
     assert full["ok"],full
     assert full["evidence"]["faults"]["count"]==2
     assert full["evidence"]["dynamic_tasks"]["ready"]==10
+    assert full["evidence"]["debt"]["max_rowset"]==73
+
+    bad=workload()
+    bad["debt"]["max_rowset"]=-1
+    full=evaluate_workload(bad)
+    assert not full["ok"]
+    assert "version_debt_unknown" in full["failures"]
+
+    bad=workload()
+    bad["debt"]={}
+    full=evaluate_workload(bad)
+    assert not full["ok"]
+    assert "debt_evidence_missing" in full["failures"]
 
     bad=workload()
     bad["faults"][0]["source_frontier"][
@@ -253,7 +279,7 @@ def main():
 
     print(
         "longhaul_gate_test ok 50m_72h 50rps p95_p99 cross_restart "
-        "drain stateful_health fail_closed",
+        "drain stateful_health space_version_debt fail_closed",
         flush=True,
     )
 
