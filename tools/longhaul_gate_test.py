@@ -242,7 +242,11 @@ def workload():
                 restart_seconds=4.0,
                 catchup_seconds=2.0,
                 join_right_update=dict(
-                    bucket=0,revision=1),
+                    bucket=0,revision=1,
+                    source_rows=48829,
+                    target_rows=48829,
+                    fully_visible=True,
+                    recovery_seconds=6.5),
                 source_frontier=dict(
                     log_durable_seq=500,
                     base_applied_seq=500)),
@@ -253,7 +257,11 @@ def workload():
                 restart_seconds=5.0,
                 catchup_seconds=3.0,
                 join_right_update=dict(
-                    bucket=1,revision=2),
+                    bucket=1,revision=2,
+                    source_rows=48828,
+                    target_rows=48828,
+                    fully_visible=True,
+                    recovery_seconds=7.0),
                 source_frontier=dict(
                     log_durable_seq=800,
                     base_applied_seq=800)),
@@ -443,8 +451,18 @@ def main():
         "source_rows_during_fault"]==[200,250]
     assert full["evidence"]["faults"][
         "join_right_updates"]==[
-            dict(bucket=0,revision=1),
-            dict(bucket=1,revision=2),
+            dict(
+                bucket=0,revision=1,
+                source_rows=48829,
+                target_rows=48829,
+                fully_visible=True,
+                recovery_seconds=6.5),
+            dict(
+                bucket=1,revision=2,
+                source_rows=48828,
+                target_rows=48828,
+                fully_visible=True,
+                recovery_seconds=7.0),
         ]
     assert full["evidence"]["dynamic_tasks"]["ready"]==10
     assert full["evidence"]["dynamic_tasks"]["mix"]=="mixed"
@@ -743,6 +761,36 @@ def main():
         in full["failures"]
     )
 
+    bad=workload()
+    bad["faults"][0]["join_right_update"].pop(
+        "recovery_seconds")
+    full=evaluate_workload(bad)
+    assert not full["ok"]
+    assert (
+        "join_right_fault_recovery_evidence_missing"
+        in full["failures"]
+    )
+
+    bad=workload()
+    bad["faults"][0]["join_right_update"][
+        "target_rows"]-=1
+    full=evaluate_workload(bad)
+    assert not full["ok"]
+    assert (
+        "join_right_fault_not_recovered"
+        in full["failures"]
+    )
+
+    bad=workload()
+    bad["faults"][1]["join_right_update"][
+        "revision"]=3
+    full=evaluate_workload(bad)
+    assert not full["ok"]
+    assert (
+        "join_right_fault_revision_sequence"
+        in full["failures"]
+    )
+
 
     bad=workload()
     bad["source_schedule_seconds"]=(
@@ -820,7 +868,7 @@ def main():
         "clean_worktree_gate persistent_workdir_gate independent_profile_parameter_gate "
         "topology_preflight_gate "
         "software_fingerprint healthy_observation_window "
-        "mixed_aggregate_join_exactness",
+        "mixed_aggregate_join_exactness join_right_full_recovery_gate",
         flush=True,
     )
 
