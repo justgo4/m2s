@@ -20,7 +20,120 @@ MODES={"compatible","off","adaptive"}
 
 
 def install(con):
+    size_table_exists=con.execute("""
+        SELECT 1 FROM sqlite_master
+        WHERE type='table' AND name='stateful_state_sizes'
+    """).fetchone() is not None
     con.executescript("""
+        CREATE TABLE IF NOT EXISTS stateful_state_sizes(
+            kind TEXT NOT NULL,
+            state_id TEXT NOT NULL,
+            rows INTEGER NOT NULL CHECK(rows>=0),
+            payload_bytes INTEGER NOT NULL CHECK(payload_bytes>=0),
+            PRIMARY KEY(kind,state_id));
+
+        CREATE TRIGGER IF NOT EXISTS aggregate_state_size_insert
+        AFTER INSERT ON aggregate_groups
+        BEGIN
+            INSERT INTO stateful_state_sizes(
+                kind,state_id,rows,payload_bytes)
+            VALUES(
+                'aggregate',NEW.state_id,1,
+                length(NEW.key_blob)+length(NEW.key_payload)
+                +length(NEW.accum_payload))
+            ON CONFLICT(kind,state_id) DO UPDATE SET
+                rows=stateful_state_sizes.rows+1,
+                payload_bytes=stateful_state_sizes.payload_bytes
+                    +excluded.payload_bytes;
+        END;
+        CREATE TRIGGER IF NOT EXISTS aggregate_state_size_delete
+        AFTER DELETE ON aggregate_groups
+        BEGIN
+            UPDATE stateful_state_sizes
+            SET rows=rows-1,
+                payload_bytes=payload_bytes-(
+                    length(OLD.key_blob)+length(OLD.key_payload)
+                    +length(OLD.accum_payload))
+            WHERE kind='aggregate' AND state_id=OLD.state_id;
+            DELETE FROM stateful_state_sizes
+            WHERE kind='aggregate' AND state_id=OLD.state_id
+              AND rows=0;
+        END;
+        CREATE TRIGGER IF NOT EXISTS aggregate_state_size_update
+        AFTER UPDATE ON aggregate_groups
+        BEGIN
+            UPDATE stateful_state_sizes
+            SET rows=rows-1,
+                payload_bytes=payload_bytes-(
+                    length(OLD.key_blob)+length(OLD.key_payload)
+                    +length(OLD.accum_payload))
+            WHERE kind='aggregate' AND state_id=OLD.state_id;
+            DELETE FROM stateful_state_sizes
+            WHERE kind='aggregate' AND state_id=OLD.state_id
+              AND rows=0;
+            INSERT INTO stateful_state_sizes(
+                kind,state_id,rows,payload_bytes)
+            VALUES(
+                'aggregate',NEW.state_id,1,
+                length(NEW.key_blob)+length(NEW.key_payload)
+                +length(NEW.accum_payload))
+            ON CONFLICT(kind,state_id) DO UPDATE SET
+                rows=stateful_state_sizes.rows+1,
+                payload_bytes=stateful_state_sizes.payload_bytes
+                    +excluded.payload_bytes;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS join_state_size_insert
+        AFTER INSERT ON join_rows
+        BEGIN
+            INSERT INTO stateful_state_sizes(
+                kind,state_id,rows,payload_bytes)
+            VALUES(
+                'inner_join',NEW.state_id,1,
+                length(NEW.pk_blob)+COALESCE(length(NEW.join_blob),0)
+                +length(NEW.row_payload))
+            ON CONFLICT(kind,state_id) DO UPDATE SET
+                rows=stateful_state_sizes.rows+1,
+                payload_bytes=stateful_state_sizes.payload_bytes
+                    +excluded.payload_bytes;
+        END;
+        CREATE TRIGGER IF NOT EXISTS join_state_size_delete
+        AFTER DELETE ON join_rows
+        BEGIN
+            UPDATE stateful_state_sizes
+            SET rows=rows-1,
+                payload_bytes=payload_bytes-(
+                    length(OLD.pk_blob)+COALESCE(length(OLD.join_blob),0)
+                    +length(OLD.row_payload))
+            WHERE kind='inner_join' AND state_id=OLD.state_id;
+            DELETE FROM stateful_state_sizes
+            WHERE kind='inner_join' AND state_id=OLD.state_id
+              AND rows=0;
+        END;
+        CREATE TRIGGER IF NOT EXISTS join_state_size_update
+        AFTER UPDATE ON join_rows
+        BEGIN
+            UPDATE stateful_state_sizes
+            SET rows=rows-1,
+                payload_bytes=payload_bytes-(
+                    length(OLD.pk_blob)+COALESCE(length(OLD.join_blob),0)
+                    +length(OLD.row_payload))
+            WHERE kind='inner_join' AND state_id=OLD.state_id;
+            DELETE FROM stateful_state_sizes
+            WHERE kind='inner_join' AND state_id=OLD.state_id
+              AND rows=0;
+            INSERT INTO stateful_state_sizes(
+                kind,state_id,rows,payload_bytes)
+            VALUES(
+                'inner_join',NEW.state_id,1,
+                length(NEW.pk_blob)+COALESCE(length(NEW.join_blob),0)
+                +length(NEW.row_payload))
+            ON CONFLICT(kind,state_id) DO UPDATE SET
+                rows=stateful_state_sizes.rows+1,
+                payload_bytes=stateful_state_sizes.payload_bytes
+                    +excluded.payload_bytes;
+        END;
+
         CREATE TABLE IF NOT EXISTS stateful_share_decisions(
             task_id TEXT PRIMARY KEY,
             kind TEXT NOT NULL,
@@ -56,6 +169,28 @@ def install(con):
             ON stateful_share_preferences(
                 preferred_leader_task_id,task_id);
     """)
+    if not size_table_exists:
+        con.execute("""
+            INSERT INTO stateful_state_sizes(
+                kind,state_id,rows,payload_bytes)
+            SELECT 'aggregate',state_id,COUNT(*),
+                   COALESCE(SUM(
+                       length(key_blob)+length(key_payload)
+                       +length(accum_payload)),0)
+            FROM aggregate_groups
+            GROUP BY state_id
+        """)
+        con.execute("""
+            INSERT INTO stateful_state_sizes(
+                kind,state_id,rows,payload_bytes)
+            SELECT 'inner_join',state_id,COUNT(*),
+                   COALESCE(SUM(
+                       length(pk_blob)
+                       +COALESCE(length(join_blob),0)
+                       +length(row_payload)),0)
+            FROM join_rows
+            GROUP BY state_id
+        """)
 
 
 def _text(value,name):
@@ -138,29 +273,18 @@ def _observed_visible_lag(con,kind,leader_task_id):
 
 
 def _state_stats(con,kind,state_id):
+    kind=str(kind)
     state_id=str(state_id)
-    if kind=="aggregate":
-        row=con.execute("""
-            SELECT COUNT(*),
-                   COALESCE(SUM(
-                       length(key_blob)+length(key_payload)
-                       +length(accum_payload)),0)
-            FROM aggregate_groups
-            WHERE state_id=?
-        """,(state_id,)).fetchone()
-    elif kind=="inner_join":
-        row=con.execute("""
-            SELECT COUNT(*),
-                   COALESCE(SUM(
-                       length(pk_blob)
-                       +COALESCE(length(join_blob),0)
-                       +length(row_payload)),0)
-            FROM join_rows
-            WHERE state_id=?
-        """,(state_id,)).fetchone()
-    else:
+    if kind not in {"aggregate","inner_join"}:
         raise ValueError(
-            "unsupported stateful sharing kind: "+str(kind))
+            "unsupported stateful sharing kind: "+kind)
+    row=con.execute("""
+        SELECT rows,payload_bytes
+        FROM stateful_state_sizes
+        WHERE kind=? AND state_id=?
+    """,(kind,state_id)).fetchone()
+    if row is None:
+        return dict(rows=0,payload_bytes=0)
     return dict(
         rows=int(row[0]),
         payload_bytes=int(row[1]),
