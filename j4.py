@@ -9834,6 +9834,142 @@ def stateful_rebuild_try_cutover(
     return True
 
 
+def recover_stateful_rebuilds_startup(
+        con,cfg,compiled_stateful,fingerprint
+):
+    records=stateful_rebuild.active(con)
+    if not records:
+        return dict(
+            compiled=list(compiled_stateful),
+            worker_items=list(compiled_stateful),
+            protected=list(compiled_stateful),
+            rebuild_specs=[],
+            recovered_cutover=False)
+    if len(records)!=1:
+        raise RuntimeError(
+            "startup recovery supports one active stateful rebuild at a time")
+    rebuild=records[0]
+    by_task={
+        item["task"]["task_id"]:item
+        for item in compiled_stateful
+    }
+    new_item=by_task.get(
+        rebuild["new_task_id"])
+    if new_item is None:
+        raise RuntimeError(
+            "published catalog does not contain durable rebuild generation "
+            +rebuild["new_task_id"])
+    if (
+        str(new_item["kind"])!=rebuild["kind"]
+        or new_item["task"]["sink_key"]!=rebuild["sink_key"]
+        or new_item["task"]["target_table"]!=rebuild["logical_target"]
+    ):
+        raise RuntimeError(
+            "published rebuild generation identity changed across restart")
+    old_task=stateful_durable_task(
+        con,rebuild["kind"],
+        rebuild["old_task_id"])
+    old_item=stateful_catalog_runtime.item_from_durable(
+        rebuild["kind"],old_task)
+    spec=dict(
+        sink=rebuild["sink_key"],
+        old=old_item,
+        new=new_item,
+        shadow_target=rebuild["shadow_target"],
+        logical_target=rebuild["logical_target"],
+    )
+
+    phase=rebuild["phase"]
+    if phase in {
+        "building_shadow","fencing","ready_to_swap"
+    }:
+        remote=stateful_rebuild_remote_state(
+            cfg,rebuild)
+        if (
+            phase=="ready_to_swap"
+            and remote=="swapped"
+        ):
+            rebuild=stateful_rebuild.mark_swapped(
+                con,rebuild["sink_key"])
+            phase="swapped"
+        elif remote!="shadow":
+            raise RuntimeError(
+                "stateful rebuild remote target was swapped before durable "
+                "ready_to_swap phase")
+
+    if phase in {"swapped","cleanup"}:
+        if phase=="swapped":
+            with state_transaction(con):
+                meta_set(
+                    con,"active_plan_version",
+                    int(cfg.get("catalog_version",0)))
+                meta_set(
+                    con,"fingerprint",
+                    fingerprint)
+                meta_set(
+                    con,"plan_history_mode",
+                    "stateful_shadow_rebuild")
+                stateful_rebuild.mark_cleanup(
+                    con,rebuild["sink_key"])
+            rebuild=stateful_rebuild.info(
+                con,rebuild["sink_key"])
+        if old_task["status"] not in {
+            "retired","failed"
+        }:
+            stateful_catalog_runtime.retire_task(
+                con,cfg,rebuild["kind"],
+                old_task)
+        stateful_rebuild_cleanup_remote(
+            cfg,rebuild)
+        stateful_rebuild.mark_complete(
+            con,rebuild["sink_key"])
+        log(
+            "STATEFUL REBUILD RECOVERED CUTOVER sink=%s new=%s"
+            % (
+                rebuild["sink_key"],
+                rebuild["new_task_id"]))
+        return dict(
+            compiled=list(compiled_stateful),
+            worker_items=list(compiled_stateful),
+            protected=list(compiled_stateful),
+            rebuild_specs=[],
+            recovered_cutover=True)
+
+    logical_mapping=dict(
+        new_item["mapping"])
+    shadow_mapping=dict(
+        logical_mapping)
+    shadow_mapping["sr_table"]=str(
+        rebuild["shadow_target"])
+    new_item=dict(new_item)
+    new_item["logical_mapping"]=logical_mapping
+    new_item["mapping"]=shadow_mapping
+    new_item["shadow_target"]=rebuild[
+        "shadow_target"]
+    new_item["rebuild"]=True
+    spec["new"]=new_item
+    ensure_stateful_rebuild_shadow(
+        cfg,spec,existing_intent=True)
+    registered=stateful_catalog_runtime.register_compiled(
+        con,[new_item])[0]
+    spec["new"]=registered
+    final=[]
+    for item in compiled_stateful:
+        if item["task"]["task_id"]==rebuild[
+            "new_task_id"
+        ]:
+            final.append(registered)
+        else:
+            final.append(item)
+    workers=list(final)+[old_item]
+    return dict(
+        compiled=final,
+        worker_items=workers,
+        protected=workers,
+        rebuild_specs=[spec],
+        recovered_cutover=False)
+
+
 def stateful_rebuild_guarded_step(
         con,cfg,runtime,item,runner,mapping,
         bootstrap_limit
