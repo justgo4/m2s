@@ -69,6 +69,47 @@ def main():
     assert longhaul_workload.dynamic_task_kind(
         "mixed",2)=="join"
 
+    class FakeCursor:
+        def __init__(self,rowcount=1):
+            self.rowcount=int(rowcount)
+            self.calls=[]
+        def __enter__(self):
+            return self
+        def __exit__(self,*_):
+            return False
+        def execute(self,sql,args):
+            self.calls.append((sql,args))
+
+    class FakeSource:
+        def __init__(self,rowcount=1):
+            self.cur=FakeCursor(rowcount)
+            self.commits=0
+        def cursor(self):
+            return self.cur
+        def commit(self):
+            self.commits+=1
+
+    fake_source=FakeSource()
+    mutation=longhaul_workload.mutate_join_right(
+        fake_source,2,5000)
+    assert mutation==dict(
+        bucket=1,revision=2,
+        label="fault-000002-bucket-0001")
+    assert fake_source.commits==1
+    assert len(fake_source.cur.calls)==1
+    assert fake_source.cur.calls[0][1]==(
+        "fault-000002-bucket-0001",1)
+
+    failed_source=FakeSource(rowcount=0)
+    try:
+        longhaul_workload.mutate_join_right(
+            failed_source,1,1)
+        raise AssertionError(
+            "missing JOIN dimension row was accepted")
+    except RuntimeError:
+        pass
+    assert failed_source.commits==0
+
     formal_budget=longhaul_workload.topology_resource_budget(
         memory_mb=8192,
         cpu_cap=8,
@@ -382,7 +423,8 @@ def main():
     print(
         "longhaul_workload_test ok percentile interval_overlap clean_worktree_probe source_ready "
         "per_transaction_sentinel continuous_source_during_fault crash_catchup "
-        "mixed_task_selection topology_resource_budget aggregate_exactness join_exactness "
+        "mixed_task_selection join_right_fault_mutation topology_resource_budget "
+        "aggregate_exactness join_exactness "
         "work_directory_retention certification_requires_persistent_workdir "
         "checkpoint_atomic_replace evidence_copy",
         flush=True,
