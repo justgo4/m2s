@@ -233,6 +233,7 @@ def workload():
         drain_timeout_seconds=1800.0,
         checkpoint_seconds=300.0,
         dynamic_task_ready_seconds=tasks,
+        join_right_updates=2,
         faults=[
             dict(
                 sequence=100,
@@ -240,6 +241,8 @@ def workload():
                 source_rows_during_fault=200,
                 restart_seconds=4.0,
                 catchup_seconds=2.0,
+                join_right_update=dict(
+                    bucket=0,revision=1),
                 source_frontier=dict(
                     log_durable_seq=500,
                     base_applied_seq=500)),
@@ -249,6 +252,8 @@ def workload():
                 source_rows_during_fault=250,
                 restart_seconds=5.0,
                 catchup_seconds=3.0,
+                join_right_update=dict(
+                    bucket=1,revision=2),
                 source_frontier=dict(
                     log_durable_seq=800,
                     base_applied_seq=800)),
@@ -436,6 +441,11 @@ def main():
     assert full["evidence"]["faults"]["count"]==2
     assert full["evidence"]["faults"][
         "source_rows_during_fault"]==[200,250]
+    assert full["evidence"]["faults"][
+        "join_right_updates"]==[
+            dict(bucket=0,revision=1),
+            dict(bucket=1,revision=2),
+        ]
     assert full["evidence"]["dynamic_tasks"]["ready"]==10
     assert full["evidence"]["dynamic_tasks"]["mix"]=="mixed"
     assert full["evidence"]["dynamic_tasks"]["aggregate_ready"]==5
@@ -716,6 +726,23 @@ def main():
     full=evaluate_workload(bad)
     assert not full["ok"]
     assert "fault_source_stalled" in full["failures"]
+    bad=workload()
+    bad["faults"][0].pop(
+        "join_right_update")
+    bad["join_right_updates"]=1
+    full=evaluate_workload(bad)
+    assert not full["ok"]
+    assert "join_right_fault_coverage" in full["failures"]
+
+    bad=workload()
+    bad.pop("join_right_updates")
+    full=evaluate_workload(bad)
+    assert not full["ok"]
+    assert (
+        "join_right_fault_evidence_missing"
+        in full["failures"]
+    )
+
 
     bad=workload()
     bad["source_schedule_seconds"]=(
