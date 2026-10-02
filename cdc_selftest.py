@@ -225,10 +225,13 @@ def merge_async_selftest(directory, engine, mapping, cfg):
             assert headers["merge_commit_async"] == "true"
             assert headers["merge_commit_interval_ms"] == "250"
             assert headers["merge_commit_parallel"] == "2"
-            assert headers["label"].startswith("cdc_")
-            requests.append((headers["label"],payload))
-            return 200,dict(Status="Success",TxnId=987,Label="merge_server_label",
-                            RequestId=headers["label"],LoadBytes=len(payload),LeftMergeTimeMs=100)
+            assert "label" not in headers
+            requests.append((dict(headers),payload))
+            return 200,dict(
+                Status="Success",TxnId=987,
+                Label="merge_server_label",
+                RequestId="merge-server-request",
+                LoadBytes=len(payload),LeftMergeTimeMs=100)
 
         def fake_wait(config, txn_id, stop):
             assert txn_id == 987
@@ -271,8 +274,11 @@ def merge_async_selftest(directory, engine, mapping, cfg):
 
         attempts = []
         def lost_response(handle, config, url, payload=None, headers=None, stop=None, method=None):
-            attempts.append(headers["label"])
-            raise pycurl.error(pycurl.E_RECV_ERROR,"response lost after request body")
+            assert "label" not in headers
+            attempts.append(dict(headers))
+            raise pycurl.error(
+                pycurl.E_RECV_ERROR,
+                "response lost after request body")
 
         vars(cdc)["curl_request"] = lost_response
         try:
