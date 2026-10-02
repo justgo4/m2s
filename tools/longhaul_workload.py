@@ -184,6 +184,8 @@ def setup_catalog(
         CDC_WRITE_WORKERS_MIN=1,
         CDC_WRITE_WORKERS_INITIAL=2,
         CDC_WRITE_WORKERS_MAX=8,
+        CDC_ROWSET_YELLOW=500,
+        CDC_ROWSET_RED=700,
         CDC_SNAPSHOT_WORKERS=2,
         CDC_SNAPSHOT_ROWS=int(snapshot_rows),
         CDC_SNAPSHOT_READ_AHEAD_GROUPS=2,
@@ -592,9 +594,12 @@ def collect_final_debt(state_path):
 
     tables=dict(summary.get("tables") or {})
     per_table_rowset={}
+    per_table_version_recovery={}
     for table,value in sorted(tables.items()):
         per_table_rowset[str(table)]=int(
             (value or {}).get("max_rowset",-1))
+        per_table_version_recovery[str(table)]=bool(
+            (value or {}).get("version_recovery",False))
     max_rowset=(
         max(per_table_rowset.values())
         if per_table_rowset else -1)
@@ -624,7 +629,11 @@ def collect_final_debt(state_path):
         stateful_payload_bytes=int(
             stateful_payload_bytes),
         max_rowset=int(max_rowset),
+        rowset_red=700,
         per_table_max_rowset=per_table_rowset,
+        per_table_version_recovery=per_table_version_recovery,
+        version_recovery_active=any(
+            per_table_version_recovery.values()),
         pending_bytes=int(
             state.get("pending_bytes",0)),
         prepared_budget_used=int(
