@@ -572,7 +572,13 @@ def final_run_summary(runtime, cfg, prepared, con, reason):
             prepared_budget_used=prepared_bytes+reserved_bytes,inflight=inflight,
             oldest_queue_seconds=max(0,now-pending[2]) if pending[2] is not None else 0,
             durable_position=f"{read[0]}:{read[1]}",field_overflow_rows=overflows,
-            merge_uncertain_rows=uncertain,errors=list(runtime.get("errors",[])),
+            merge_uncertain_rows=uncertain,
+            source_apply_pending_bytes=source_state.apply_pending_bytes(con),
+            source_apply_pending_bytes_max=int(
+                runtime.get("source_apply_pending_bytes_max",0)),
+            source_apply_backpressure_count=int(
+                runtime.get("source_apply_backpressure_count",0)),
+            errors=list(runtime.get("errors",[])),
             catalog_activation=dict(runtime.get("catalog_activation",{})),
             quarantined_tables=dict(runtime.get("quarantined_tables",{})),
             health="degraded" if runtime.get("quarantined_tables") else "normal",
@@ -9697,14 +9703,30 @@ def capture_binlog_native(cfg, prepared, runtime):
                                         runtime,activated)
                                     by_sink = activated["by_table"]
                                     by_source = activated["by_source"]
-                            while (
-                                shared_source_state
-                                and source_state.apply_pending_bytes(con)
-                                >=cfg["source_apply_max_pending_bytes"]
-                                and not stop.is_set()
-                            ):
-                                runtime["source_apply_event"].set()
-                                stop.wait(0.02)
+                            if shared_source_state:
+                                source_apply_pending=(
+                                    source_state.apply_pending_bytes(con))
+                                runtime["source_apply_pending_bytes_max"]=max(
+                                    int(runtime.get(
+                                        "source_apply_pending_bytes_max",0)),
+                                    int(source_apply_pending))
+                                if (
+                                    source_apply_pending
+                                    >=cfg["source_apply_max_pending_bytes"]
+                                ):
+                                    runtime[
+                                        "source_apply_backpressure_count"
+                                    ]=int(runtime.get(
+                                        "source_apply_backpressure_count",0))+1
+                                while (
+                                    source_apply_pending
+                                    >=cfg["source_apply_max_pending_bytes"]
+                                    and not stop.is_set()
+                                ):
+                                    runtime["source_apply_event"].set()
+                                    stop.wait(0.02)
+                                    source_apply_pending=(
+                                        source_state.apply_pending_bytes(con))
                             while meta_get(con,"pending_bytes",0) >= cfg["max_backlog_bytes"] and not stop.is_set():
                                 stop.wait(0.05)
                         elif not in_transaction:
@@ -11759,6 +11781,11 @@ def run_cdc(
         )
         runtime = dict(stop=control["stop"],reader_ready=threading.Event(),errors=[],
                        source_apply_event=threading.Event(),
+                       source_apply_backpressure_count=0,
+                       source_apply_pending_bytes_max=(
+                           source_state.apply_pending_bytes(con)
+                           if cfg.get("shared_source_state",False)
+                           else 0),
                        error_lock=threading.Lock(),stream=None,source_uuid=str(source_uuid),source_seen=now,
                        source_data_seen=now,heartbeat_count=0,cdc_transactions=0,
                        load_events=load_events,pressure_until={mapping_key(m):0 for m in worker_mappings},
@@ -12034,6 +12061,9 @@ def run_cdc(
                     f"heartbeats={runtime['heartbeat_count']} cdc_transactions={runtime['cdc_transactions']} "
                     f"reader_state={runtime.get('reader_state','unknown')} "
                     f"reader_retries={runtime.get('reader_retries',0)} "
+                    f"source_apply_pending_bytes={source_state.apply_pending_bytes(con)} "
+                    f"source_apply_pending_bytes_max={runtime.get('source_apply_pending_bytes_max',0)} "
+                    f"source_apply_backpressure_count={runtime.get('source_apply_backpressure_count',0)} "
                     f"active_plan={runtime_active_version(runtime)} "
                     f"pending_plan={(runtime.get('pending_plan') or {}).get('version',0)} "
                     f"shared_selected={sharing_status['selected']} "
@@ -12055,6 +12085,14 @@ def run_cdc(
                     heartbeats=runtime["heartbeat_count"],cdc_transactions=runtime["cdc_transactions"],
                     reader_state=runtime.get("reader_state","unknown"),
                     reader_retries=int(runtime.get("reader_retries",0)),
+                    source_apply_pending_bytes=(
+                        source_state.apply_pending_bytes(con)),
+                    source_apply_pending_bytes_max=int(
+                        runtime.get(
+                            "source_apply_pending_bytes_max",0)),
+                    source_apply_backpressure_count=int(
+                        runtime.get(
+                            "source_apply_backpressure_count",0)),
                     active_plan_version=runtime_active_version(runtime),
                     catalog_activation=dict(runtime.get("catalog_activation",{})),
                     stateful_sharing=dict(sharing_status),
