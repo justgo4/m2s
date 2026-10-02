@@ -53,6 +53,13 @@ def _text(value,name):
     return value
 
 
+def remote_marker(new_task_id):
+    new_task_id=_text(
+        new_task_id,"new_task_id")
+    return "j4-rebuild-"+hashlib.sha256(
+        new_task_id.encode("utf-8")).hexdigest()[:24]
+
+
 def shadow_target(logical_target,new_task_id):
     logical_target=_text(
         logical_target,"logical_target")
