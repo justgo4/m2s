@@ -11911,7 +11911,10 @@ def durable_status_snapshot(state_path):
         ):
             admission=stateful_admission.status(con)
 
-        jobs=dict(active=0,deliveries=0,invisible_parts=0)
+        jobs=dict(
+            active=0,deliveries=0,invisible_parts=0,
+            merge_uncertain=0,merge_replay_safe=0,
+            merge_replay_unsafe=0,merge_unsafe_tables=0)
         if _status_table_exists(con,"active_jobs"):
             jobs["active"]=int(con.execute(
                 "SELECT COUNT(*) FROM active_jobs"
@@ -11930,6 +11933,36 @@ def durable_status_snapshot(state_path):
             jobs["invisible_parts"]=int(con.execute(
                 "SELECT COUNT(*) FROM load_parts WHERE visible=0"
             ).fetchone()[0])
+        if _status_table_exists(con,"merge_uncertain"):
+            uncertain_columns={
+                str(row[1])
+                for row in con.execute(
+                    "PRAGMA table_info(merge_uncertain)"
+                ).fetchall()
+            }
+            total=int(con.execute(
+                "SELECT COUNT(*) FROM merge_uncertain"
+            ).fetchone()[0])
+            if "replay_safe" in uncertain_columns:
+                safe=int(con.execute("""
+                    SELECT COALESCE(SUM(replay_safe),0)
+                    FROM merge_uncertain
+                """).fetchone()[0])
+                unsafe_tables=int(con.execute("""
+                    SELECT COUNT(DISTINCT table_name)
+                    FROM merge_uncertain
+                    WHERE replay_safe=0
+                """).fetchone()[0])
+            else:
+                safe=0
+                unsafe_tables=int(con.execute("""
+                    SELECT COUNT(DISTINCT table_name)
+                    FROM merge_uncertain
+                """).fetchone()[0])
+            jobs["merge_uncertain"]=total
+            jobs["merge_replay_safe"]=safe
+            jobs["merge_replay_unsafe"]=total-safe
+            jobs["merge_unsafe_tables"]=unsafe_tables
 
         physical=dict(
             states=0,refs=0,pins=0,
