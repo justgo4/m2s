@@ -112,6 +112,9 @@ def workload():
             "mysql":dict(
                 supported=True,
                 scope_stable=True,
+                limits_stable=True,
+                cpu_quota_cores=2.0,
+                memory_limit_bytes=4*1024**3,
                 mode="cgroup_v2",
                 scope_fingerprint="mysql-scope",
                 selection_source="listen_port",
@@ -125,6 +128,9 @@ def workload():
             "starrocks_fe":dict(
                 supported=True,
                 scope_stable=True,
+                limits_stable=True,
+                cpu_quota_cores=2.0,
+                memory_limit_bytes=4*1024**3,
                 mode="cgroup_v2",
                 scope_fingerprint="starrocks-fe-scope",
                 selection_source="listen_port",
@@ -138,6 +144,9 @@ def workload():
             "starrocks_be":dict(
                 supported=True,
                 scope_stable=True,
+                limits_stable=True,
+                cpu_quota_cores=2.0,
+                memory_limit_bytes=4*1024**3,
                 mode="cgroup_v2",
                 scope_fingerprint="starrocks-be-scope",
                 selection_source="listen_port",
@@ -368,6 +377,18 @@ def main():
         =="cgroup_v2"
     )
     assert (
+        full["evidence"]["service_resources"]["mysql"][
+            "limits_stable"]
+    )
+    assert (
+        full["evidence"]["service_resources"]["mysql"][
+            "cpu_quota_cores"]==2.0
+    )
+    assert (
+        full["evidence"]["service_resources"]["mysql"][
+            "memory_limit_bytes"]==4*1024**3
+    )
+    assert (
         full["evidence"]["pipeline_resources"]["unique_service_scopes"]
         ==3
     )
@@ -394,6 +415,12 @@ def main():
     full=evaluate_workload(bad)
     assert not full["ok"]
     assert "starrocks_be_resource_scope_unstable" in full["failures"]
+
+    bad=workload()
+    bad["service_resources"]["mysql"]["limits_stable"]=False
+    full=evaluate_workload(bad)
+    assert not full["ok"]
+    assert "mysql_resource_limits_unstable" in full["failures"]
 
     bad=workload()
     bad["service_resources"]["starrocks_fe"]["scope_fingerprint"]=(
@@ -533,7 +560,7 @@ def main():
         "healthy_recovery_latency drain stateful_health space_version_debt "
         "rowset_recovery overflow_fail_closed reproducible_resource_fingerprint "
         "daemon_process_resource_evidence daemon_rss_budget source_sink_resource_evidence "
-        "scope_overlap_fail_closed software_fingerprint",
+        "service_limit_drift_fail_closed scope_overlap_fail_closed software_fingerprint",
         flush=True,
     )
 
