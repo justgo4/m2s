@@ -237,31 +237,17 @@ python tools/longhaul_gate.py /data/m2s-p11-run/longhaul-workload.json \
 | 大源事务 source parts 尚未落盘 | native reader 现用 `SpooledTemporaryFile`、顺序 source-part record 与大小/磁盘门禁；`commit_spool()` 在同一 SQLite 事务中迭代 parts、记录 source log/jobs、推进 cursor，保持截断失败回滚边界 | 下述 base apply 的整事务内存放大仍存在；本轮没有运行需 Arrow 的 spool 合同 |
 | 连续 push 取消昂贵 E2E | 新增 `milestone.yml`，复用 baseline/native/E2E，milestone 子 workflow concurrency 按 SHA 分组，产出同版本 manifest | workflow 已存在不等于这份 manifest 已全绿；其 `certified` 只表示声明 scope 的 CI 合同通过，不是正式 P11 50M/72h 认证 |
 
-#### P0：新的 full-row oracle 仍漏掉分区范围外的目标行
+#### 已收口：full-row oracle 覆盖与正式 gate 证据合同
 
-`tools/longhaul_workload.py:_partitioned_exactness()` 默认只遍历 `range(1024)`；JOIN target SQL 只查询 `WHERE bucket=当前分区`，没有对目标全表行数或非法分区做独立检查。目标 JOIN 表的 `bucket` 是 nullable，故 `NULL`、负数或 ≥1024 的错误行不会进入任何比较。
+此前按 `bucket` 分 1024 次查询的 oracle 已不再是当前实现。自 `cbeff49b` 起，raw/JOIN source 与每个 target 都改为 unbuffered 全表流式扫描；`streamed_full_rows_v3` 对完整投影计算 `sha256_multiset_v1`，同时记录 source/target 全表行数、scan passes、uncovered rows、digest 与 mismatch。这样 `bucket=NULL`、负数、`>=1024` 或其他任何未落入旧分区域的额外 target 行都会进入全表计数/摘要并导致不匹配，而不再依赖 bucket 域假设。相关合同由 `dc65582c` / `da3929f7` 覆盖。
 
-本轮用原始 `_join_rows_source()` / `_join_rows_target()` / `join_exactness()` 的 SQL 在 SQLite 适配执行：正确源/目标各有两行，向目标再加入 `(event_id=3,bucket=1024,label='unexpected',v=99)`。完整 1024 分区校验返回 **`all_match=True`，报告 target rows=2，而目标实际 COUNT(*)=3**。这是校验漏检的确定性反例，不表示已经在真实 CDC 中观察到该错误行。raw totals 只检查 events，不能替 JOIN target 兜住这个问题。
+正式 P11 gate 也已在 `395c9cd1` 后 fail-closed 校验 `comparison=streamed_full_rows_v3`、`scan_mode=full_table_unbuffered`、digest algorithm、scan-pass 覆盖、source/target 总行数、required target 集合、digest、mismatch 和 uncovered rows；旧 summary-only 或只保留 top-level `all_match=True` 的报告不能再作为正式 profile 通过。gate 测试已有旧 comparison、scan coverage、source count、target rows/digest、缺 target 等负例。
 
-最小修正：对每个 JOIN/raw target 独立校验全表 COUNT(*) 与已比较总行数，并显式拒绝分区域外或 NULL bucket；更稳妥的扫描按完整稳定主键范围遍历，bucket 只作为要比较的字段，避免未证明的域过滤隐藏行。回归至少包含额外的 bucket=1024、bucket=-1 和 bucket=NULL 行，均要求 oracle 与 gate 失败。不能为了这个负例删除完整行校验或回退摘要。
+这两项因此从“当前 P0”降为已修历史问题。剩余风险转为**正式规模下全表 oracle 本身的耗时/I/O，以及固定 SHA 的完整认证证据**，不能把合同正确性与 50M 运行成本混为一谈。
 
-#### P0：gate 还没有验证“完整行证据”的合同
+#### Actions：当前主线回归处理
 
-`tools/longhaul_gate.py:evaluate_workload()` 已要求 `event_checks` 存在，但 `comparison` 目前仅回显；`partitions`、`expected_rows`、每表行数和 digest 一致性没有与证据口径、source COUNT、required targets 联合检查。JOIN 分支仍主要读取 `all_match` 和各表 `match` 布尔值。
-
-本轮从仓库自己的有效 `workload()` fixture 构造负例：把 event comparison 改为 `count_sum_summary_only`、partitions 改为 1、expected_rows 与 event target rows 改为 0，并把 JOIN comparison 改成旧摘要模式；保留原布尔标志，**`evaluate_workload()` 仍返回 `ok=True, failures=[]`**。当前 fixture 的 JOIN 检查也仍使用 1024 个摘要行的旧形状。这证明 gate 的证据 schema 未收紧，不是要求 gate 重新计算原始数据库结果，也不是在声称存在恶意伪造。
-
-建议对正式 profile 强制校验 oracle 版本、完整分区/扫描覆盖、必需 target 身份、完整行数和 source COUNT 一致、expected/actual digest 一致及 mismatch 为空；旧 summary 报告不得作为正式通过。完整行 oracle 修正后给证据合同独立版本，更新 gate fixture 与 profile 边界。加入缺失/错误 comparison、零行完整性、少分区、缺 target、digest/rows 不一致的负例；gate 无法凭布尔标志证明没有读过的行。
-
-#### Actions：最新 baseline 是新离线测试的配置回归
-
-[`48b8fba1` 的 baseline 37022617061](https://github.com/justgo4/m2s/actions/runs/37022617061) 两个 Python 版本均失败。[3.14 job 110889735423](https://github.com/justgo4/m2s/actions/runs/37022617061/job/110889735423) 的完整错误是：
-
-`tools/stateful_rebuild_multi_test.py:662 → j4.validate_hot_catalog_plan() → open_state(cfg["state"]) → KeyError: 'state'`。
-
-`multi_validation_contract()` 的 cfg 只有 catalog/config revision/mysql，缺 `state`；尽管测试已 mock open_state，Python 在调用 mock 前仍须求值 `cfg["state"]`。后续 `f0f58c67` 的该夹具仍相同。应补齐最小有效配置并重新执行整个合同，不能删测试或移出 CI。“Syntax and CLI” 是 step 名称；本次是合同夹具错误，**不是语法错误、MySQL/StarRocks 服务失败或依赖下载偶发**。此错误不能反证生产 multi-rebuild 本身一定错误，但会阻断 baseline 的后续检查。
-
-本轮观察到 `d89fa26a` 的 E2E [37022504125](https://github.com/justgo4/m2s/actions/runs/37022504125) 八格最终均被取消；`61dbe802` 的 baseline 37024053618、native 37024053301、E2E 37024053635 当时仍在运行/排队。它们没有提供本轮最终版本的完整绿色证据。采用固定 SHA milestone 是正确改进，应先让一个完整运行结束；取消和 pending 都不能记作通过。
+持续 push 会取消旧 workflow，因此只把明确结束的运行当证据。最近一次已完成 baseline 在 source apply worker 新合同里暴露了测试代码缺少 `import pickle`；运行时 source snapshot/set-wise apply 合同在到达该点前均已通过。该测试导入回归已由 `c9eab593` 修复，后续 baseline 以更新 SHA 的最终结果为准。此前审计记录的 `stateful_rebuild_multi_test.py` 缺 `cfg["state"]` 已不是当前 HEAD 的阻断点，不再作为现存 P0 重复列出。
 
 #### 多 sink rebuild：审查期间的新修复须保留，不再重复归为当前错误
 
@@ -272,10 +258,11 @@ python tools/longhaul_gate.py /data/m2s-p11-run/longhaul-workload.json \
 
 #### P1：为正式规模保留的性能与内存边界
 
-1. **完整行校验的读放大需要先测。** 测试 MySQL events DDL 只有 PRIMARY KEY(id)，没有 bucket 索引；raw 与 JOIN source 各执行 1024 次 `WHERE bucket=?`。没有合适访问路径时，这个查询形状有每轮约 1024 次全表扫描的风险；50M 起始规模不能用 5,000 行 smoke 推断校验时间。本轮未运行真实 MySQL EXPLAIN，不能把风险写成已测性能数字。优先验证 EXPLAIN/rows examined、最终 oracle 时间与资源成本；可采用 PK keyset/range 的有界遍历，或明确记录新增索引的存储/写入成本。任何改法都须覆盖上述域外多余行。
-2. **disk spool 只先解决捕获暂存，base apply 尚非端到端有界。** `source_state._commit_actions()` 对一个 seq 的全部 parts 用 `fetchall()`，再构造按 PK 去重的 Python actions dict；Arrow 解码与 payload/行对象峰值仍随事务大小增长。不能因此宣称任意事务规模已支持。保留 `CDC_TXN_SPOOL_MAX_BYTES` 和磁盘准入，测跨内存 rollover 的大事务在 log、apply、rollback/restart 各阶段的 RSS/WAL/锁时长；有证据再实现分块或磁盘 net-change staging，同时保留 whole-transaction 原子发布/重放边界。
-3. **新的 source cost counters 是阶段工作计量，不是完整 capture profile。** log timer 在 `log_commit_tx()` 内、COMMIT 前结束，不能据此推出 fsync/提交成本已测；apply timer 包含 actions 构造与部分锁等待，但也在最终 COMMIT 前记入。保留幂等的 durable counters 和 run delta，同时单独测锁等待、commit/fsync、decode/transform/fanout、backlog；不要以 `rows / work_seconds` 当端到端吞吐。
+1. **完整行 oracle 已消除 1024 次 bucket 扫描，但仍需测 50M 全表扫描成本。** 当前 raw/JOIN source 与每个 required target 各做一次 unbuffered full-table pass；访问形状从可能的 1024 次全表扫描降到每表一次，但 50M × 多 target 的网络、hash、CPU 与 wall time 仍必须在固定资源下记录。oracle 正确性已收口，不等于正式规模成本已证明。
+2. **source capture/base apply 已从旧的整事务 Python dict 路径推进到磁盘 net-change staging + set-wise SQLite DML，并进一步将 durable capture 与 base apply 异步解耦。** `source_apply_actions`、pending-byte 背压、独立 apply worker、snapshot set-wise staging 和 crash/race 合同均已进入主线；因此旧的“`_commit_actions().fetchall()+actions dict` 仍存在”描述已过期。当前要测的是大事务 rollover、并发 capture/apply、snapshot 双写、WAL/锁时长/RSS 与 drain tail，而不是再次修一个已删除的内存路径。
+3. **source cost counters 仍只是阶段工作计量。** 不能用内部 work timer 代替最终 COMMIT/fsync、锁等待、decode/transform/fanout、WAL 与 backlog 的端到端测量。已新增独立 apply、snapshot 与 overlapped capture/apply benchmark；`.github/workflows/state.yml` 现在对 `source_state.py` 及这些 benchmark 触发，并保留 JSON artifact。下一步用这些固定证据决定 staging 是否需要 TEMP/新布局或更低层实现。
+4. **50M/72h 仍是唯一正式认证缺口。** 短测、100k benchmark、baseline/native/E2E 只能证明局部合同或趋势；在同一最终 SHA、固定服务资源和持久工作目录下完成 `p11-50m-50rps-72h-v4` 之前，不升级生产认证结论。
 
-本轮本地通过：源码 compileall、原始 JOIN changed-row 合同、原始 longhaul gate 合同、1,000 随机事务 delta 对照、字段交换拒绝，以及 `61dbe802` 的 orphaned cohort 恢复模型。也保留了三个当前负例：域外 JOIN 多余行漏检、gate 不验证完整行证据合同、新测试 cfg 缺 state 的真实 CI 错误。环境仍无法 clone，且未安装 Arrow/DuckDB 等依赖；因此没有本地运行全 daemon/spool/shared 合同，也没有重跑 Actions 或正式 50M/72h。上述模型与真实 CI 日志的证据边界不得混用。
+截至当前主线，旧 oracle 域外漏检与 gate 证据 schema 两个 P0 已有代码和负例合同；source base apply 的旧整事务 dict 内存问题也已被 disk staging/set-wise apply 取代。最新阶段仍必须区分“合同测试通过”“benchmark 有数字”和“固定 SHA 正式认证”三个层级；其中正式 50M/72h 尚未完成。
 
-**实施顺序：补齐 baseline 测试配置 → 修 oracle 全表覆盖与 gate schema 负例 → 固定最终 SHA 完整跑 milestone / lifecycle / 重点 shared-quarantine 合同 → 测校验读放大、大事务 apply 内存和 source 阶段成本 → 再启动正式 P11。** 本轮只更新 README，保留实现者的代码和新 workflow；修复进展应继续按 revision 更新，而不是把历史负例永久贴在当前 HEAD 上。
+**当前实施顺序：保持 baseline/native/真实 E2E 在最终 SHA 全绿 → 收集 source apply/snapshot/overlap 与 full-table oracle 的固定资源 artifact → 根据 RSS/WAL/锁等待/写放大决定状态布局下一刀 → 冻结 milestone SHA 跑 lifecycle/quarantine 重点合同 → 启动正式 P11 50M/72h。** 历史反例保留其版本边界，但已修问题不再重复标成当前 HEAD 缺口。
