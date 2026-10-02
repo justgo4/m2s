@@ -344,6 +344,17 @@ def normalize_decimal(value):
     return str(value)
 
 
+def sort_nullable_pairs(values):
+    return sorted(
+        values,
+        key=lambda row:(
+            str(row[0]),
+            row[1] is not None,
+            "" if row[1] is None else str(row[1]),
+        ),
+    )
+
+
 def aggregate_expected(source):
     with source.cursor() as cur:
         cur.execute(
@@ -458,7 +469,7 @@ def join_subview_expected(source):
             "INNER JOIN "+DATABASE+".customers c "
             "ON o.customer_id=c.id")
         rows=cur.fetchall()
-    return sorted([
+    return sort_nullable_pairs([
         (str(row[0]),normalize_decimal(row[1]))
         for row in rows
     ])
@@ -472,7 +483,7 @@ def join_subview_rebuild_expected(source):
             "INNER JOIN "+DATABASE+".customers c "
             "ON o.id=c.id")
         rows=cur.fetchall()
-    return sorted([
+    return sort_nullable_pairs([
         (str(row[0]),normalize_decimal(row[1]))
         for row in rows
     ])
@@ -483,7 +494,7 @@ def join_subview_actual(cfg,table="joined_subview"):
         cfg,
         "SELECT customer_name,amount,_j4_pair_id "
         "FROM "+DATABASE+"."+str(table))
-    values=sorted([
+    values=sort_nullable_pairs([
         (str(row[0]),normalize_decimal(row[1]))
         for row in rows
     ])
