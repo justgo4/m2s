@@ -524,14 +524,23 @@ def key_bytes(values):
     ).encode("utf-8")
 
 
-def _row_tuple(batch, row_index, columns):
-    return tuple(batch.column(name)[row_index].as_py() for name in columns)
+def _batch_values(batch, columns):
+    return {
+        str(name):batch.column(name).to_pylist()
+        for name in columns
+    }
 
 
-def _row_key(batch, row_index, pk_columns):
+def _values_tuple(values, row_index, columns):
+    return tuple(
+        values[name][row_index]
+        for name in columns)
+
+
+def _values_key(values, row_index, pk_columns):
     return key_bytes(
-        batch.column(name)[row_index].as_py() for name in pk_columns
-    )
+        values[name][row_index]
+        for name in pk_columns)
 
 
 def _stage_commit_actions(con, seq):
@@ -568,12 +577,14 @@ def _stage_commit_actions(con, seq):
                 table_name
                 +": source log Arrow schema differs from relation"
             )
-        op_column=batch.column("_sync_op")
-        order_column=batch.column("_sync_order")
+        values=_batch_values(
+            batch,expected)
+        op_values=values["_sync_op"]
+        order_values=values["_sync_order"]
         previous_order=None
         for row_index in range(batch.num_rows):
             row_order=int(
-                order_column[row_index].as_py())
+                order_values[row_index])
             if (
                 previous_order is not None
                 and previous_order>row_order
@@ -582,20 +593,20 @@ def _stage_commit_actions(con, seq):
                     "source batch order is not monotonic")
             previous_order=row_order
             op=int(
-                op_column[row_index].as_py())
+                op_values[row_index])
             if op not in (0,1):
                 raise RuntimeError(
                     "unsupported source mutation op")
-            pk=_row_key(
-                batch,row_index,
+            pk=_values_key(
+                values,row_index,
                 info["pk_columns"])
             if op==1:
                 deleted=1
                 row_payload=None
             else:
                 deleted=0
-                row=_row_tuple(
-                    batch,row_index,
+                row=_values_tuple(
+                    values,row_index,
                     info["columns"])
                 row_payload=pickle.dumps(
                     row,protocol=5)
@@ -792,12 +803,18 @@ def _baseline_rows(con, table_name, batch):
     con.execute(
         "DELETE FROM source_snapshot_rows WHERE table_name=?",
         (str(table_name),))
+    values=_batch_values(
+        batch,info["columns"])
     rows = (
         (
             str(table_name),
-            _row_key(batch,row_index,info["pk_columns"]),
+            _values_key(
+                values,row_index,
+                info["pk_columns"]),
             pickle.dumps(
-                _row_tuple(batch,row_index,info["columns"]),
+                _values_tuple(
+                    values,row_index,
+                    info["columns"]),
                 protocol=5),
             int(info["schema_epoch"]),
         )
