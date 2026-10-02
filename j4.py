@@ -39,6 +39,7 @@ import sqlglot
 from sqlglot import exp
 import aggregate_job_bridge
 import aggregate_outbox
+import aggregate_shared_runtime
 import aggregate_state
 import aggregate_task_catalog
 import aggregate_task_runner
@@ -1639,6 +1640,7 @@ def init_state(path):
     join_task_catalog.install(con)
     aggregate_task_catalog.install(con)
     stateful_catalog_runtime.install(con)
+    aggregate_shared_runtime.install(con)
     physical_state_catalog.install(con)
     task_generation.install(con)
     existing_format = meta_get(con,"state_format")
