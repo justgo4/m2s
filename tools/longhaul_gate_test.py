@@ -106,6 +106,57 @@ def workload():
         ),
         source_totals=[62_960_000,12345],
         target_totals=[62_960_000,12345],
+        aggregate_checks=dict(
+            expected_rows=1024,
+            expected_digest="source-digest",
+            all_match=True,
+            tables={
+                "agg_000":dict(
+                    rows=1024,
+                    digest="digest-000",
+                    match=True),
+                "agg_001":dict(
+                    rows=1024,
+                    digest="digest-001",
+                    match=True),
+                "agg_002":dict(
+                    rows=1024,
+                    digest="digest-002",
+                    match=True),
+                "agg_003":dict(
+                    rows=1024,
+                    digest="digest-003",
+                    match=True),
+                "agg_004":dict(
+                    rows=1024,
+                    digest="digest-004",
+                    match=True),
+                "agg_005":dict(
+                    rows=1024,
+                    digest="digest-005",
+                    match=True),
+                "agg_006":dict(
+                    rows=1024,
+                    digest="digest-006",
+                    match=True),
+                "agg_007":dict(
+                    rows=1024,
+                    digest="digest-007",
+                    match=True),
+                "agg_008":dict(
+                    rows=1024,
+                    digest="digest-008",
+                    match=True),
+                "agg_009":dict(
+                    rows=1024,
+                    digest="digest-009",
+                    match=True),
+                "agg_010":dict(
+                    rows=1024,
+                    digest="digest-010",
+                    match=True),
+            },
+        ),
         share_mode="adaptive",
     )
 
@@ -185,6 +236,8 @@ def main():
     bad["faults"]=[]
     bad["final_state"]["pending"]=1
     bad["target_totals"]=[1,2]
+    bad["aggregate_checks"]["all_match"]=False
+    bad["aggregate_checks"]["tables"]["agg_010"]["match"]=False
     full=evaluate_workload(bad)
     assert not full["ok"]
     for reason in (
@@ -194,6 +247,7 @@ def main():
         "fault_injection",
         "pending_jobs",
         "source_target_mismatch",
+        "aggregate_target_mismatch",
     ):
         assert reason in full["failures"],full
 
