@@ -17,6 +17,7 @@ def item(kind,sink,task_id,plan_version,target,shadow=False):
     mapping=dict(
         src_table=sink.replace("starrocks.",""),
         sr_table=target,
+        _catalog_sink=sink,
         _output_columns=["id"],
         _target_sequence=False,
     )
@@ -326,13 +327,156 @@ def runtime_partial_switch_contract():
     ]==["new-a","new-b"]
 
 
+def activation_contract():
+    with tempfile.TemporaryDirectory(
+        prefix="m2s-rebuild-activate-"
+    ) as directory:
+        path=str(Path(directory)/"state.sqlite3")
+        con=setup_db(path)
+        con.close()
+
+        old_a=old_item(
+            "aggregate","starrocks.a",
+            "old-a",3,"a")
+        old_b=old_item(
+            "inner_join","starrocks.b",
+            "old-b",3,"b")
+        new_a=item(
+            "aggregate","starrocks.a",
+            "new-a",9,"__shadow_a")
+        new_a["task"]["target_table"]="a"
+        new_b=item(
+            "inner_join","starrocks.b",
+            "new-b",9,"__shadow_b")
+        new_b["task"]["target_table"]="b"
+        candidate=dict(
+            version=9,
+            stateful_candidate_tasks=[
+                new_a,new_b],
+            stateful_rebuilds=[
+                dict(
+                    sink="starrocks.a",
+                    old=old_a,new=new_a,
+                    shadow_target="__shadow_a",
+                    logical_target="a"),
+                dict(
+                    sink="starrocks.b",
+                    old=old_b,new=new_b,
+                    shadow_target="__shadow_b",
+                    logical_target="b"),
+            ],
+        )
+        runtime=dict(
+            plan_lock=threading.RLock(),
+            stateful_mappings={},
+            stateful_active_task_ids=set(
+                ["old-a","old-b"]),
+            stateful_tasks=[old_a,old_b],
+            stateful_rebuild_plans={},
+            stateful_rebuild_locks={},
+            stateful_worker_threads={},
+            worker_keys=set(),
+        )
+        cfg=dict(
+            state=path,
+            stateful_admission_retry_seconds=5,
+        )
+
+        def open_state(_):
+            local=sqlite3.connect(
+                path,isolation_level=None)
+            local.execute(
+                "PRAGMA busy_timeout=10000")
+            return local
+
+        def remote_marker(cfg,table):
+            return "original-"+table
+
+        def register(con,items):
+            return list(items)
+
+        def add_sink(mapping,cfg,runtime,**kwargs):
+            runtime["worker_keys"].add(
+                j4.mapping_key(mapping))
+            return True
+
+        with patch.object(
+            j4,"open_state",
+            side_effect=open_state
+        ), patch.object(
+            j4.stateful_admission,
+            "admit_or_defer",
+            return_value=dict(status="admitted")
+        ), patch.object(
+            j4.stateful_admission,
+            "clear_wait",
+            return_value=0
+        ), patch.object(
+            j4,"stateful_rebuild_remote_marker",
+            side_effect=remote_marker
+        ), patch.object(
+            j4,"ensure_stateful_rebuild_shadow",
+            return_value=None
+        ), patch.object(
+            j4.stateful_catalog_runtime,
+            "register_compiled",
+            side_effect=register
+        ), patch.object(
+            j4,"runtime_add_sink",
+            side_effect=add_sink
+        ), patch.object(
+            j4,"runtime_thread_register",
+            side_effect=lambda runtime,thread:thread
+        ), patch.object(
+            j4,"rollback_stateful_admission",
+            return_value=None
+        ):
+            activated=j4.activate_stateful_rebuild_candidate(
+                cfg,runtime,candidate)
+
+        assert activated==["new-a","new-b"]
+        assert runtime["worker_keys"]=={
+            "starrocks.a","starrocks.b"}
+        assert set(runtime[
+            "stateful_rebuild_plans"])=={
+                "starrocks.a","starrocks.b"}
+        assert set(runtime[
+            "stateful_rebuild_locks"])=={
+                "starrocks.a","starrocks.b"}
+        assert set(runtime[
+            "stateful_worker_threads"])=={
+                "new-a","new-b"}
+        assert {
+            value["task"]["task_id"]
+            for value in runtime["stateful_tasks"]
+        }=={"old-a","old-b","new-a","new-b"}
+
+        con=sqlite3.connect(
+            path,isolation_level=None)
+        try:
+            records=stateful_rebuild.active(con)
+            assert len(records)==2
+            assert {
+                value["sink_key"]
+                for value in records
+            }=={"starrocks.a","starrocks.b"}
+            assert all(
+                value["phase"]=="building_shadow"
+                for value in records
+            )
+        finally:
+            con.close()
+
+
 def main():
     mixed_restart_contract()
     final_restart_promotes_plan()
     runtime_partial_switch_contract()
+    activation_contract()
     print(
         "stateful_rebuild_multi_test ok "
-        "mixed_restart final_plan_promotion partial_runtime_switch",
+        "mixed_restart final_plan_promotion partial_runtime_switch "
+        "multi_activation",
         flush=True,
     )
 
