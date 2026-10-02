@@ -2,6 +2,7 @@
 from pathlib import Path
 import sqlite3
 import sys
+import tempfile
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
@@ -129,6 +130,23 @@ def main():
     assert status==dict(
         decisions=2,admitted=2,rejected=0)
     con.close()
+
+    with tempfile.TemporaryDirectory(
+        prefix="m2s-admission-ro-"
+    ) as td:
+        path=str(Path(td)/"state.sqlite3")
+        rw=sqlite3.connect(path)
+        stateful_admission.install(rw)
+        rw.commit()
+        rw.close()
+        ro=sqlite3.connect(
+            "file:"+path+"?mode=ro",uri=True)
+        try:
+            assert stateful_admission.status(ro)==dict(
+                decisions=0,admitted=0,rejected=0)
+        finally:
+            ro.close()
+
     print(
         "stateful_admission_test ok tasks building state_bytes "
         "pending_bytes source_lag durable_decision retry_idempotence",
