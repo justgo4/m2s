@@ -60,6 +60,7 @@ import stateful_admission
 import stateful_catalog_runtime
 import stateful_physical_registry
 import stateful_rebuild
+import stateful_rebuild_cohort
 import stateful_share_policy
 import stateful_task_plan
 import task_generation
@@ -1840,6 +1841,7 @@ def init_state(path):
     join_shared_runtime.install(con)
     stateful_share_policy.install(con)
     stateful_rebuild.install(con)
+    stateful_rebuild_cohort.install(con)
     physical_state_catalog.install(con)
     task_generation.install(con)
     existing_format = meta_get(con,"state_format")
