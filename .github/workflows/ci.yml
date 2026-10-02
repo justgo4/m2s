@@ -117,6 +117,7 @@ jobs:
           python tools/relational_ir_test.py
           python tools/source_base_catalog_test.py
           python tools/source_state_protocol_test.py
+          python tools/source_pipeline_metrics_test.py
           python tools/source_transaction_spool_test.py
           python tools/source_log_consumer_test.py
           python tools/source_seq_frontier_test.py
