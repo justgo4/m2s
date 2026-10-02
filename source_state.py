@@ -93,6 +93,14 @@ def install(con):
             PRIMARY KEY(seq,table_name,pk)
         ) WITHOUT ROWID;
 
+        CREATE TABLE IF NOT EXISTS source_snapshot_rows(
+            table_name TEXT NOT NULL,
+            pk BLOB NOT NULL,
+            row_payload BLOB NOT NULL,
+            schema_epoch INTEGER NOT NULL,
+            PRIMARY KEY(table_name,pk)
+        ) WITHOUT ROWID;
+
         CREATE TABLE IF NOT EXISTS source_versions(
             table_name TEXT NOT NULL,
             pk BLOB NOT NULL,
@@ -767,30 +775,59 @@ def _baseline_rows(con, table_name, batch):
     expected_prefix = info["columns"]
     if batch.column_names[:len(expected_prefix)] != expected_prefix:
         raise RuntimeError("snapshot source columns differ from registered relation")
-    inserted = 0
-    for row_index in range(batch.num_rows):
-        pk = _row_key(batch, row_index, info["pk_columns"])
-        if con.execute("""
-                SELECT 1 FROM source_touched
-                WHERE table_name=? AND pk=?
-        """, (table_name, pk)).fetchone():
-            continue
-        if con.execute("""
-                SELECT 1 FROM source_versions
-                WHERE table_name=? AND pk=? AND valid_to IS NULL
-        """, (table_name, pk)).fetchone():
-            continue
-        row = _row_tuple(batch, row_index, info["columns"])
-        con.execute("""
-            INSERT INTO source_versions(
-                table_name,pk,valid_from,valid_to,deleted,row_payload,
-                schema_epoch)
-            VALUES(?,?,0,NULL,0,?,?)
-        """, (
-            table_name, pk, pickle.dumps(row, protocol=5),
-            info["schema_epoch"],
-        ))
-        inserted += 1
+
+    # Snapshot rows are staged once, then filtered against CDC-touched/current
+    # keys set-wise. This keeps the correctness rule identical to the former
+    # per-row probes without issuing two indexed SELECTs for every history row.
+    con.execute(
+        "DELETE FROM source_snapshot_rows WHERE table_name=?",
+        (str(table_name),))
+    rows = (
+        (
+            str(table_name),
+            _row_key(batch,row_index,info["pk_columns"]),
+            pickle.dumps(
+                _row_tuple(batch,row_index,info["columns"]),
+                protocol=5),
+            int(info["schema_epoch"]),
+        )
+        for row_index in range(batch.num_rows)
+    )
+    con.executemany("""
+        INSERT INTO source_snapshot_rows(
+            table_name,pk,row_payload,schema_epoch)
+        VALUES(?,?,?,?)
+    """, rows)
+
+    con.execute("""
+        INSERT INTO source_versions(
+            table_name,pk,valid_from,valid_to,
+            deleted,row_payload,schema_epoch)
+        SELECT
+            s.table_name,s.pk,0,NULL,0,
+            s.row_payload,s.schema_epoch
+        FROM source_snapshot_rows s
+        WHERE s.table_name=?
+          AND NOT EXISTS(
+              SELECT 1
+              FROM source_touched t
+              WHERE t.table_name=s.table_name
+                AND t.pk=s.pk
+          )
+          AND NOT EXISTS(
+              SELECT 1
+              FROM source_versions v
+              WHERE v.table_name=s.table_name
+                AND v.pk=s.pk
+                AND v.valid_to IS NULL
+          )
+        ORDER BY s.pk
+    """, (str(table_name),))
+    inserted = int(con.execute(
+        "SELECT changes()").fetchone()[0])
+    con.execute(
+        "DELETE FROM source_snapshot_rows WHERE table_name=?",
+        (str(table_name),))
     return inserted
 
 
