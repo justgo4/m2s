@@ -142,6 +142,21 @@ def install(con):
                 con, "min_readable_seq", base_applied_seq(con))
     if _meta_int(con,"log_stats_v1",0)!=1:
         with transaction(con):
+            retained=con.execute("""
+                SELECT MIN(p.seq),MIN(c.created)
+                FROM source_commit_parts p
+                JOIN source_commits c ON c.seq=p.seq
+            """).fetchone()
+            first_seq=(
+                int(retained[0])
+                if retained and retained[0] is not None
+                else log_durable_seq(con)+1
+            )
+            first_time=(
+                float(retained[1])
+                if retained and retained[1] is not None
+                else time.time()
+            )
             con.execute("DELETE FROM source_log_stats")
             con.execute("""
                 INSERT INTO source_log_stats(
@@ -152,6 +167,10 @@ def install(con):
                 FROM source_commit_parts
                 GROUP BY table_name
             """)
+            _meta_set_int(
+                con,"log_stats_started_seq",first_seq)
+            _meta_set_float(
+                con,"log_stats_started_at",first_time)
             _meta_set_int(
                 con,"log_stats_v1",1)
 
@@ -170,6 +189,23 @@ def _meta_set_int(con, key, value):
         INSERT INTO source_state_meta(key,value) VALUES(?,?)
         ON CONFLICT(key) DO UPDATE SET value=excluded.value
     """, (key, str(int(value))))
+
+
+def _meta_float(con,key,default=None):
+    row=con.execute(
+        "SELECT value FROM source_state_meta WHERE key=?",
+        (str(key),)
+    ).fetchone()
+    if row is None:
+        return default
+    return float(row[0])
+
+
+def _meta_set_float(con,key,value):
+    con.execute("""
+        INSERT INTO source_state_meta(key,value) VALUES(?,?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value
+    """,(str(key),repr(float(value))))
 
 
 def log_durable_seq(con):
@@ -886,6 +922,10 @@ def status(con):
     return dict(
         log_durable_seq=log_durable_seq(con),
         base_applied_seq=base_applied_seq(con),
+        log_stats_started_seq=_meta_int(
+            con,"log_stats_started_seq",1),
+        log_stats_started_at=_meta_float(
+            con,"log_stats_started_at",None),
         min_readable_seq=min_readable_seq(con),
         snapshot_safe_seq=None if incomplete else base_applied_seq(con),
         retention_floor=retention_floor(con),
