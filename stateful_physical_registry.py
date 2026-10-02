@@ -6,6 +6,7 @@ and current-only watermark rules to the concrete aggregate/JOIN physical
 adapters, then attaches task ownership through physical-state refs.
 """
 import aggregate_physical_state
+import aggregate_shared_runtime
 import join_physical_state
 import physical_state_catalog
 
@@ -176,7 +177,16 @@ def _gc_ready(con,kind,task):
 def gc_retired(con,limit=64):
     """Reclaim retired task backing state/outbox after all safety refs drain."""
     limit=max(1,int(limit))
-    removed=[]
+    removed=[
+        dict(
+            instance_id=None,
+            kind="aggregate_shared_follower",
+            task_id=item["follower_task_id"],
+            state_id=item["shared_state_id"],
+        )
+        for item in aggregate_shared_runtime.gc_retired_followers(
+            con,limit=limit)
+    ]
     rows=con.execute("""
         SELECT instance_id,format_tag,metadata_json
         FROM physical_states
