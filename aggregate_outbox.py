@@ -218,6 +218,139 @@ def seed_bootstrap(
     return commit_info(con,consumer_id,fixed_w)
 
 
+def _projected_spec(source_spec,target_spec):
+    source_spec=aggregate_state.validate_spec(source_spec)
+    target_spec=aggregate_state.validate_spec(target_spec)
+    if source_spec["group_keys"]!=target_spec["group_keys"]:
+        raise RuntimeError(
+            "aggregate projected outbox GROUP BY keys differ")
+    source_outputs={
+        item["output"]:item
+        for item in source_spec["aggregates"]
+    }
+    for item in target_spec["aggregates"]:
+        if source_outputs.get(item["output"])!=item:
+            raise RuntimeError(
+                "aggregate projected outbox output is not a source subview: "
+                +item["output"])
+    return target_spec
+
+
+def _project_row(target_spec,row,delete=False):
+    names=list(target_spec["group_keys"])
+    if not delete:
+        names.extend(
+            item["output"] for item in target_spec["aggregates"])
+    missing=[
+        name for name in names
+        if name not in row
+    ]
+    if missing:
+        raise RuntimeError(
+            "aggregate projected outbox row is missing columns: "
+            +repr(missing))
+    return {
+        name:row[name]
+        for name in names
+    }
+
+
+def seed_bootstrap_projected(
+        con,consumer_id,source_state_id,plan_version,generation_id,
+        fixed_w,target_spec
+):
+    """Seed a follower bootstrap from a compatible aggregate superset state."""
+    source=aggregate_state.state_info(
+        con,source_state_id)
+    target_spec=_projected_spec(
+        source["spec"],target_spec)
+    ensure_stream(
+        con,consumer_id,source_state_id,
+        plan_version,generation_id,fixed_w)
+    if int(source["watermark"])!=int(fixed_w):
+        raise RuntimeError(
+            "aggregate projected bootstrap source moved from fixed-W")
+    rows=[]
+    for row in aggregate_state.read_rows(
+        con,source_state_id
+    ):
+        key_blob,_=aggregate_state._group_key(
+            source["spec"],row)
+        public=_project_row(
+            target_spec,row,delete=False)
+        rows.append((
+            bytes(key_blob),0,
+            pickle.dumps(public,protocol=5)))
+    with transaction(con):
+        _insert_commit(
+            con,consumer_id,int(fixed_w),
+            "bootstrap",rows)
+    return commit_info(
+        con,consumer_id,fixed_w)
+
+
+def copy_commit_projected(
+        con,source_consumer_id,target_consumer_id,
+        source_seq,target_spec
+):
+    """Project one durable superset aggregate commit into a follower journal."""
+    source_consumer_id=_text(
+        source_consumer_id,"source_consumer_id")
+    target_consumer_id=_text(
+        target_consumer_id,"target_consumer_id")
+    source_seq=int(source_seq)
+    if source_consumer_id==target_consumer_id:
+        raise ValueError(
+            "aggregate projected copy source and target consumers must differ")
+    source_commit=commit_info(
+        con,source_consumer_id,source_seq)
+    source_stream=stream_info(
+        con,source_consumer_id)
+    target_stream=stream_info(
+        con,target_consumer_id)
+    source_state=aggregate_state.state_info(
+        con,source_stream["state_id"])
+    target_spec=_projected_spec(
+        source_state["spec"],target_spec)
+    if target_stream["state_id"]!=source_stream["state_id"]:
+        raise RuntimeError(
+            "aggregate projected follower stream no longer shares source state")
+    if source_seq<int(target_stream["fixed_w"]):
+        raise RuntimeError(
+            "aggregate projected output commit predates target fixed-W")
+    previous=con.execute("""
+        SELECT MAX(source_seq)
+        FROM aggregate_output_commits
+        WHERE consumer_id=?
+    """,(target_consumer_id,)).fetchone()[0]
+    if previous is not None and source_seq>int(previous)+1:
+        raise RuntimeError(
+            "aggregate projected output commit would create a target gap")
+
+    rows=[]
+    for key_blob,op,payload in con.execute("""
+        SELECT key_blob,op,row_payload
+        FROM aggregate_output_rows
+        WHERE consumer_id=? AND source_seq=?
+        ORDER BY key_blob
+    """,(source_consumer_id,source_seq)).fetchall():
+        row=pickle.loads(payload)
+        projected=_project_row(
+            target_spec,row,delete=bool(op))
+        rows.append((
+            bytes(key_blob),int(op),
+            pickle.dumps(projected,protocol=5)))
+    if len(rows)!=int(source_commit["nrows"]):
+        raise RuntimeError(
+            "aggregate projected source output row count is inconsistent")
+    with transaction(con):
+        _insert_commit(
+            con,target_consumer_id,source_seq,
+            source_commit["kind"],rows)
+    return commit_info(
+        con,target_consumer_id,source_seq)
+
+
 def enqueue_incremental(
         con,consumer_id,state_id,source_seq,changes
 ):
