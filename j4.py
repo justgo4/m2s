@@ -11283,13 +11283,194 @@ def stop_catalog_control(control_state):
 
 
 
+def default_state_path():
+    return os.path.abspath(env(
+        "CDC_STATE_FILE",
+        os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            ".cdc_v2.sqlite3")))
+
+
+def _status_table_exists(con,name):
+    return con.execute("""
+        SELECT 1 FROM sqlite_master
+        WHERE type='table' AND name=?
+    """,(str(name),)).fetchone() is not None
+
+
+def durable_status_snapshot(state_path):
+    state_path=os.path.abspath(str(state_path))
+    if not os.path.exists(state_path):
+        return dict(
+            format_version=1,
+            state_path=state_path,
+            state_exists=False,
+        )
+    con=sqlite3.connect(
+        "file:"+quote(state_path,safe="/")+"?mode=ro",
+        uri=True,isolation_level=None)
+    try:
+        meta=dict(
+            con.execute(
+                "SELECT key,value FROM meta"
+            ).fetchall()
+        ) if _status_table_exists(con,"meta") else {}
+
+        source=(
+            source_state.status(con)
+            if _status_table_exists(con,"source_state_meta")
+            else None
+        )
+        aggregate_tasks=[]
+        if _status_table_exists(
+            con,"aggregate_task_descriptors"
+        ):
+            aggregate_tasks=[
+                dict(
+                    task_id=str(row[0]),sink_key=str(row[1]),
+                    plan_version=int(row[2]),status=str(row[3]),
+                    target_table=str(row[4]))
+                for row in con.execute("""
+                    SELECT task_id,sink_key,plan_version,status,target_table
+                    FROM aggregate_task_descriptors
+                    ORDER BY sink_key,plan_version
+                """).fetchall()
+            ]
+        join_tasks=[]
+        if _status_table_exists(
+            con,"join_task_descriptors"
+        ):
+            join_tasks=[
+                dict(
+                    task_id=str(row[0]),sink_key=str(row[1]),
+                    plan_version=int(row[2]),status=str(row[3]),
+                    target_table=str(row[4]))
+                for row in con.execute("""
+                    SELECT task_id,sink_key,plan_version,status,target_table
+                    FROM join_task_descriptors
+                    ORDER BY sink_key,plan_version
+                """).fetchall()
+            ]
+
+        rebuilds=[]
+        if _status_table_exists(
+            con,"stateful_rebuilds"
+        ):
+            rebuilds=[
+                dict(
+                    sink_key=str(row[0]),kind=str(row[1]),
+                    old_task_id=str(row[2]),new_task_id=str(row[3]),
+                    logical_target=str(row[4]),shadow_target=str(row[5]),
+                    frontier=None if row[6] is None else int(row[6]),
+                    phase=str(row[7]),error=str(row[8] or ""))
+                for row in con.execute("""
+                    SELECT sink_key,kind,old_task_id,new_task_id,
+                           logical_target,shadow_target,frontier,phase,error
+                    FROM stateful_rebuilds
+                    WHERE phase!='complete'
+                    ORDER BY created,sink_key
+                """).fetchall()
+            ]
+
+        retirements=[]
+        if _status_table_exists(
+            con,"stateful_retirements"
+        ):
+            retirements=[
+                dict(
+                    task_id=str(row[0]),kind=str(row[1]),
+                    sink_key=str(row[2]),frontier=int(row[3]),
+                    phase=str(row[4]))
+                for row in con.execute("""
+                    SELECT task_id,kind,sink_key,frontier,phase
+                    FROM stateful_retirements
+                    ORDER BY created,task_id
+                """).fetchall()
+            ]
+
+        share=None
+        if _status_table_exists(
+            con,"stateful_share_decisions"
+        ):
+            share=stateful_share_policy.status(con)
+
+        jobs=dict(active=0,deliveries=0,invisible_parts=0)
+        if _status_table_exists(con,"active_jobs"):
+            jobs["active"]=int(con.execute(
+                "SELECT COUNT(*) FROM active_jobs"
+            ).fetchone()[0])
+        elif _status_table_exists(con,"jobs"):
+            jobs["active"]=int(con.execute("""
+                SELECT COUNT(*) FROM jobs j
+                LEFT JOIN retired_jobs r ON r.job_id=j.id
+                WHERE r.job_id IS NULL
+            """).fetchone()[0])
+        if _status_table_exists(con,"deliveries"):
+            jobs["deliveries"]=int(con.execute(
+                "SELECT COUNT(*) FROM deliveries"
+            ).fetchone()[0])
+        if _status_table_exists(con,"load_parts"):
+            jobs["invisible_parts"]=int(con.execute(
+                "SELECT COUNT(*) FROM load_parts WHERE visible=0"
+            ).fetchone()[0])
+
+        physical=dict(states=0,refs=0,pins=0)
+        if _status_table_exists(con,"physical_states"):
+            physical["states"]=int(con.execute(
+                "SELECT COUNT(*) FROM physical_states"
+            ).fetchone()[0])
+        if _status_table_exists(con,"physical_state_refs"):
+            physical["refs"]=int(con.execute(
+                "SELECT COUNT(*) FROM physical_state_refs"
+            ).fetchone()[0])
+        if _status_table_exists(con,"physical_state_pins"):
+            physical["pins"]=int(con.execute(
+                "SELECT COUNT(*) FROM physical_state_pins"
+            ).fetchone()[0])
+
+        return dict(
+            format_version=1,
+            state_path=state_path,
+            state_exists=True,
+            state_format=(
+                None if meta.get("state_format") is None
+                else int(meta["state_format"])),
+            active_plan_version=(
+                None if meta.get("active_plan_version") is None
+                else int(meta["active_plan_version"])),
+            source=source,
+            jobs=jobs,
+            aggregate_tasks=aggregate_tasks,
+            join_tasks=join_tasks,
+            rebuilds=rebuilds,
+            retirements=retirements,
+            sharing=share,
+            physical=physical,
+        )
+    finally:
+        con.close()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "command",nargs="?",default="run",
-        choices=("run","cli","sql","check","probe","selftest"))
+        choices=("run","cli","sql","check","probe","status","selftest"))
     parser.add_argument("sql_file",nargs="?")
     args = parser.parse_args()
+
+    if args.command == "status":
+        if args.sql_file:
+            parser.error(
+                "python j4.py status does not accept a file argument")
+        print(
+            orjson.dumps(
+                durable_status_snapshot(
+                    default_state_path()),
+                option=orjson.OPT_SORT_KEYS
+            ).decode("utf-8"),
+            flush=True)
+        return 0
 
     if args.command in ("cli","sql"):
         if args.command == "sql" and not args.sql_file:
