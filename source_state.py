@@ -946,13 +946,22 @@ def gc(con, consumer_watermarks=()):
 
 
 def status(con):
-    pipeline_row=con.execute("""
-        SELECT log_commits,log_parts,log_rows,log_payload_bytes,
-               log_work_ns,apply_commits,apply_input_rows,
-               apply_actions,apply_work_ns
-        FROM source_pipeline_stats
-        WHERE id=1
-    """).fetchone()
+    has_pipeline=con.execute("""
+        SELECT 1 FROM sqlite_master
+        WHERE type='table' AND name='source_pipeline_stats'
+    """).fetchone() is not None
+    pipeline_row=(
+        con.execute("""
+            SELECT log_commits,log_parts,log_rows,log_payload_bytes,
+                   log_work_ns,apply_commits,apply_input_rows,
+                   apply_actions,apply_work_ns
+            FROM source_pipeline_stats
+            WHERE id=1
+        """).fetchone()
+        if has_pipeline else None
+    )
+    if pipeline_row is None:
+        pipeline_row=(0,0,0,0,0,0,0,0,0)
     pipeline=dict(
         log_commits=int(pipeline_row[0]),
         log_parts=int(pipeline_row[1]),
