@@ -127,8 +127,9 @@ def main():
     with tempfile.TemporaryDirectory(
         prefix="m2s-join-shared-"
     ) as td:
+        state_path=os.path.join(td,"state.sqlite3")
         con=j4.init_state(
-            os.path.join(td,"state.sqlite3"))
+            state_path)
         source_state.register_relation(
             con,"db.orders","source-join",
             left_schema(),["id"],schema_epoch=1)
@@ -197,6 +198,18 @@ def main():
             for row in physical_state_catalog.state_refs(
                 con,leader_physical)
         }
+
+        # Crash/restart must preserve the follower binding, physical
+        # dependency ref and independent target/source frontier.
+        con.close()
+        con=j4.init_state(
+            state_path)
+        leader=join_task_catalog.task_info(
+            con,leader["task_id"])
+        follower=join_task_catalog.task_info(
+            con,follower["task_id"])
+        assert join_shared_runtime.binding_info(
+            con,follower["task_id"])["leader_task_id"]==leader["task_id"]
 
         # One right-side update is computed only by the leader. The follower
         # receives the exact pair-identity/output journal bytes.
