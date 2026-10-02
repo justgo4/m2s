@@ -28,6 +28,27 @@ def main():
     assert headers["enable_merge_commit"]=="true"
     assert headers["merge_commit_async"]=="true"
 
+    sequence_mapping=dict(
+        mapping,
+        _target_sequence=True)
+    guarded_payload=(
+        b'{"id":1,"value":"x","_cdc_seq":9,"__op":0}\n')
+    profile=j4.merge_payload_profile(
+        sequence_mapping,guarded_payload)
+    assert profile["known"]
+    assert profile["sequence_guarded_upsert"]
+    assert not profile["replay_safe"]
+    guarded_headers=j4.merge_commit_headers(
+        sequence_mapping,cfg,profile)
+    assert "merge_condition" not in guarded_headers
+
+    deleted_payload=(
+        b'{"id":1,"value":"x","_cdc_seq":10,"__op":1}\n')
+    deleted=j4.merge_payload_profile(
+        sequence_mapping,deleted_payload)
+    assert deleted["has_delete"]
+    assert not deleted["replay_safe"]
+
     with tempfile.TemporaryDirectory(prefix="m2s-merge-identity-") as directory:
         path=str(Path(directory)/"state.sqlite3")
         con=j4.init_state(path)
@@ -45,20 +66,22 @@ def main():
             j4.begin_merge_request(
                 con,mapping,delivery,0,local_request_id,payload)
             row=con.execute(
-                "SELECT label,payload_sha256,reason FROM merge_uncertain "
+                "SELECT label,payload_sha256,replay_safe,reason "
+                "FROM merge_uncertain "
                 "WHERE delivery_id=? AND part=0",
                 (delivery,)).fetchone()
             assert row==(
                 local_request_id,
                 hashlib.sha256(payload).hexdigest(),
+                0,
                 "request_inflight_no_txn_id",
             )
         finally:
             con.close()
 
     print(
-        "MERGE IDENTITY PASS local request id retained but never sent as "
-        "StarRocks Merge Commit label",
+        "MERGE IDENTITY PASS local request id retained, conditional upsert "
+        "replay remains fail-closed across future delete",
         flush=True,
     )
 
