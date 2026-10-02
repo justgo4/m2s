@@ -213,11 +213,46 @@ def main():
         finally:
             con.close()
 
+        legacy=str(Path(directory)/"legacy.sqlite3")
+        con=connection(legacy)
+        stateful_rebuild.install(con)
+        con.execute(
+            "DROP TRIGGER stateful_rebuild_task_owner_insert")
+        now=1.0
+        con.execute("""
+            INSERT INTO stateful_rebuilds(
+                sink_key,kind,old_task_id,new_task_id,
+                logical_target,shadow_target,original_comment,
+                frontier,phase,error,created,updated)
+            VALUES(?,?,?,?,?,?,?,NULL,'building_shadow','',?,?)
+        """,(
+            "starrocks.legacy_a","aggregate",
+            "legacy-shared-old","legacy-new-a",
+            "legacy_a","legacy_shadow_a","",now,now))
+        con.execute("""
+            INSERT INTO stateful_rebuilds(
+                sink_key,kind,old_task_id,new_task_id,
+                logical_target,shadow_target,original_comment,
+                frontier,phase,error,created,updated)
+            VALUES(?,?,?,?,?,?,?,NULL,'building_shadow','',?,?)
+        """,(
+            "starrocks.legacy_b","aggregate",
+            "legacy-shared-old","legacy-new-b",
+            "legacy_b","legacy_shadow_b","",now+1,now+1))
+        try:
+            stateful_rebuild.install(con)
+            raise AssertionError(
+                "ambiguous legacy task ownership was accepted")
+        except RuntimeError as exc:
+            assert "ownership is ambiguous" in str(exc)
+        finally:
+            con.close()
+
     print(
         "stateful_rebuild_concurrency_test ok "
         "identical_begin conflicting_begin unique_collision "
         "old_task_atomic_owner phase_retry fail_retry "
-        "no_sqlite_integrity_leak",
+        "legacy_ambiguity_fail_closed no_sqlite_integrity_leak",
         flush=True,
     )
 
