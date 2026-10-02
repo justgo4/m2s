@@ -90,7 +90,12 @@ def metric_bucket():
         mixed_deliveries=0,mixed_rows=0,
         merge_requests=0,merge_rows=0,merge_left_ms=[],merge_txns={},
         merge_txn_window_misses=0,merge_txn_evictions=0,
-        merge_retries=0,version_pauses=0,version_recovers=0,
+        merge_retries=0,
+        merge_uncertain_replays=0,
+        merge_uncertain_replay_visible=0,
+        merge_uncertain_replay_aborted=0,
+        merge_uncertain_replay_blocked=0,
+        version_pauses=0,version_recovers=0,
         metric_exact={},
     )
 
@@ -332,6 +337,14 @@ def metric_bucket_summary(bucket, include_quantiles=True):
         exact_merge_left_ms=metric_exact_summary(bucket,"merge_left_ms"),
         bundle_lanes=dict(bucket["bundle_lanes"]),
         merge_retries=bucket["merge_retries"],
+        merge_uncertain_replays=bucket[
+            "merge_uncertain_replays"],
+        merge_uncertain_replay_visible=bucket[
+            "merge_uncertain_replay_visible"],
+        merge_uncertain_replay_aborted=bucket[
+            "merge_uncertain_replay_aborted"],
+        merge_uncertain_replay_blocked=bucket[
+            "merge_uncertain_replay_blocked"],
         version_pauses=bucket["version_pauses"],
         version_recovers=bucket["version_recovers"],
     )
@@ -7346,6 +7359,9 @@ def submit_merge_uncertain_replay(handle, con, candidate, cfg, runtime):
         replay_disabled=False,replay_eligible=True,
         replay_attempts=attempt,
         replay_mode="idempotent_exact_payload")
+    metric_increment(
+        runtime,mapping_key(mapping),
+        "merge_uncertain_replays")
     log(
         f"MERGE RECONCILE REPLAY table={mapping_key(mapping)} "
         f"delivery={delivery} part={part} attempt={attempt} "
@@ -7424,6 +7440,9 @@ def reconcile_merge_quarantine(con, handle, table, cfg, runtime):
             runtime,table,replay_eligible=False,
             replay_blocked_reason=str(reason)[:1000])
         if changed and "backoff until=" not in str(reason):
+            metric_increment(
+                runtime,table,
+                "merge_uncertain_replay_blocked")
             log(
                 f"MERGE RECONCILE BLOCKED table={table} "
                 f"reason={str(reason)[:1000]} journal_retained=1")
@@ -7446,11 +7465,17 @@ def reconcile_merge_quarantine(con, handle, table, cfg, runtime):
                     WHERE delivery_id=? AND part=? AND txn_id=?
                 """,(
                     candidate["delivery"],candidate["part"],txn_id))
+            metric_increment(
+                runtime,table,
+                "merge_uncertain_replay_visible")
             log(
                 f"MERGE RECONCILE VISIBLE table={table} "
                 f"delivery={candidate['delivery']} "
                 f"part={candidate['part']} txn={txn_id}")
         else:
+            metric_increment(
+                runtime,table,
+                "merge_uncertain_replay_aborted")
             log(
                 f"MERGE RECONCILE KNOWN_ABORT table={table} "
                 f"delivery={candidate['delivery']} "
