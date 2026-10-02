@@ -1,0 +1,122 @@
+name: Longhaul workload smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      rows:
+        description: Initial MySQL rows for the hosted smoke (production gate is 50000000)
+        default: '100000'
+        required: true
+      duration_seconds:
+        description: Workload duration in seconds (production gate is 259200 / 72h)
+        default: '300'
+        required: true
+      rows_per_second:
+        description: New source rows per second
+        default: '50'
+        required: true
+      dynamic_tasks:
+        description: Identical aggregate tasks added online
+        default: '3'
+        required: true
+      protocol:
+        description: StarRocks output protocol
+        type: choice
+        options:
+          - merge_async
+          - transaction
+        default: merge_async
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: longhaul-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      PYTHONUNBUFFERED: '1'
+      LONGHAUL_ROWS: ${{ inputs.rows }}
+      LONGHAUL_DURATION: ${{ inputs.duration_seconds }}
+      LONGHAUL_RATE: ${{ inputs.rows_per_second }}
+      LONGHAUL_TASKS: ${{ inputs.dynamic_tasks }}
+      LONGHAUL_PROTOCOL: ${{ inputs.protocol }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.14'
+          cache: pip
+      - run: python tools/privacy_check.py
+      - run: python -m pip install -r requirements.txt
+      - name: Build native decoder
+        run: |
+          cmake -S native -B build/native -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/native --parallel 2
+      - name: Release hosted-runner disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+      - name: Start disposable MySQL 8.4.6 and StarRocks 4.1.1
+        run: |
+          docker run --detach --name m2s-longhaul-mysql -p 127.0.0.1:3306:3306 \
+            -e MYSQL_ALLOW_EMPTY_PASSWORD=yes mysql:8.4.6 \
+            --server-id=1 --log-bin=mysql-bin --gtid-mode=ON \
+            --enforce-gtid-consistency=ON --binlog-format=ROW \
+            --binlog-row-image=FULL --binlog-row-metadata=FULL
+          docker run --detach --network host --name m2s-longhaul-starrocks \
+            starrocks/allin1-ubuntu:4.1.1
+          python - <<'PY'
+          import time,pymysql
+          for _ in range(180):
+              try:
+                  con=pymysql.connect(host='127.0.0.1',user='root',connect_timeout=2)
+                  con.close()
+                  break
+              except pymysql.MySQLError:
+                  time.sleep(1)
+          else:
+              raise RuntimeError('isolated MySQL did not become ready')
+          PY
+      - name: Run fixed-resource longhaul smoke
+        run: |
+          python tools/longhaul_workload.py --isolated \
+            --load-mode "$LONGHAUL_PROTOCOL" \
+            --rows "$LONGHAUL_ROWS" \
+            --rows-per-second "$LONGHAUL_RATE" \
+            --duration-seconds "$LONGHAUL_DURATION" \
+            --dynamic-tasks "$LONGHAUL_TASKS" \
+            --memory-mb 4096 \
+            --output benchmark-results/longhaul-workload.json
+      - name: Evaluate smoke evidence with production SLO latency thresholds
+        run: |
+          python tools/longhaul_gate.py benchmark-results/longhaul-daemon-summary.json \
+            --min-elapsed-seconds 1 \
+            --min-snapshot-rows "$LONGHAUL_ROWS" \
+            --max-p95-seconds 5 \
+            --max-p99-seconds 10 \
+            --min-cdc-samples 1 \
+            --output benchmark-results/longhaul-gate.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: longhaul-smoke-${{ github.sha }}
+          path: |
+            benchmark-results/longhaul-workload.json
+            benchmark-results/longhaul-daemon-summary.json
+            benchmark-results/longhaul-daemon-metrics.jsonl
+            benchmark-results/longhaul-gate.json
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Remove disposable services
+        if: always()
+        run: |
+          docker rm --force m2s-longhaul-mysql || true
+          docker rm --force m2s-longhaul-starrocks || true
