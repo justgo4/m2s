@@ -122,13 +122,39 @@ def main():
             str(state)+".summary.json")
         metrics=Path(
             str(state)+".metrics.jsonl")
+        state.write_bytes(b"x"*128)
         summary.write_text(
-            json.dumps(dict(event="run_summary")),
+            json.dumps(dict(
+                event="run_summary",
+                tables={
+                    "starrocks.events":dict(
+                        max_rowset=17),
+                    "starrocks.agg_000":dict(
+                        max_rowset=9),
+                },
+                state=dict(
+                    pending_bytes=0,
+                    prepared_budget_used=0,
+                    field_overflow_rows=0),
+                stateful=dict(
+                    physical=dict(
+                        sizes={
+                            "aggregate":dict(
+                                rows=1024,
+                                payload_bytes=4096),
+                        })),
+            )),
             encoding="utf-8")
         metrics.write_text(
             '{"event":"metrics"}\n',
             encoding="utf-8")
         output=directory/"artifacts"/"workload.json"
+        debt=longhaul_workload.collect_final_debt(
+            state)
+        assert debt["state_storage_bytes"]>=128
+        assert debt["stateful_rows"]==1024
+        assert debt["stateful_payload_bytes"]==4096
+        assert debt["max_rowset"]==17
         copied=longhaul_workload.copy_evidence(
             directory,output)
         assert set(copied)=={
