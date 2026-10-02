@@ -90,6 +90,7 @@ def workload():
         ),
         software_fingerprint=dict(
             code_revision="a"*40,
+            code_worktree_clean=True,
             mysql_version="8.4.6",
             mysql_gtid_mode="ON",
             mysql_binlog_format="ROW",
@@ -373,6 +374,7 @@ def main():
     assert full["evidence"]["resources"]["logical_cpus"]==8
     assert full["evidence"]["resources"]["configured_memory_mb"]==4096
     assert full["evidence"]["software"]["code_revision"]=="a"*40
+    assert full["evidence"]["software"]["code_worktree_clean"] is True
     assert full["evidence"]["software"]["mysql_gtid_mode"]=="ON"
     assert full["evidence"]["software"]["starrocks_version"].startswith("4.1.1")
     assert full["evidence"]["daemon_resources"]["peak_rss_bytes"]==768*1024**2
@@ -443,6 +445,13 @@ def main():
         bad,require_profile=p11_profile.NAME)
     assert not full["ok"]
     assert "workload_profile_mismatch" in full["failures"]
+
+    bad=workload()
+    bad["software_fingerprint"]["code_worktree_clean"]=False
+    full=evaluate_workload(
+        bad,require_profile=p11_profile.NAME)
+    assert not full["ok"]
+    assert "code_worktree_not_clean" in full["failures"]
 
     compatibility=evaluate_workload(
         dict(workload(),service_resources=None),
@@ -576,7 +585,7 @@ def main():
         "rowset_recovery overflow_fail_closed reproducible_resource_fingerprint "
         "daemon_process_resource_evidence daemon_rss_budget source_sink_resource_evidence "
         "service_limit_drift_fail_closed scope_overlap_fail_closed exact_profile_gate "
-        "software_fingerprint",
+        "clean_worktree_gate software_fingerprint",
         flush=True,
     )
 
