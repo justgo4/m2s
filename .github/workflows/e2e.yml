@@ -116,7 +116,10 @@ jobs:
           python tools/e2e_contract.py --isolated --load-mode "$TEST_PROTOCOL" --group-size 128 $EXTRA
       - name: Drop a real accepted Merge Commit response, isolate only that target and restart
         if: matrix.protocol == 'merge_async' && matrix.shared == 'OFF'
-        run: python tools/merge_quarantine_network_test.py --isolated
+        run: python tools/merge_quarantine_network_test.py --isolated --recovery off
+      - name: Drop a real accepted Merge Commit response and reconcile exact payload
+        if: matrix.protocol == 'merge_async' && matrix.shared == 'OFF'
+        run: python tools/merge_quarantine_network_test.py --isolated --recovery idempotent
       - name: Aggregate fixed-W runtime to real StarRocks 4.1.1
         if: matrix.gtid == 'ON' && matrix.shared == 'ON'
         run: python tools/aggregate_starrocks_contract.py --isolated --load-mode "$TEST_PROTOCOL"

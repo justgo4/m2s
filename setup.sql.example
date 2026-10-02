@@ -15,6 +15,12 @@ SET VARIABLE CDC_SR_DB = 'demo_target';
 SET VARIABLE CDC_STATE_FILE = './runtime/state.sqlite3';
 SET VARIABLE CDC_SERVER_ID = 10086;
 SET VARIABLE CDC_LOAD_MODE = 'merge_async';
+-- Merge Commit can lose a success response after StarRocks accepted the payload.
+-- The default recovery only replays bounded immutable payloads when the runtime
+-- can prove that doing so is idempotent for the target Primary Key table.
+SET VARIABLE CDC_MERGE_UNCERTAIN_RECOVERY = 'idempotent';
+SET VARIABLE CDC_MERGE_UNCERTAIN_REPLAY_MAX = 3;
+SET VARIABLE CDC_MERGE_UNCERTAIN_REPLAY_BACKOFF_SECONDS = 2;
 
 CREATE MACRO clean_text(x) AS trim(x);
 CREATE VIEW model.clean_orders AS

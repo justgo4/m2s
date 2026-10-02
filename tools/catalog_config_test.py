@@ -36,13 +36,23 @@ def main():
     for key in ('CDC_MYSQL_HOST', 'CDC_SR_DB'):
         candidate = dict(values, **{key: ''})
         assert cdc_catalog.connection_settings_values(candidate, require=False) is None
+    recovery_values = dict(
+        CDC_MERGE_UNCERTAIN_RECOVERY='off',
+        CDC_MERGE_UNCERTAIN_REPLAY_MAX='7',
+        CDC_MERGE_UNCERTAIN_REPLAY_BACKOFF_SECONDS='9',
+    )
+    assert set(recovery_values).issubset(cdc_catalog.PUBLIC_VARIABLES)
     with tempfile.TemporaryDirectory(prefix='m2s-config-test-') as directory:
         path = str(Path(directory) / 'catalog.sqlite3')
-        commands = ["SET VARIABLE " + key + " = '" + value + "'" for key, value in values.items()]
+        configured = dict(values, **recovery_values)
+        commands = ["SET VARIABLE " + key + " = '" + value + "'" for key, value in configured.items()]
         cdc_catalog.execute_batch(path, commands)
         assert cdc_catalog.connection_configured(path)
         saved = cdc_catalog.connection_settings(path)
         assert saved == result
+        durable = cdc_catalog.variables_get(path)
+        for key,value in recovery_values.items():
+            assert durable[key] == value
     # Remote scripts must not report success when the durable catalog was
     # committed but runtime installation needs a restart. No sockets/network.
     with tempfile.TemporaryDirectory(prefix='m2s-remote-result-') as directory:
