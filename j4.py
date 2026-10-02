@@ -9714,6 +9714,7 @@ def run_cdc(
                                 "after snapshot/draining prerequisites completed")
                 read = meta_get(con,"read_position")
                 age = max(0,time.time()-pending[1]) if pending[1] is not None else 0
+                sharing_status=stateful_share_policy.status(con)
                 writer_state = ""
                 if cfg["load_mode"] == "merge_async":
                     writer_state = " writers=" + ",".join(
@@ -9735,7 +9736,10 @@ def run_cdc(
                     f"reader_state={runtime.get('reader_state','unknown')} "
                     f"reader_retries={runtime.get('reader_retries',0)} "
                     f"active_plan={runtime_active_version(runtime)} "
-                    f"pending_plan={(runtime.get('pending_plan') or {}).get('version',0)}"
+                    f"pending_plan={(runtime.get('pending_plan') or {}).get('version',0)} "
+                    f"shared_selected={sharing_status['selected']} "
+                    f"shared_samples={sharing_status['samples']} "
+                    f"shared_max_source_lag={sharing_status['max_source_lag']}"
                     f"{writer_state}")
                 report_state = dict(
                     backfill_done=done,backfill_tables=backfill_tables,pending_jobs=pending[0],
@@ -9753,6 +9757,7 @@ def run_cdc(
                     reader_retries=int(runtime.get("reader_retries",0)),
                     active_plan_version=runtime_active_version(runtime),
                     catalog_activation=dict(runtime.get("catalog_activation",{})),
+                    stateful_sharing=dict(sharing_status),
                     quarantined_tables=dict(runtime.get("quarantined_tables",{})),
                     health="degraded" if runtime.get("quarantined_tables") else "normal",
                     pending_plan_version=int((runtime.get("pending_plan") or {}).get("version",0)),
