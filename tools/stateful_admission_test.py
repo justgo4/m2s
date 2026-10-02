@@ -101,6 +101,24 @@ def main():
     assert not first["admitted"]
     assert "max_tasks" in first["reason"]
 
+    queued=stateful_admission.queue_wait(
+        con,additions,plan_version=7,
+        reason=rejected["reason"],retry_seconds=30)
+    assert queued==["new-c","new-d"]
+    waits=stateful_admission.waiting_tasks(
+        con,plan_version=7)
+    assert [item["task_id"] for item in waits]==[
+        "new-c","new-d"]
+    plans=stateful_admission.waiting_plans(con)
+    assert len(plans)==1
+    assert plans[0]["plan_version"]==7
+    assert plans[0]["tasks"]==2
+    assert not stateful_admission.waiting_plans(
+        con,now=plans[0]["next_retry"]-1,due_only=True)
+    assert stateful_admission.waiting_plans(
+        con,now=plans[0]["next_retry"]+1,due_only=True
+    )[0]["plan_version"]==7
+
     admitted=stateful_admission.admit(
         con,additions,dict(
             stateful_admission_max_tasks=10,
@@ -126,11 +144,14 @@ def main():
     assert retry["ok"],retry
     assert retry["metrics"]["requested_tasks"]==0
 
+    assert not stateful_admission.waiting_tasks(con)
     status=stateful_admission.status(con)
     assert status==dict(
         decisions=2,admitted=2,rejected=0,
         reserved_pending_tasks=2,
-        reserved_state_bytes=200)
+        reserved_state_bytes=200,
+        waiting_tasks=0,waiting_plans=0,
+        next_retry=None)
     con.close()
 
     with tempfile.TemporaryDirectory(
@@ -147,7 +168,9 @@ def main():
             assert stateful_admission.status(ro)==dict(
                 decisions=0,admitted=0,rejected=0,
                 reserved_pending_tasks=0,
-                reserved_state_bytes=0)
+                reserved_state_bytes=0,
+                waiting_tasks=0,waiting_plans=0,
+                next_retry=None)
         finally:
             ro.close()
 
@@ -178,6 +201,21 @@ def main():
         assert two["reasons"]==["max_state_bytes"]
         assert two["metrics"]["reserved_state_bytes"]==60
         assert two["metrics"]["projected_state_bytes"]==120
+        stateful_admission.queue_wait(
+            second,[item("reserve-b","starrocks.b")],
+            plan_version=12,reason=two["reason"],
+            retry_seconds=0)
+        due=stateful_admission.waiting_plans(
+            second,due_only=True)
+        assert len(due)==1 and due[0]["plan_version"]==12
+        assert stateful_admission.waiting_tasks(
+            second,plan_version=12)[0]["retry_count"]==0
+        stateful_admission.queue_wait(
+            second,[item("reserve-b","starrocks.b")],
+            plan_version=12,reason=two["reason"],
+            retry_seconds=0)
+        assert stateful_admission.waiting_tasks(
+            second,plan_version=12)[0]["retry_count"]==1
         released=stateful_admission.release_unregistered(
             first,[item("reserve-a","starrocks.a")],
             reason="synthetic_failure")
@@ -185,6 +223,8 @@ def main():
         retry=stateful_admission.admit(
             second,[item("reserve-b","starrocks.b")],cfg)
         assert retry["ok"],retry
+        assert not stateful_admission.waiting_tasks(
+            second,plan_version=12)
         assert stateful_admission.decision_info(
             first,"reserve-a")["reserved_state_bytes"]==0
         first.close()
@@ -193,7 +233,7 @@ def main():
     print(
         "stateful_admission_test ok tasks building state_bytes "
         "pending_bytes source_lag durable_decision retry_idempotence "
-        "atomic_reservation release",
+        "atomic_reservation release durable_wait_queue due_retry",
         flush=True,
     )
 
