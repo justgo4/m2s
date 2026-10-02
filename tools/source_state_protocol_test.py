@@ -48,6 +48,78 @@ def assert_gc_index_contract(directory):
     con.close()
 
 
+
+
+def assert_bounded_gc_contract(directory):
+    path=os.path.join(
+        directory,"bounded-gc.sqlite3")
+    con=open_db(path)
+    source_state.register_relation(
+        con,"db.orders","source-bounded",
+        source_schema(),["id"])
+    source_state.stage_snapshot_batch(
+        con,"db.orders",batch([(0,1,"v0")]),
+        cursor=(1,),is_last=True)
+
+    for seq in range(1,7):
+        part=source_state.prepare_part(
+            "db.orders",batch([(0,1,"v%d" % seq)]))
+        assert source_state.log_commit(
+            con,"source-bounded",
+            ("binlog.000010",100+seq),None,[part])==seq
+        assert source_state.apply_pending(con)==1
+
+    first=source_state.gc(
+        con,version_limit=2,commit_limit=2)
+    assert first["floor"]==6
+    assert first["min_readable_seq"]==6
+    assert first["versions"]==2
+    assert first["commits"]==2
+    assert first["versions_pending"]
+    assert first["commits_pending"]
+    assert not first["complete"]
+
+    deleted_versions=first["versions"]
+    deleted_commits=first["commits"]
+    for _ in range(10):
+        step=source_state.gc(
+            con,version_limit=2,commit_limit=2)
+        deleted_versions+=step["versions"]
+        deleted_commits+=step["commits"]
+        if step["complete"]:
+            break
+    else:
+        raise AssertionError("bounded source GC did not converge")
+
+    assert deleted_versions==6
+    assert deleted_commits==5
+    assert con.execute("""
+        SELECT COUNT(*) FROM source_versions
+        WHERE valid_to IS NOT NULL AND valid_to<=6
+    """).fetchone()[0]==0
+    assert [
+        item["seq"] for item in source_state.read_commits(con,0)
+    ]==[6]
+
+    pin=source_state.acquire_pin(
+        con,"bounded-current",["db.orders"])
+    assert pin["watermark"]==6
+    snapshot_values(con,pin,{1:"v6"})
+    source_state.release_pin(con,pin["pin_id"])
+
+    for key,value in (
+        ("version_limit",0),
+        ("commit_limit",0),
+    ):
+        kwargs={key:value}
+        try:
+            source_state.gc(con,**kwargs)
+            raise AssertionError(
+                "%s=0 was accepted" % key)
+        except ValueError:
+            pass
+    con.close()
+
 def source_schema():
     return pa.schema([
         pa.field("id", pa.int64()),
@@ -255,6 +327,7 @@ def main():
         assert_log_stats_migration(td)
         assert_apply_staging_atomicity(td)
         assert_gc_index_contract(td)
+        assert_bounded_gc_contract(td)
         path = os.path.join(td, "state.sqlite3")
         con = open_db(path)
         source_state.register_relation(
@@ -401,7 +474,7 @@ def main():
         con.close()
 
     print(
-        "source_state_protocol_test ok fixed_w gc gc_index crash_replay "
+        "source_state_protocol_test ok fixed_w gc gc_index bounded_gc crash_replay "
         "consumer_frontier source_rate_migration",
         flush=True,
     )

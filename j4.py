@@ -8187,6 +8187,9 @@ def state_checkpoint_worker(cfg, runtime):
 
 STATE_GC_BATCH_BYTES = 8*1024*1024
 STATE_GC_INTERVAL = 0.02
+SOURCE_GC_INTERVAL = 5.0
+SOURCE_GC_VERSION_ROWS = 4096
+SOURCE_GC_COMMIT_ROWS = 1024
 
 
 def retired_job_gc_batch(con, byte_limit=STATE_GC_BATCH_BYTES):
@@ -8216,11 +8219,40 @@ def state_gc_worker(cfg, runtime):
     con = open_state(cfg["state"])
     last_error_log = 0.0
     last_retention = 0.0
+    last_source_gc = 0.0
     try:
         while not stop.is_set():
             try:
                 count,nbytes = retired_job_gc_batch(con)
                 now = time.time()
+                if (
+                    cfg.get("shared_source_state",False)
+                    and now-last_source_gc >= SOURCE_GC_INTERVAL
+                ):
+                    incomplete = source_state.incomplete_relations(con)
+                    if not incomplete:
+                        source_gc = source_state.gc(
+                            con,
+                            version_limit=SOURCE_GC_VERSION_ROWS,
+                            commit_limit=SOURCE_GC_COMMIT_ROWS,
+                        )
+                        sync_source_base_catalog(con)
+                        if (
+                            cfg.get("detail_logs",False)
+                            and (
+                                source_gc["versions"]
+                                or source_gc["commits"]
+                                or source_gc["versions_pending"]
+                                or source_gc["commits_pending"]
+                            )
+                        ):
+                            log(
+                                f"SOURCE GC floor={source_gc['floor']} "
+                                f"versions={source_gc['versions']} "
+                                f"commits={source_gc['commits']} "
+                                f"versions_pending={int(source_gc['versions_pending'])} "
+                                f"commits_pending={int(source_gc['commits_pending'])}")
+                    last_source_gc = now
                 if now-last_retention >= 60:
                     value_cutoff = now-float(
                         cfg.get("overflow_value_days",90))*86400
@@ -8247,19 +8279,6 @@ def state_gc_worker(cfg, runtime):
                                     item["task_id"]
                                     for item in stateful_gc),
                             ))
-                    if cfg.get("shared_source_state",False):
-                        incomplete = source_state.status(con)["incomplete_relations"]
-                        if not incomplete:
-                            source_gc = source_state.gc(con)
-                            sync_source_base_catalog(con)
-                            if (
-                                cfg.get("detail_logs",False)
-                                and (source_gc["versions"] or source_gc["commits"])
-                            ):
-                                log(
-                                    f"SOURCE GC floor={source_gc['floor']} "
-                                    f"versions={source_gc['versions']} "
-                                    f"commits={source_gc['commits']}")
                     # Partial/offline runtimes (notably the release scale
                     # fixture) intentionally omit plan-manager state. Retired
                     # job GC must remain independent of optional catalog GC.

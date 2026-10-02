@@ -1125,27 +1125,91 @@ def retention_floor(con, consumer_watermarks=()):
     return min(values)
 
 
-def gc(con, consumer_watermarks=()):
+def incomplete_relations(con):
+    return [
+        str(row[0]) for row in con.execute(
+            "SELECT table_name FROM source_relations "
+            "WHERE complete_seq IS NULL ORDER BY table_name"
+        )
+    ]
+
+
+def gc(
+        con, consumer_watermarks=(), version_limit=None, commit_limit=None
+):
     floor = retention_floor(con, consumer_watermarks)
+    version_limit = (
+        None if version_limit is None else int(version_limit)
+    )
+    commit_limit = (
+        None if commit_limit is None else int(commit_limit)
+    )
+    if version_limit is not None and version_limit < 1:
+        raise ValueError("version_limit must be >= 1")
+    if commit_limit is not None and commit_limit < 1:
+        raise ValueError("commit_limit must be >= 1")
     with transaction(con):
-        version_rows = con.execute("""
-            DELETE FROM source_versions
-            WHERE valid_to IS NOT NULL AND valid_to<=?
-        """, (floor,)).rowcount
-        commit_rows = con.execute("""
-            DELETE FROM source_commits
-            WHERE seq<? AND base_applied=1
-        """, (floor,)).rowcount
         current_min = min_readable_seq(con)
         if floor < current_min:
             raise RuntimeError(
                 "source-state GC floor moved behind physical history frontier")
+        # Advance the readability frontier in the same transaction as the
+        # first bounded delete. A crash may leave extra obsolete rows behind,
+        # but can never leave metadata claiming an already-deleted W is valid.
         _meta_set_int(con, "min_readable_seq", floor)
+
+        if version_limit is None:
+            version_rows = con.execute("""
+                DELETE FROM source_versions
+                WHERE valid_to IS NOT NULL AND valid_to<=?
+            """, (floor,)).rowcount
+        else:
+            version_rows = con.execute("""
+                DELETE FROM source_versions
+                WHERE rowid IN (
+                    SELECT rowid
+                    FROM source_versions INDEXED BY source_versions_gc
+                    WHERE valid_to IS NOT NULL AND valid_to<=?
+                    ORDER BY valid_to,rowid
+                    LIMIT ?
+                )
+            """, (floor,version_limit)).rowcount
+
+        if commit_limit is None:
+            commit_rows = con.execute("""
+                DELETE FROM source_commits
+                WHERE seq<? AND base_applied=1
+            """, (floor,)).rowcount
+        else:
+            commit_rows = con.execute("""
+                DELETE FROM source_commits
+                WHERE seq IN (
+                    SELECT seq FROM source_commits
+                    WHERE seq<? AND base_applied=1
+                    ORDER BY seq
+                    LIMIT ?
+                )
+            """, (floor,commit_limit)).rowcount
+
+        versions_pending = con.execute("""
+            SELECT 1
+            FROM source_versions INDEXED BY source_versions_gc
+            WHERE valid_to IS NOT NULL AND valid_to<=?
+            LIMIT 1
+        """, (floor,)).fetchone() is not None
+        commits_pending = con.execute("""
+            SELECT 1 FROM source_commits
+            WHERE seq<? AND base_applied=1
+            LIMIT 1
+        """, (floor,)).fetchone() is not None
     return dict(
         floor=int(floor),
         min_readable_seq=min_readable_seq(con),
         versions=max(0, int(version_rows)),
         commits=max(0, int(commit_rows)),
+        versions_pending=bool(versions_pending),
+        commits_pending=bool(commits_pending),
+        complete=not versions_pending and not commits_pending,
     )
 
 
@@ -1205,12 +1269,7 @@ def status(con):
         apply_staging_rows=apply_staging_rows,
         snapshot_staging_rows=snapshot_staging_rows,
     )
-    incomplete = [
-        row[0] for row in con.execute(
-            "SELECT table_name FROM source_relations "
-            "WHERE complete_seq IS NULL ORDER BY table_name"
-        )
-    ]
+    incomplete = incomplete_relations(con)
     pins = [
         dict(pin_id=row[0], watermark=int(row[1]), owner=row[2])
         for row in con.execute(
