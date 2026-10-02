@@ -73,6 +73,7 @@ jobs:
           python tools/stateful_hot_add_test.py
           python tools/stateful_physical_registry_test.py
           python tools/shared_state_scale_test.py
+          python tools/shared_subview_scale_test.py
           python tools/shared_join_state_scale_test.py
           python tools/incremental_contract_test.py
           python tools/incremental_ir_test.py
