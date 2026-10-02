@@ -38,7 +38,7 @@ def install(con):
             updated REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS stateful_rebuild_cohort_members(
             cohort_id TEXT NOT NULL,
-            sink_key TEXT NOT NULL UNIQUE,
+            sink_key TEXT NOT NULL,
             ordinal INTEGER NOT NULL,
             ready INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY(cohort_id,sink_key),
@@ -49,6 +49,22 @@ def install(con):
             ON stateful_rebuild_cohorts(phase,updated);
         CREATE INDEX IF NOT EXISTS stateful_rebuild_cohort_member_order
             ON stateful_rebuild_cohort_members(cohort_id,ordinal);
+        CREATE INDEX IF NOT EXISTS stateful_rebuild_cohort_member_sink
+            ON stateful_rebuild_cohort_members(sink_key,cohort_id);
+        CREATE TRIGGER IF NOT EXISTS stateful_rebuild_cohort_active_sink_insert
+        BEFORE INSERT ON stateful_rebuild_cohort_members
+        WHEN EXISTS(
+            SELECT 1
+            FROM stateful_rebuild_cohort_members m
+            JOIN stateful_rebuild_cohorts c
+              ON c.cohort_id=m.cohort_id
+            WHERE m.sink_key=NEW.sink_key
+              AND c.phase NOT IN ('complete','failed')
+              AND m.cohort_id<>NEW.cohort_id
+        )
+        BEGIN
+            SELECT RAISE(IGNORE);
+        END;
     """)
 
 
@@ -164,42 +180,51 @@ def begin(con,plan_version,sink_keys):
                 "failed stateful rebuild cohort cannot be revived")
         return current
 
-    now=time.time()
-    con.execute("""
-        INSERT OR IGNORE INTO stateful_rebuild_cohorts(
-            cohort_id,plan_version,frontier,
-            phase,error,created,updated)
-        VALUES(?,?,NULL,'building','',?,?)
-    """,(cohort_id,plan_version,now,now))
-    for ordinal,sink in enumerate(sinks):
+    def create():
+        now=time.time()
         con.execute("""
-            INSERT OR IGNORE INTO stateful_rebuild_cohort_members(
-                cohort_id,sink_key,ordinal,ready)
-            VALUES(?,?,?,0)
-        """,(cohort_id,sink,ordinal))
-        owner=con.execute("""
-            SELECT cohort_id
-            FROM stateful_rebuild_cohort_members
-            WHERE sink_key=?
-        """,(sink,)).fetchone()
-        if (
-            owner is None
-            or str(owner[0])!=cohort_id
-        ):
-            raise RuntimeError(
-                "stateful rebuild sink already belongs to another cohort: "
-                +sink)
+            INSERT OR IGNORE INTO stateful_rebuild_cohorts(
+                cohort_id,plan_version,frontier,
+                phase,error,created,updated)
+            VALUES(?,?,NULL,'building','',?,?)
+        """,(cohort_id,plan_version,now,now))
+        for ordinal,sink in enumerate(sinks):
+            con.execute("""
+                INSERT OR IGNORE INTO stateful_rebuild_cohort_members(
+                    cohort_id,sink_key,ordinal,ready)
+                VALUES(?,?,?,0)
+            """,(cohort_id,sink,ordinal))
+            owner=con.execute("""
+                SELECT m.cohort_id
+                FROM stateful_rebuild_cohort_members m
+                JOIN stateful_rebuild_cohorts c
+                  ON c.cohort_id=m.cohort_id
+                WHERE m.sink_key=?
+                  AND c.phase NOT IN ('complete','failed')
+                ORDER BY c.created,m.cohort_id
+                LIMIT 2
+            """,(sink,)).fetchall()
+            if (
+                len(owner)!=1
+                or str(owner[0][0])!=cohort_id
+            ):
+                raise RuntimeError(
+                    "stateful rebuild sink already belongs to another "
+                    "active cohort: "+sink)
 
-    current=info(
-        con,cohort_id)
-    actual=[
-        item["sink_key"]
-        for item in current["members"]
-    ]
-    if actual!=sinks:
-        raise RuntimeError(
-            "stateful rebuild cohort member set is incomplete")
-    return current
+        current=info(
+            con,cohort_id)
+        actual=[
+            item["sink_key"]
+            for item in current["members"]
+        ]
+        if actual!=sinks:
+            raise RuntimeError(
+                "stateful rebuild cohort member set is incomplete")
+        return current
+
+    return _savepoint(
+        con,"stateful_rebuild_cohort_begin",create)
 
 
 def for_sink(con,sink_key):
