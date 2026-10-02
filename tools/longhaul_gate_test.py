@@ -483,6 +483,21 @@ def main():
     assert "service_resource_scope_overlap" in full["failures"]
 
     bad=workload()
+    value=bad["dynamic_task_ready_seconds"].pop(
+        "starrocks.join_010")
+    bad["dynamic_task_ready_seconds"][
+        "starrocks.agg_010"]=value
+    full=evaluate_workload(bad)
+    assert not full["ok"]
+    assert "dynamic_task_mix_mismatch" in full["failures"]
+
+    bad=workload()
+    bad["join_checks"]["tables"].pop("join_010")
+    full=evaluate_workload(bad)
+    assert not full["ok"]
+    assert "join_targets_missing" in full["failures"]
+
+    bad=workload()
     bad["workload_profile"]="custom"
     full=evaluate_workload(
         bad,require_profile=p11_profile.NAME)
