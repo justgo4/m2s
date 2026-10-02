@@ -272,6 +272,17 @@ def copy_commit(
         con,source_consumer_id,source_seq)
     stream=stream_info(
         con,target_consumer_id)
+    if source_seq<int(stream["fixed_w"]):
+        raise RuntimeError(
+            "aggregate copied output commit predates target fixed-W")
+    previous=con.execute("""
+        SELECT MAX(source_seq)
+        FROM aggregate_output_commits
+        WHERE consumer_id=?
+    """,(target_consumer_id,)).fetchone()[0]
+    if previous is not None and source_seq>int(previous)+1:
+        raise RuntimeError(
+            "aggregate copied output commit would create a target gap")
     rows=[
         (bytes(key_blob),int(op),bytes(payload))
         for key_blob,op,payload in con.execute("""
@@ -293,9 +304,6 @@ def copy_commit(
     if copied["digest"]!=source["digest"]:
         raise RuntimeError(
             "aggregate copied output commit digest differs from source")
-    if source_seq<int(stream["fixed_w"]):
-        raise RuntimeError(
-            "aggregate copied output commit predates target fixed-W")
     return copied
 
 
