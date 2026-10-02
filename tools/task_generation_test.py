@@ -81,6 +81,25 @@ def main():
     assert imported_staged["history_staged_at"] is not None
     assert imported_staged["ready_at"] is None
 
+    imported_multi = tg.import_existing_multi(
+        con,"sink-old-join",5,
+        ["db.orders","db.customers"],"history_staged")
+    assert imported_multi["imported"]
+    assert imported_multi["source_relation"]=="db.orders"
+    assert tg.source_relations(
+        con,"sink-old-join",5
+    )==["db.orders","db.customers"]
+    assert tg.import_existing_multi(
+        con,"sink-old-join",5,
+        ["db.orders","db.customers"],"history_staged"
+    )["generation_id"]==imported_multi["generation_id"]
+    expect_error(
+        lambda: tg.import_existing_multi(
+            con,"sink-old-join",5,
+            ["db.customers","db.orders"],"history_staged"),
+        RuntimeError,
+    )
+
     multi = tg.ensure_build_multi(
         con,"sink-join",9,
         ["db.orders","db.customers"],160,"pin-join")
@@ -117,7 +136,7 @@ def main():
     assert recovered["status"] == "history_staged"
     assert recovered["fixed_w"] == 150
     assert recovered["source_pin_released"]
-    assert len(tg.list_generations(con)) == 5
+    assert len(tg.list_generations(con)) == 6
 
     retired = tg.set_terminal(con,"sink-a",7,"retired")
     assert retired["status"] == "retired"
