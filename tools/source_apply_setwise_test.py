@@ -140,6 +140,40 @@ def main():
             WHERE valid_from=2
         """).fetchone()[0]==2
 
+        # Durable metadata is part of the source-log contract. A row-count
+        # mismatch must fail before the staged net changes can publish.
+        part=source_state.prepare_part(
+            "db.events",
+            batch([(0,11,"metadata-check")]))
+        assert source_state.log_commit(
+            con,"epoch-1",
+            ("binlog.000001",130),None,
+            [part])==3
+        con.execute("""
+            UPDATE source_commit_parts
+            SET nrows=nrows+1
+            WHERE seq=3 AND part=0
+        """)
+        try:
+            source_state.apply_pending(con)
+            raise AssertionError(
+                "source part row-count mismatch was accepted")
+        except RuntimeError as exc:
+            assert "row count differs" in str(exc)
+        assert source_state.base_applied_seq(con)==2
+        assert con.execute("""
+            SELECT COUNT(*)
+            FROM source_apply_actions
+            WHERE seq=3
+        """).fetchone()[0]==0
+        con.execute("""
+            UPDATE source_commit_parts
+            SET nrows=nrows-1
+            WHERE seq=3 AND part=0
+        """)
+        assert source_state.apply_pending(con)==1
+        assert source_state.base_applied_seq(con)==3
+
         # A corrupt backing state with two current versions must be detected
         # before any close/insert can partially publish the next commit.
         payload=con.execute("""
@@ -186,23 +220,23 @@ def main():
         assert source_state.log_commit(
             con,"epoch-1",
             ("binlog.000001",140),None,
-            [part])==3
+            [part])==4
         try:
             source_state.apply_pending(con)
             raise AssertionError(
                 "duplicate current source versions were accepted")
         except RuntimeError as exc:
             assert "multiple current source versions" in str(exc)
-        assert source_state.base_applied_seq(con)==2
+        assert source_state.base_applied_seq(con)==3
         assert con.execute("""
             SELECT COUNT(*)
             FROM source_apply_actions
-            WHERE seq=3
+            WHERE seq=4
         """).fetchone()[0]==0
         assert con.execute("""
             SELECT base_applied
             FROM source_commits
-            WHERE seq=3
+            WHERE seq=4
         """).fetchone()[0]==0
         con.close()
 
