@@ -9157,7 +9157,16 @@ def stateful_task_worker(item, cfg, runtime):
                     break
                 raise
             wake_loaders(runtime,mapping_key(mapping))
-            if result.get("reused_physical"):
+            if result.get("shared_physical"):
+                log(
+                    "STATEFUL PHYSICAL REUSE task=%s sink=%s kind=%s "
+                    "mode=shared_incremental leader=%s state=%s"
+                    % (
+                        task["task_id"],mapping_key(mapping),kind,
+                        result.get("shared_leader_task_id"),
+                        result.get("shared_state_id"),
+                    ))
+            elif result.get("reused_physical"):
                 log(
                     "STATEFUL PHYSICAL REUSE task=%s sink=%s kind=%s "
                     "fixed_w=%s mode=atomic_clone"
