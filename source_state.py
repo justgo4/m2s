@@ -161,6 +161,7 @@ def install(con):
             _meta_set_int(con, "log_durable_seq", 0)
             _meta_set_int(con, "base_applied_seq", 0)
             _meta_set_int(con, "min_readable_seq", 0)
+            _meta_set_int(con, "apply_pending_bytes", 0)
     elif _meta_int(con, "min_readable_seq", None) is None:
         # Older shared-state builds could already have GCed historical
         # versions without recording the physical history floor. Migrate
@@ -168,6 +169,16 @@ def install(con):
         with transaction(con):
             _meta_set_int(
                 con, "min_readable_seq", base_applied_seq(con))
+    if _meta_int(con,"apply_pending_bytes",None) is None:
+        with transaction(con):
+            pending_bytes=int(con.execute("""
+                SELECT COALESCE(SUM(length(p.payload)),0)
+                FROM source_commit_parts p
+                JOIN source_commits c ON c.seq=p.seq
+                WHERE c.base_applied=0
+            """).fetchone()[0] or 0)
+            _meta_set_int(
+                con,"apply_pending_bytes",pending_bytes)
     if _meta_int(con,"log_stats_v1",0)!=1:
         with transaction(con):
             retained=con.execute("""
@@ -242,6 +253,10 @@ def log_durable_seq(con):
 
 def base_applied_seq(con):
     return int(_meta_int(con, "base_applied_seq", 0))
+
+
+def apply_pending_bytes(con):
+    return int(_meta_int(con, "apply_pending_bytes", 0))
 
 
 def min_readable_seq(con):
@@ -427,6 +442,10 @@ def log_commit_tx(con, source_epoch, position, gtid, parts):
     previous = log_durable_seq(con)
     if seq <= previous:
         raise RuntimeError("source commit sequence did not advance")
+    pending_bytes=apply_pending_bytes(con)
+    _meta_set_int(
+        con,"apply_pending_bytes",
+        pending_bytes+int(payload_bytes))
     _meta_set_int(con, "log_durable_seq", seq)
     elapsed_ns=max(
         0,time.perf_counter_ns()-started_ns)
@@ -587,11 +606,14 @@ def _stage_commit_actions(con, seq):
 def apply_one(con, seq):
     seq=int(seq)
     started_ns=time.perf_counter_ns()
-    input_rows=int(con.execute("""
-        SELECT COALESCE(SUM(nrows),0)
+    input_rows,input_payload_bytes=con.execute("""
+        SELECT COALESCE(SUM(nrows),0),
+               COALESCE(SUM(length(payload)),0)
         FROM source_commit_parts
         WHERE seq=?
-    """,(seq,)).fetchone()[0] or 0)
+    """,(seq,)).fetchone()
+    input_rows=int(input_rows or 0)
+    input_payload_bytes=int(input_payload_bytes or 0)
     with transaction(con):
         applied=base_applied_seq(con)
         if seq<=applied:
@@ -686,6 +708,13 @@ def apply_one(con, seq):
             "SET base_applied=1 "
             "WHERE seq=?",
             (seq,))
+        pending_bytes=apply_pending_bytes(con)
+        if input_payload_bytes>pending_bytes:
+            raise RuntimeError(
+                "source apply pending byte counter underflow")
+        _meta_set_int(
+            con,"apply_pending_bytes",
+            pending_bytes-input_payload_bytes)
         _meta_set_int(
             con,"base_applied_seq",seq)
         elapsed_ns=max(
@@ -1129,6 +1158,7 @@ def status(con):
     return dict(
         log_durable_seq=log_durable_seq(con),
         base_applied_seq=base_applied_seq(con),
+        apply_pending_bytes=apply_pending_bytes(con),
         log_stats_started_seq=_meta_int(
             con,"log_stats_started_seq",1),
         log_stats_started_at=_meta_float(
