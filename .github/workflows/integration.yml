@@ -6,12 +6,17 @@ on:
   pull_request:
   workflow_dispatch:
   workflow_call:
+    inputs:
+      milestone:
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: integration-${{ github.event_name }}-${{ github.event_name == 'workflow_call' && github.sha || github.ref }}
+  group: integration-${{ inputs.milestone && github.sha || github.ref }}
   cancel-in-progress: true
 
 jobs:
