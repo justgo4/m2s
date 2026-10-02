@@ -291,5 +291,18 @@ python tools/longhaul_gate.py /data/m2s-p11-run/longhaul-workload.json \
 
 - 被审查 SHA `01417f7e` 的 [baseline](https://github.com/justgo4/m2s/actions/runs/37076884585) 与 [native](https://github.com/justgo4/m2s/actions/runs/37076884654) 已成功。
 - [八格真实 CDC E2E](https://github.com/justgo4/m2s/actions/runs/37076871794) 已全部成功，但对应 `92337a9d`，不能把它直接记为 `01417f7e` 或本次修复的同 SHA 验收。
-- 当前并不存在“Actions 永远无法通过”的证据；曾有测试缺导入、并发协议缺口和连续 push 取消运行，应按具体失败日志修复。此次代码提交仍需自身 baseline/native/真实 E2E 的结果，历史绿色记录不能替代。
+- 当前并不存在“Actions 永远无法通过”的证据；曾有测试缺导入、并发协议缺口和连续 push 取消运行，应按具体失败日志修复。历史绿色记录不能替代本次修复自身的验收。
 - 优先保留现有架构，先收集固定资源下 capture/apply/GC contention、大事务 TEMP/WAL/RSS 和 JOIN fan-out 的结果，再决定状态引擎/native 下沉。短时 CI 仍不能代替正式 50M/72h；Merge Commit 未知结果的自动对账、受限 SQL 覆盖与多表对外原子切换边界也未因本次修复改变。
+
+#### 本次修复的固定提交验收与合并记录
+
+修复提交 [`b30fd98d`](https://github.com/justgo4/m2s/commit/b30fd98dbf878873247457ac9d9bc2a9ddb09bdd) 的下列四类 GitHub CI **全部成功**；[PR #4](https://github.com/justgo4/m2s/pull/4) 已合并，merge commit 为 [`55fa2a94`](https://github.com/justgo4/m2s/commit/55fa2a940a3174e0916b2b64b1d6180d8f1527df)，其 Git tree 与已验收的修复提交一致。
+
+| 本次 CI | 结果与范围 |
+|---|---|
+| [Public baseline CI](https://github.com/justgo4/m2s/actions/runs/37078480776) | Python 3.12/3.14 全部通过，包括新增三个 SQLite 并发回归、原有 source protocol、set-wise apply/snapshot、异步 apply worker 与其余 baseline 合同；此处完整模块使用真实依赖导入 |
+| [Native contracts and isolated MySQL](https://github.com/justgo4/m2s/actions/runs/37078480762) | sanitizer、真实 MySQL differential/snapshot 和 StarRocks 合同全部通过 |
+| [Candidate source-state durability and layouts](https://github.com/justgo4/m2s/actions/runs/37078480742) | Python 3.12/3.14 的 crash/fixed-W/replay、100k source apply/snapshot、capture/apply overlap 与 bounded GC contention 全部通过，并保留 benchmark JSON artifact |
+| [Actual daemon MySQL to StarRocks contract](https://github.com/justgo4/m2s/actions/runs/37078480757) | merge_async/transaction × 两个开关的八格矩阵全部通过，包括并发 backfill/change、强退恢复、共享状态 aggregate/JOIN lifecycle 与 P11 mixed fault smoke |
+
+以上是本次修复的 PR CI 记录；合并后主线自动复跑应按自己的 SHA/运行分别查询，后续 README 证据补记也不改变已验收代码的版本。这里仍未宣称正式 50M/72h 认证。
