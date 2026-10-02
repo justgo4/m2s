@@ -7018,14 +7018,16 @@ def quarantine_merge_table(con, table, runtime, reason):
     if not rows:
         return False
     detail = dict(reason=str(reason)[:2000],parts=len(rows),
-                  delivery_id=rows[0][0],part=rows[0][1],replay_disabled=True)
+                  delivery_id=rows[0][0],part=rows[0][1],
+                  replay_disabled=True,reconcile_enabled=True)
     with runtime['control_lock']:
         quarantined = runtime.setdefault('quarantined_tables',{})
         first = table not in quarantined
         quarantined[table] = detail
     if first:
         log(f"MERGE QUARANTINED table={table} parts={len(rows)} "
-            f"replay=0 journal_retained=1 unrelated_targets_continue=1 reason={detail['reason']}")
+            f"blind_replay=0 reconcile=1 journal_retained=1 "
+            f"unrelated_targets_continue=1 reason={detail['reason']}")
     return True
 
 
@@ -7036,6 +7038,308 @@ def quarantine_pending_merges(con, runtime):
     for table, in tables:
         quarantine_merge_table(con,table,runtime,'unresolved request restored from durable state')
     return len(tables)
+
+
+
+def merge_remote_inflight(cfg, table):
+    """Return non-terminal StarRocks loads for one quarantined target.
+
+    StarRocks Merge Commit ignores caller labels, so recovery cannot identify an
+    uncertain request by the local label.  The safe barrier is table scoped:
+    after every local lane is frozen, wait until StarRocks reports no
+    non-terminal load for the target before replaying immutable payload bytes.
+    """
+    con = mysql_connect(cfg,target=True)
+    try:
+        with con.cursor() as cur:
+            cur.execute("""
+                SELECT ID,LABEL,STATE,CREATE_TIME
+                FROM information_schema.loads
+                WHERE DB_NAME=%s AND TABLE_NAME=%s
+                  AND UPPER(STATE) NOT IN ('FINISHED','CANCELLED','CANCELED')
+                ORDER BY CREATE_TIME,ID
+            """,(cfg["sr"]["database"],str(table)))
+            return [
+                dict(
+                    id=row[0],
+                    label=str(row[1] or ""),
+                    state=str(row[2] or ""),
+                    create_time=str(row[3] or ""))
+                for row in cur.fetchall()
+            ]
+    finally:
+        con.close()
+
+
+def merge_remote_quiet_barrier(cfg, table, stop):
+    """Require two merge windows with no remote in-flight load.
+
+    The consecutive-zero window prevents an accepted request whose response was
+    lost from being followed immediately by an exact replay while its original
+    Merge Commit transaction is still being assembled or published.
+    """
+    quiet_seconds=max(
+        1.0,
+        2.0*float(cfg["merge_commit_interval_ms"])/1000.0)
+    deadline=time.monotonic()+max(
+        quiet_seconds*4.0,
+        min(float(cfg["load_timeout"]),60.0))
+    zero_since=None
+    last=[]
+    while not stop.is_set() and time.monotonic()<deadline:
+        try:
+            last=merge_remote_inflight(cfg,table)
+        except (pymysql.err.OperationalError,pymysql.err.InterfaceError) as exc:
+            if not retryable_mysql_error(exc):
+                raise
+            zero_since=None
+            if stop.wait(min(2.0,quiet_seconds)):
+                break
+            continue
+        now=time.monotonic()
+        if last:
+            zero_since=None
+        else:
+            if zero_since is None:
+                zero_since=now
+            if now-zero_since>=quiet_seconds:
+                return True
+        if stop.wait(min(0.5,max(0.05,quiet_seconds/4.0))):
+            break
+    if not stop.is_set():
+        summary=",".join(
+            str(item.get("state","")) for item in last[:5]) or "none"
+        log(
+            f"MERGE RECONCILE WAIT table={table} remote_inflight="
+            f"{len(last)} states={summary} replay=0 journal_retained=1")
+    return False
+
+
+def merge_recovery_lane_locks(runtime, table, cfg):
+    """Non-blockingly freeze every key lane for one target."""
+    held=[]
+    for lane in range(int(cfg["key_partitions"])):
+        lock=runtime["lane_locks"].get((table,lane))
+        if lock is None or not lock.acquire(blocking=False):
+            for item in reversed(held):
+                item.release()
+            return None
+        held.append(lock)
+    return held
+
+
+def merge_uncertain_rows(con, table):
+    return con.execute("""
+        SELECT u.delivery_id,u.part,u.label,u.payload_sha256,
+               p.payload,p.nrows,p.visible,p.txn_id,u.reason,u.created
+        FROM merge_uncertain u
+        JOIN load_parts p
+          ON p.delivery_id=u.delivery_id AND p.part=u.part
+        JOIN deliveries d
+          ON d.id=u.delivery_id AND d.table_name=u.table_name
+        WHERE u.table_name=?
+        ORDER BY u.created,u.delivery_id,u.part
+    """,(str(table),)).fetchall()
+
+
+def merge_reconcile_reason(con, delivery, part, reason):
+    with state_transaction(con):
+        con.execute("""
+            UPDATE merge_uncertain
+            SET reason=?,updated=?
+            WHERE delivery_id=? AND part=?
+        """,(str(reason)[:4000],time.time(),delivery,int(part)))
+
+
+def merge_reconcile_visible(con, delivery, part, txn_id):
+    with state_transaction(con):
+        con.execute("""
+            UPDATE load_parts
+            SET visible=1,txn_id=COALESCE(txn_id,?)
+            WHERE delivery_id=? AND part=?
+        """,(None if txn_id is None else int(txn_id),delivery,int(part)))
+        con.execute("""
+            DELETE FROM merge_uncertain
+            WHERE delivery_id=? AND part=?
+        """,(delivery,int(part)))
+
+
+def merge_reconcile_one(
+        handle, con, mapping, row, cfg, runtime
+):
+    """Resolve one uncertain immutable Merge Commit request.
+
+    Caller holds every lane lock for the target and has passed the remote quiet
+    barrier.  A replay response can itself be lost; in that case the durable
+    marker remains and the next recovery pass establishes a new quiet barrier
+    before trying again.
+    """
+    (
+        delivery,part,local_label,payload_sha256,payload,nrows,
+        visible,txn_id,_,_
+    )=row
+    digest=hashlib.sha256(payload).hexdigest()
+    if digest!=str(payload_sha256):
+        merge_reconcile_reason(
+            con,delivery,part,
+            "reconcile_blocked_payload_sha256_mismatch")
+        raise RuntimeError(
+            f"Merge Commit reconciliation payload hash mismatch "
+            f"delivery={delivery} part={part}; replay refused")
+
+    if int(visible):
+        merge_reconcile_visible(
+            con,delivery,part,txn_id)
+        return "already_visible"
+
+    if txn_id is not None:
+        state,detail=wait_visible(
+            cfg,int(txn_id),runtime["stop"])
+        if state=="visible":
+            merge_reconcile_visible(
+                con,delivery,part,int(txn_id))
+            return "known_txn_visible"
+        with state_transaction(con):
+            con.execute("""
+                UPDATE load_parts SET txn_id=NULL
+                WHERE delivery_id=? AND part=?
+            """,(delivery,int(part)))
+            con.execute("""
+                UPDATE merge_uncertain
+                SET reason=?,updated=?
+                WHERE delivery_id=? AND part=?
+            """,(
+                (
+                    "reconcile_known_txn_aborted "
+                    +load_result_text(detail)
+                )[:4000],
+                time.time(),delivery,int(part)))
+        return "aborted"
+
+    url=merge_stream_load_url(cfg,mapping)
+    headers=merge_commit_headers(mapping,cfg)
+    try:
+        status,result=curl_request(
+            handle,cfg,url,payload,headers,None)
+    except pycurl.error as exc:
+        merge_reconcile_reason(
+            con,delivery,part,
+            "reconcile_replay_uncertain "+str(exc))
+        return "uncertain"
+    except (RuntimeError,pymysql.err.OperationalError) as exc:
+        merge_reconcile_reason(
+            con,delivery,part,
+            "reconcile_replay_uncertain "+str(exc))
+        return "uncertain"
+
+    state=str(result.get("Status","")).lower()
+    if not (200<=int(status)<300 and state=="success"):
+        merge_reconcile_reason(
+            con,delivery,part,
+            "reconcile_replay_rejected "
+            +load_result_text(result))
+        return "rejected"
+
+    remote_txn=result.get("TxnId")
+    remote_label=str(result.get("Label","") or "")
+    if remote_txn is None or int(remote_txn)<0 or not remote_label:
+        merge_reconcile_reason(
+            con,delivery,part,
+            "reconcile_replay_missing_txn "
+            +load_result_text(result))
+        return "uncertain"
+    remote_txn=int(remote_txn)
+    with state_transaction(con):
+        con.execute("""
+            UPDATE load_parts SET txn_id=?
+            WHERE delivery_id=? AND part=?
+        """,(remote_txn,delivery,int(part)))
+        con.execute("""
+            UPDATE merge_uncertain
+            SET reason=?,updated=?
+            WHERE delivery_id=? AND part=?
+        """,(
+            "reconcile_replay_known_txn",
+            time.time(),delivery,int(part)))
+    metric_add_merge(
+        runtime,mapping_key(mapping),remote_txn,
+        int(nrows),int(result.get("LeftMergeTimeMs",0) or 0))
+    state,detail=wait_visible(
+        cfg,remote_txn,runtime["stop"])
+    if state=="visible":
+        merge_reconcile_visible(
+            con,delivery,part,remote_txn)
+        log(
+            f"MERGE RECONCILED table={mapping_key(mapping)} "
+            f"delivery={delivery} part={part} txn={remote_txn} "
+            f"local_request_id={local_label} exact_payload_replay=1")
+        return "replayed_visible"
+
+    with state_transaction(con):
+        con.execute("""
+            UPDATE load_parts SET txn_id=NULL
+            WHERE delivery_id=? AND part=?
+        """,(delivery,int(part)))
+        con.execute("""
+            UPDATE merge_uncertain
+            SET reason=?,updated=?
+            WHERE delivery_id=? AND part=?
+        """,(
+            (
+                "reconcile_replay_aborted "
+                +load_result_text(detail)
+            )[:4000],
+            time.time(),delivery,int(part)))
+    return "aborted"
+
+
+def reconcile_merge_quarantine(
+        handle, con, mapping, cfg, runtime
+):
+    """Recover a quarantined target without guessing a remote transaction id."""
+    table=mapping_key(mapping)
+    rows=merge_uncertain_rows(con,table)
+    durable_count=con.execute(
+        "SELECT COUNT(*) FROM merge_uncertain WHERE table_name=?",
+        (table,)).fetchone()[0]
+    if int(durable_count)!=len(rows):
+        raise RuntimeError(
+            f"Merge Commit reconciliation journal is inconsistent "
+            f"table={table} markers={durable_count} joinable={len(rows)}")
+    if not rows:
+        with runtime["control_lock"]:
+            runtime.get("quarantined_tables",{}).pop(table,None)
+        wake_loaders(runtime,table)
+        return True
+
+    if not merge_remote_quiet_barrier(
+            cfg,table,runtime["stop"]):
+        return False
+
+    replayed=0
+    for row in rows:
+        outcome=merge_reconcile_one(
+            handle,con,mapping,row,cfg,runtime)
+        if outcome in {
+            "aborted","uncertain","rejected"
+        }:
+            return False
+        if outcome=="replayed_visible":
+            replayed+=1
+
+    remaining=int(con.execute(
+        "SELECT COUNT(*) FROM merge_uncertain WHERE table_name=?",
+        (table,)).fetchone()[0])
+    if remaining:
+        return False
+    with runtime["control_lock"]:
+        runtime.get("quarantined_tables",{}).pop(table,None)
+    wake_loaders(runtime,table)
+    log(
+        f"MERGE QUARANTINE CLEARED table={table} "
+        f"replayed_parts={replayed} journal_retained_until_visible=1 "
+        f"unrelated_targets_continue=1")
+    return True
 
 
 def curl_error_before_request(exc):
@@ -8026,9 +8330,29 @@ def merge_delivery_worker(mapping, worker_id, cfg, runtime):
             if merge_table_quarantined(runtime,table):
                 if engines:
                     close_plan_engines(engines)
-                wake.wait(1)
-                wake.clear()
-                continue
+                if worker_id==0:
+                    held=merge_recovery_lane_locks(
+                        runtime,table,cfg)
+                    if held is not None:
+                        try:
+                            try:
+                                reconcile_merge_quarantine(
+                                    handle,con,mapping,cfg,runtime)
+                            except (
+                                    RuntimeError,ValueError,pycurl.error,
+                                    pymysql.err.DatabaseError) as exc:
+                                if not stop.is_set():
+                                    log(
+                                        f"MERGE RECONCILE BLOCKED table={table} "
+                                        f"error={str(exc)[:1000]} "
+                                        "journal_retained=1")
+                        finally:
+                            for lock in reversed(held):
+                                lock.release()
+                if merge_table_quarantined(runtime,table):
+                    wake.wait(1)
+                    wake.clear()
+                    continue
             if worker_id >= writer_target(runtime,table):
                 if engines:
                     close_plan_engines(engines)
