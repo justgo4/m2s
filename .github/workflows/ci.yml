@@ -72,6 +72,7 @@ jobs:
           python tools/stateful_catalog_runtime_test.py
           python tools/stateful_hot_add_test.py
           python tools/stateful_physical_registry_test.py
+          python tools/metric_slo_test.py
           python tools/longhaul_gate_test.py
           python tools/longhaul_workload_test.py
           python tools/stateful_rebuild_test.py
