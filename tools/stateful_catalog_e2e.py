@@ -273,6 +273,11 @@ def state(path):
                 FROM aggregate_shared_followers
                 ORDER BY follower_task_id
             """).fetchall()
+            join_shared=con.execute("""
+                SELECT follower_task_id,leader_task_id,shared_state_id,fixed_w
+                FROM join_shared_followers
+                ORDER BY follower_task_id
+            """).fetchall()
             return dict(
                 aggregate=[row[1] for row in agg],
                 join=[row[1] for row in joins],
@@ -294,6 +299,13 @@ def state(path):
                         str(row[2]),int(row[3])
                     )
                     for row in shared
+                ],
+                join_shared=[
+                    (
+                        str(row[0]),str(row[1]),
+                        str(row[2]),int(row[3])
+                    )
+                    for row in join_shared
                 ],
                 source=[
                     (str(row[0]),None if row[1] is None else int(row[1]))
@@ -358,11 +370,11 @@ def join_expected(source):
     ]
 
 
-def join_actual(cfg):
+def join_actual(cfg,table="joined"):
     rows,_=execute(
         cfg,
         "SELECT order_id,customer_name,amount "
-        "FROM "+DATABASE+".joined "
+        "FROM "+DATABASE+"."+str(table)+" "
         "ORDER BY order_id,customer_name,_j4_pair_id")
     return [
         (int(row[0]),str(row[1]),normalize_decimal(row[2]))
@@ -459,6 +471,39 @@ def wait_hot_aggregate_exact(
         time.sleep(.2)
     raise AssertionError(
         "hot aggregate did not become exact state=%r result=%r"
+        % (state(directory/"state.sqlite3"),last))
+
+
+def wait_hot_join_exact(
+        proc,log,directory,source,cfg,
+        sink="starrocks.joined_hot",table="joined_hot",timeout=240
+):
+    deadline=time.monotonic()+timeout
+    last=None
+    while time.monotonic()<deadline:
+        live(proc,log)
+        current=state(directory/"state.sqlite3")
+        if current is not None:
+            tasks=dict(current.get("join_tasks",()))
+            if (
+                tasks.get(sink)=="active"
+                and current["pending"]==0
+                and current["deliveries"]==0
+            ):
+                expected=join_expected(source)
+                actual=join_actual(cfg,table)
+                base_ok,base_detail=equal_results(
+                    source,cfg)
+                if expected==actual and base_ok:
+                    return current,dict(
+                        expected=expected,actual=actual,
+                        base=base_detail)
+                last=dict(
+                    expected=expected,actual=actual,
+                    base=base_detail)
+        time.sleep(.2)
+    raise AssertionError(
+        "hot JOIN did not become exact state=%r result=%r"
         % (state(directory/"state.sqlite3"),last))
 
 
