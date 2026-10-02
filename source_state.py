@@ -1193,14 +1193,18 @@ def register_consumer(
     if not consumer_id or not owner:
         raise ValueError("consumer_id and owner are required")
     watermark = int(watermark)
-    applied = base_applied_seq(con)
-    if watermark < 0 or watermark > applied:
-        raise ValueError("consumer watermark is outside applied source history")
     metadata_json = json.dumps(
         metadata or {}, ensure_ascii=False, sort_keys=True,
         separators=(",", ":"))
     now = time.time()
     with transaction(con):
+        # Serialize admission with GC: validation before BEGIN IMMEDIATE can
+        # accept a watermark whose history is reclaimed before the INSERT.
+        applied = base_applied_seq(con)
+        if watermark < 0 or watermark > applied:
+            raise ValueError("consumer watermark is outside applied source history")
+        if watermark < min_readable_seq(con):
+            raise ValueError("consumer watermark is outside retained source history")
         row = con.execute("""
             SELECT watermark,owner,metadata_json
             FROM source_consumers WHERE consumer_id=?
@@ -1288,7 +1292,6 @@ def incomplete_relations(con):
 def gc(
         con, consumer_watermarks=(), version_limit=None, commit_limit=None
 ):
-    floor = retention_floor(con, consumer_watermarks)
     version_limit = (
         None if version_limit is None else int(version_limit)
     )
@@ -1300,6 +1303,10 @@ def gc(
     if commit_limit is not None and commit_limit < 1:
         raise ValueError("commit_limit must be >= 1")
     with transaction(con):
+        # Read all retention inputs under the same write lock as deletion.
+        # Otherwise a new pin/consumer can protect older history after the
+        # floor was read, or applied/consumer reads can observe different commits.
+        floor = retention_floor(con, consumer_watermarks)
         current_min = min_readable_seq(con)
         if floor < current_min:
             raise RuntimeError(

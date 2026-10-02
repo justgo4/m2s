@@ -266,3 +266,30 @@ python tools/longhaul_gate.py /data/m2s-p11-run/longhaul-workload.json \
 截至当前主线，旧 oracle 域外漏检与 gate 证据 schema 两个 P0 已有代码和负例合同；source base apply 的旧整事务 dict 内存问题也已被 disk staging/set-wise apply 取代。最新阶段仍必须区分“合同测试通过”“benchmark 有数字”和“固定 SHA 正式认证”三个层级；其中正式 50M/72h 尚未完成。
 
 **当前实施顺序：保持 baseline/native/真实 E2E 在最终 SHA 全绿 → 收集 source apply/snapshot/overlap/GC-contention 与 full-table oracle 的固定资源 artifact → 根据 RSS/WAL/锁等待/写放大决定状态布局下一刀 → 冻结 milestone SHA 跑 lifecycle/quarantine 重点合同 → 启动正式 P11 50M/72h。** 历史反例保留其版本边界，但已修问题不再重复标成当前 HEAD 缺口。
+
+### 10.5 第三轮独立复核与接手修复（2026-10-02）
+
+本轮固定审查 [`01417f7e`](https://github.com/justgo4/m2s/tree/01417f7e65e5c3eea04f1239dd1cc65583972b4e)。**主线没有走偏**：full-table 流式 oracle、set-wise source apply/snapshot、FILE TEMP staging、独立 base apply worker、durable pending-byte 背压与有界 history GC，都在实质解决前两轮问题。source cursor 重放身份校验、merge-uncertain immutable request identity 也应保留。本次接手优先修复下面的历史保留并发缺口。
+
+#### P0：GC 水位读取与 reader 登记必须共享写事务
+
+在被审查版本中，`gc()` 先在事务外调用 `retention_floor()`，随后才 `BEGIN IMMEDIATE` 并删除历史。确定性双连接 SQLite WAL 时序如下：
+
+1. 已应用至 W=10，尚无旧 consumer，GC 读得 floor=10。
+2. 删除开始前，另一个连接成功登记 W=5 的 consumer。
+3. GC 仍按过期 floor=10 删除版本/commit，并将 `min_readable_seq` 推至 10；已经登记的 W=5 reader 因而失去需要的历史。
+
+同一个事务外多次 SELECT 还可能把较早的 applied 水位与较新的 consumer 水位拼在一起，触发本不应出现的 retention invariant 异常。独立 GC worker 已采用 guarded fail-stop，因此仅修异常处理不能消除根因。
+
+另一个 admission 缺口是：`register_consumer()` 只检查 0≤W≤applied，没有检查物理可读下界，也在取得写事务前验证 applied。即使修好 GC 的读取窗口，新 consumer 仍可能在 GC 完成后成功登记到已经回收的 W。**有界 GC 尚有残留旧行也不能证明该 W 可读**，必须以 durable `min_readable_seq` 为准。
+
+本次实现将 GC 的全部 retention 输入读取移入执行删除的同一 `BEGIN IMMEDIATE` 事务；consumer 的 applied/readability 检查和 INSERT 也在同一写事务内完成，并拒绝 W<`min_readable_seq`。这样只有两个合法次序：reader 先登记，GC 保留其所需历史；或 GC 先完成，过期 reader 的登记明确失败。既有 reader 的单调推进和正常 W=frontier 登记仍保留。
+
+新增 `tools/source_gc_concurrency_test.py` 使用真实 SQLite WAL 双连接和受控插入点，覆盖 GC 计算后尝试登记、登记检查期间尝试推进回收下界、既有 consumer 的版本/后续 commit 保留、推进后回收，以及 bounded delete 留有旧行时仍拒绝过期登记。三个用例在原版原始 SQLite 函数上均失败，在修复后均通过；并已接入 baseline 的 Python 3.12/3.14 矩阵。本地环境缺少 Arrow，复核通过 AST 装载原始 SQLite 函数执行这些用例；完整模块导入和完整 source protocol 合同以 GitHub CI 为准。本地语法检查、longhaul gate 与 JOIN 热键 changed-row delta 合同也通过。
+
+#### Actions 与下一步的证据边界
+
+- 被审查 SHA `01417f7e` 的 [baseline](https://github.com/justgo4/m2s/actions/runs/37076884585) 与 [native](https://github.com/justgo4/m2s/actions/runs/37076884654) 已成功。
+- [八格真实 CDC E2E](https://github.com/justgo4/m2s/actions/runs/37076871794) 已全部成功，但对应 `92337a9d`，不能把它直接记为 `01417f7e` 或本次修复的同 SHA 验收。
+- 当前并不存在“Actions 永远无法通过”的证据；曾有测试缺导入、并发协议缺口和连续 push 取消运行，应按具体失败日志修复。此次代码提交仍需自身 baseline/native/真实 E2E 的结果，历史绿色记录不能替代。
+- 优先保留现有架构，先收集固定资源下 capture/apply/GC contention、大事务 TEMP/WAL/RSS 和 JOIN fan-out 的结果，再决定状态引擎/native 下沉。短时 CI 仍不能代替正式 50M/72h；Merge Commit 未知结果的自动对账、受限 SQL 覆盖与多表对外原子切换边界也未因本次修复改变。
