@@ -77,6 +77,15 @@ def main():
         waits=stateful_admission.waiting_tasks(
             con,plan_version=8)
         assert waits[0]["retry_count"]==0
+
+        # Restore the original version-7 waiter for the independent
+        # superseded-plan contract below.
+        stateful_admission.clear_wait(
+            con,task_ids=["wait-a"])
+        stateful_admission.queue_wait(
+            con,additions,7,
+            reason="max_state_bytes",
+            retry_seconds=0)
         con.close()
 
         runtime=dict(
