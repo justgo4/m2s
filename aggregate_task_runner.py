@@ -84,8 +84,22 @@ def step(
         binding=aggregate_shared_runtime.try_bind(
             con,task)
     if binding is not None:
-        result=aggregate_shared_runtime.step(
-            con,task,mapping,cfg)
+        try:
+            result=aggregate_shared_runtime.step(
+                con,task,mapping,cfg)
+        except KeyError:
+            # Owner retirement can atomically promote this follower between
+            # binding lookup and step on another SQLite connection. Fall back
+            # only when the durable binding is now gone; other missing durable
+            # state remains a real corruption error.
+            if aggregate_shared_runtime.maybe_binding(
+                con,task["task_id"]
+            ) is not None:
+                raise
+            result=aggregate_runtime.step(
+                con,task["sink_key"],task["plan_version"],
+                task["consumer_id"],task["ir"],task["state_id"],
+                mapping,cfg,bootstrap_limit=bootstrap_limit)
     else:
         result=aggregate_runtime.step(
             con,task["sink_key"],task["plan_version"],
