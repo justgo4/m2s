@@ -389,6 +389,68 @@ def evaluate_workload(
             cgroup_memory_limit_bytes=memory_limit,
         )
 
+    software=report.get("software_fingerprint")
+    if not isinstance(software,dict) or not software:
+        failures.append(
+            "software_fingerprint_missing")
+        evidence["software"]={}
+    else:
+        code_revision=str(
+            software.get("code_revision") or ""
+        ).strip().lower()
+        mysql_version=str(
+            software.get("mysql_version") or ""
+        ).strip()
+        mysql_gtid_mode=str(
+            software.get("mysql_gtid_mode") or ""
+        ).strip().upper()
+        mysql_binlog_format=str(
+            software.get("mysql_binlog_format") or ""
+        ).strip().upper()
+        mysql_binlog_row_image=str(
+            software.get("mysql_binlog_row_image") or ""
+        ).strip().upper()
+        starrocks_version=str(
+            software.get("starrocks_version") or ""
+        ).strip()
+        dependencies={
+            name:str(software.get(name) or "").strip()
+            for name in (
+                "duckdb_version",
+                "pyarrow_version",
+                "pymysql_version",
+                "sqlglot_version",
+            )
+        }
+        revision_valid=(
+            7<=len(code_revision)<=64
+            and all(
+                char in "0123456789abcdef"
+                for char in code_revision)
+        )
+        if (
+            not revision_valid
+            or not mysql_version
+            or mysql_gtid_mode not in {"ON","OFF"}
+            or mysql_binlog_format!="ROW"
+            or mysql_binlog_row_image!="FULL"
+            or not starrocks_version.startswith("4.1.1")
+            or any(
+                not value
+                for value in dependencies.values())
+        ):
+            failures.append(
+                "software_fingerprint_incomplete")
+        evidence["software"]=dict(
+            code_revision=code_revision,
+            mysql_version=mysql_version,
+            mysql_gtid_mode=mysql_gtid_mode,
+            mysql_binlog_format=mysql_binlog_format,
+            mysql_binlog_row_image=mysql_binlog_row_image,
+            starrocks_version=starrocks_version,
+            **dependencies,
+        )
+
     daemon_resources=report.get("daemon_resources")
     if not isinstance(daemon_resources,dict):
         failures.append(

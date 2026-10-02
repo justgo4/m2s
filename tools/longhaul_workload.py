@@ -121,6 +121,68 @@ def machine_resource_fingerprint():
     )
 
 
+def code_revision():
+    """Return a reproducible code identity without exposing checkout paths."""
+    for name in ("M2S_CODE_REVISION","GITHUB_SHA"):
+        value=str(os.environ.get(name,"") or "").strip().lower()
+        if (
+            7<=len(value)<=64
+            and all(
+                char in "0123456789abcdef"
+                for char in value)
+        ):
+            return value
+    try:
+        result=subprocess.run(
+            ["git","rev-parse","HEAD"],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            timeout=5,
+            check=False)
+    except (OSError,subprocess.SubprocessError):
+        return ""
+    value=str(result.stdout or "").strip().lower()
+    if (
+        result.returncode==0
+        and 7<=len(value)<=64
+        and all(
+            char in "0123456789abcdef"
+            for char in value)
+    ):
+        return value
+    return ""
+
+
+def software_fingerprint(source,starrocks_version):
+    """Capture versions/modes needed to reproduce one benchmark result."""
+    with source.cursor() as cur:
+        cur.execute(
+            "SELECT VERSION(),@@GLOBAL.gtid_mode,"
+            "@@GLOBAL.binlog_format,"
+            "@@GLOBAL.binlog_row_image")
+        row=cur.fetchone()
+    if row is None or len(row)<4:
+        raise RuntimeError(
+            "MySQL software fingerprint is incomplete")
+    return dict(
+        code_revision=code_revision(),
+        mysql_version=str(row[0] or ""),
+        mysql_gtid_mode=str(row[1] or "").upper(),
+        mysql_binlog_format=str(row[2] or "").upper(),
+        mysql_binlog_row_image=str(row[3] or "").upper(),
+        starrocks_version=str(starrocks_version or ""),
+        duckdb_version=str(
+            getattr(j4.duckdb,"__version__","") or ""),
+        pyarrow_version=str(
+            getattr(j4.pa,"__version__","") or ""),
+        pymysql_version=str(
+            getattr(j4.pymysql,"__version__","") or ""),
+        sqlglot_version=str(
+            getattr(j4.sqlglot,"__version__","") or ""),
+    )
+
+
 def wait_create(cfg,ddl):
     deadline=time.monotonic()+120
     while True:
@@ -729,9 +791,11 @@ def copy_evidence(directory,output):
 def run(args):
     cfg=configuration()
     cfg["sr"]["database"]=DATABASE
-    wait_ready(cfg)
+    starrocks_version=wait_ready(cfg)
     opts=source_options()
     source=j4.pymysql.connect(**opts)
+    software=software_fingerprint(
+        source,starrocks_version)
     proc=handle=log=None
     try:
         seed_seconds=setup_databases(
@@ -1040,6 +1104,7 @@ def run(args):
                 duration_seconds=elapsed,
                 memory_mb=int(args.memory_mb),
                 resource_fingerprint=machine_resource_fingerprint(),
+                software_fingerprint=software,
                 daemon_resources=process_resource_probe.report(
                     resource_tracker),
                 snapshot_rows=int(args.snapshot_rows),

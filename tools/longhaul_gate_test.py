@@ -86,6 +86,18 @@ def workload():
             cgroup_cpu_quota_cores=8.0,
             cgroup_memory_limit_bytes=8*1024**3,
         ),
+        software_fingerprint=dict(
+            code_revision="a"*40,
+            mysql_version="8.4.6",
+            mysql_gtid_mode="ON",
+            mysql_binlog_format="ROW",
+            mysql_binlog_row_image="FULL",
+            starrocks_version="4.1.1-test",
+            duckdb_version="1.5.5",
+            pyarrow_version="25.0.1",
+            pymysql_version="1.2.3",
+            sqlglot_version="30.18.0",
+        ),
         daemon_resources=dict(
             supported=True,
             samples=int(elapsed),
@@ -302,6 +314,9 @@ def main():
     assert full["evidence"]["debt"]["max_rowset"]==73
     assert full["evidence"]["resources"]["logical_cpus"]==8
     assert full["evidence"]["resources"]["configured_memory_mb"]==4096
+    assert full["evidence"]["software"]["code_revision"]=="a"*40
+    assert full["evidence"]["software"]["mysql_gtid_mode"]=="ON"
+    assert full["evidence"]["software"]["starrocks_version"].startswith("4.1.1")
     assert full["evidence"]["daemon_resources"]["peak_rss_bytes"]==768*1024**2
     assert abs(
         full["evidence"]["daemon_resources"]["cpu_core_equivalent"]
@@ -319,6 +334,18 @@ def main():
     full=evaluate_workload(bad)
     assert not full["ok"]
     assert "configured_memory_exceeds_cgroup" in full["failures"]
+
+    bad=workload()
+    del bad["software_fingerprint"]
+    full=evaluate_workload(bad)
+    assert not full["ok"]
+    assert "software_fingerprint_missing" in full["failures"]
+
+    bad=workload()
+    bad["software_fingerprint"]["code_revision"]="not-a-revision"
+    full=evaluate_workload(bad)
+    assert not full["ok"]
+    assert "software_fingerprint_incomplete" in full["failures"]
 
     bad=workload()
     del bad["daemon_resources"]
@@ -414,7 +441,7 @@ def main():
         "longhaul_gate_test ok 50m_72h 50rps lifetime_exact_p95_p99 cross_restart "
         "healthy_recovery_latency drain stateful_health space_version_debt "
         "rowset_recovery overflow_fail_closed reproducible_resource_fingerprint "
-        "daemon_process_resource_evidence",
+        "daemon_process_resource_evidence software_fingerprint",
         flush=True,
     )
 
