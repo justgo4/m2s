@@ -5,7 +5,7 @@ import sys
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 
-from tools.longhaul_gate import evaluate
+from tools.longhaul_gate import evaluate,evaluate_workload
 
 
 def summary():
@@ -57,6 +57,44 @@ def summary():
             rebuilds=dict(
                 active=0,phases={}),
         ),
+    )
+
+
+def workload():
+    elapsed=72*3600+1
+    tasks={
+        "starrocks.agg_%03d" % index:30.0+index
+        for index in range(1,11)
+    }
+    return dict(
+        format_version=1,
+        kind="m2s_longhaul_workload",
+        protocol="merge_async",
+        initial_rows=50_000_000,
+        rows_per_second=50,
+        duration_seconds=elapsed,
+        live_rows=int(50*elapsed),
+        latency_samples=int(elapsed),
+        latency_p50_seconds=1.0,
+        latency_p95_seconds=4.9,
+        latency_p99_seconds=9.9,
+        latency_max_seconds=12.0,
+        dynamic_tasks=10,
+        dynamic_task_ready_seconds=tasks,
+        faults=[
+            dict(sequence=100,restart_seconds=4.0),
+            dict(sequence=200,restart_seconds=5.0),
+        ],
+        final_state=dict(
+            pending=0,
+            deliveries=0,
+            log_durable_seq=1000,
+            base_applied_seq=1000,
+            shared_followers=10,
+        ),
+        source_totals=[62_960_000,12345],
+        target_totals=[62_960_000,12345],
+        share_mode="adaptive",
     )
 
 
@@ -115,8 +153,33 @@ def main():
     )
     assert smoke["ok"]
 
+    full=evaluate_workload(workload())
+    assert full["ok"],full
+    assert full["evidence"]["faults"]["count"]==2
+    assert full["evidence"]["dynamic_tasks"]["ready"]==10
+
+    bad=workload()
+    bad["live_rows"]=100
+    bad["latency_p99_seconds"]=10.01
+    bad["dynamic_task_ready_seconds"].pop(
+        "starrocks.agg_010")
+    bad["faults"]=[]
+    bad["final_state"]["pending"]=1
+    bad["target_totals"]=[1,2]
+    full=evaluate_workload(bad)
+    assert not full["ok"]
+    for reason in (
+        "observed_rows_per_second",
+        "latency_p99",
+        "dynamic_tasks_not_ready",
+        "fault_injection",
+        "pending_jobs",
+        "source_target_mismatch",
+    ):
+        assert reason in full["failures"],full
+
     print(
-        "longhaul_gate_test ok 50m_72h 50rps p95_p99 "
+        "longhaul_gate_test ok 50m_72h 50rps p95_p99 cross_restart "
         "drain stateful_health fail_closed",
         flush=True,
     )
