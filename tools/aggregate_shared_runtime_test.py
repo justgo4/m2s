@@ -3,6 +3,7 @@ from decimal import Decimal
 from pathlib import Path
 import os
 import tempfile
+import time
 import sys
 from unittest.mock import patch
 
@@ -260,6 +261,73 @@ def main():
             con,follower["consumer_id"]
         )["state_id"]==follower["state_id"]
 
+        # Deterministic stale-result race: the follower step above returned the
+        # old shared leader identity, then owner promotion detached the follower
+        # and the old physical catalog row became reclaimable before registry
+        # synchronization. Registry sync must resolve the current durable private
+        # backing instead of dereferencing the stale shared state id.
+        leader_physical_id=aggregate_physical_state_id(leader)
+        retired_physical=stateful_physical_registry.retire(
+            con,"aggregate",leader)
+        assert retired_physical["health"]=="retired"
+        assert physical_state_catalog.gc_eligible(
+            con,leader_physical_id)
+        physical_state_catalog.delete_state(
+            con,leader_physical_id)
+        resolved=stateful_physical_registry.sync_runtime_result(
+            con,dict(kind="aggregate",task=follower),second)
+        assert resolved["instance_id"]==aggregate_physical_state_id(
+            follower)
+        assert (
+            follower["task_id"],"owner"
+        ) in {
+            (row["owner_id"],row["role"])
+            for row in physical_state_catalog.state_refs(
+                con,resolved["instance_id"])
+        }
+
+        # A missing physical state is only legal when durable promotion removed
+        # the shared binding. If the binding/output stream still claim shared
+        # ownership, the registry must fail closed instead of silently falling
+        # back to the private state.
+        now=time.time()
+        con.execute("""
+            INSERT INTO aggregate_shared_followers(
+                follower_task_id,leader_task_id,shared_state_id,
+                leader_consumer_id,fixed_w,created,updated)
+            VALUES(?,?,?,?,?,?,?)
+        """,(
+            follower["task_id"],leader["task_id"],
+            "missing-shared-state",leader["consumer_id"],
+            0,now,now))
+        con.execute("""
+            UPDATE aggregate_output_streams
+            SET state_id=?,updated=?
+            WHERE consumer_id=?
+        """,(
+            "missing-shared-state",now,
+            follower["consumer_id"]))
+        broken=dict(second)
+        broken["shared_state_id"]="missing-shared-state"
+        try:
+            stateful_physical_registry.sync_runtime_result(
+                con,dict(kind="aggregate",task=follower),broken)
+            raise AssertionError(
+                "dangling shared aggregate binding was accepted")
+        except KeyError as exc:
+            assert "physical state does not exist" in str(exc)
+        con.execute(
+            "DELETE FROM aggregate_shared_followers "
+            "WHERE follower_task_id=?",
+            (follower["task_id"],))
+        con.execute("""
+            UPDATE aggregate_output_streams
+            SET state_id=?,updated=?
+            WHERE consumer_id=?
+        """,(
+            follower["state_id"],time.time(),
+            follower["consumer_id"]))
+
         # After promotion the normal aggregate runtime consumes the source log
         # directly; no shared-owner code is needed.
         assert source_commit(con,[
@@ -285,7 +353,8 @@ def main():
 
     print(
         "aggregate_shared_runtime_test ok attach no_private_state "
-        "byte_exact_incremental owner_promotion normal_resume",
+        "byte_exact_incremental owner_promotion stale_registry_resolution "
+        "dangling_shared_fail_closed normal_resume",
         flush=True,
     )
 
