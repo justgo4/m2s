@@ -82,8 +82,20 @@ def workload():
         dynamic_tasks=10,
         dynamic_task_ready_seconds=tasks,
         faults=[
-            dict(sequence=100,restart_seconds=4.0),
-            dict(sequence=200,restart_seconds=5.0),
+            dict(
+                sequence=100,
+                restart_seconds=4.0,
+                catchup_seconds=2.0,
+                source_frontier=dict(
+                    log_durable_seq=500,
+                    base_applied_seq=500)),
+            dict(
+                sequence=200,
+                restart_seconds=5.0,
+                catchup_seconds=3.0,
+                source_frontier=dict(
+                    log_durable_seq=800,
+                    base_applied_seq=800)),
         ],
         final_state=dict(
             pending=0,
@@ -157,6 +169,13 @@ def main():
     assert full["ok"],full
     assert full["evidence"]["faults"]["count"]==2
     assert full["evidence"]["dynamic_tasks"]["ready"]==10
+
+    bad=workload()
+    bad["faults"][0]["source_frontier"][
+        "base_applied_seq"]=499
+    full=evaluate_workload(bad)
+    assert not full["ok"]
+    assert "fault_source_not_caught_up" in full["failures"]
 
     bad=workload()
     bad["live_rows"]=100
