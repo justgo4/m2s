@@ -839,6 +839,25 @@ def mutate_after_shared_promotion(source):
         raise
 
 
+def mutate_after_semantic_rebuild(source):
+    source.begin()
+    try:
+        with source.cursor() as cur:
+            # id=6 was inserted with amount=NULL before the rebuild.  The new
+            # aggregate filter excludes it until this transaction makes it
+            # visible to the rebuilt semantics.
+            cur.execute(
+                "UPDATE "+DATABASE+".orders "
+                "SET amount=3.25 WHERE id=6")
+            cur.execute(
+                "INSERT INTO "+DATABASE+".orders "
+                "VALUES(9,'e',11,NULL)")
+        source.commit()
+    except BaseException:
+        source.rollback()
+        raise
+
+
 def mutate_after_join_promotion(source):
     source.begin()
     try:
