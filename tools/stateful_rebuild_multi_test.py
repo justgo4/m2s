@@ -468,15 +468,241 @@ def activation_contract():
             con.close()
 
 
+def publish_busy_contract():
+    runtime=dict(
+        plan_lock=threading.RLock(),
+        active_plan_version=3,
+        stateful_rebuild_plans={
+            "starrocks.a":dict(version=9),
+            "starrocks.b":dict(version=9),
+        },
+    )
+    try:
+        j4.validate_hot_catalog_plan(
+            dict(),
+            runtime,
+            dict(version=10))
+        raise AssertionError(
+            "catalog publish crossed an active rebuild")
+    except j4.cdc_catalog.CatalogBusyError as exc:
+        text=str(exc)
+        assert "starrocks.a" in text
+        assert "starrocks.b" in text
+
+
+def multi_validation_contract():
+    old_a=old_item(
+        "aggregate","starrocks.a",
+        "old-a",3,"a")
+    old_b=old_item(
+        "inner_join","starrocks.b",
+        "old-b",3,"b")
+    old_a["task"]["target_schema"]=[
+        ("id","BIGINT")]
+    old_b["task"]["target_schema"]=[
+        ("id","BIGINT")]
+    current_catalog=dict(
+        stateful_tasks=[
+            dict(
+                sink="starrocks.a",
+                kind="aggregate",
+                target_table="a",
+                sql="old-a"),
+            dict(
+                sink="starrocks.b",
+                kind="inner_join",
+                target_table="b",
+                sql="old-b"),
+        ],
+    )
+    candidate_plan=dict(
+        version=9,
+        mappings=[],
+        stateful_tasks=[
+            dict(
+                sink="starrocks.a",
+                kind="aggregate",
+                target_table="a",
+                sql="new-a"),
+            dict(
+                sink="starrocks.b",
+                kind="inner_join",
+                target_table="b",
+                sql="new-b"),
+        ],
+    )
+    candidate=dict(
+        version=9,
+        prepared=[],
+        by_table={},
+    )
+    current_runtime_plan=dict(
+        version=3,
+        by_table={},
+    )
+    runtime=dict(
+        plan_lock=threading.RLock(),
+        active_plan_version=3,
+        stateful_rebuild_plans={},
+        stateful_tasks=[old_a,old_b],
+        validated_catalog_plans={},
+    )
+    cfg=dict(
+        catalog="catalog.sqlite3",
+        catalog_config_revision=0,
+        mysql=dict(database="demo"),
+    )
+
+    durable_by_id={
+        "old-a":dict(
+            task_id="old-a",
+            sink_key="starrocks.a",
+            plan_version=3,
+            status="active",
+            target_schema=[("id","BIGINT")],
+        ),
+        "old-b":dict(
+            task_id="old-b",
+            sink_key="starrocks.b",
+            plan_version=3,
+            status="active",
+            target_schema=[("id","BIGINT")],
+        ),
+    }
+
+    def compile_ir(manifest,*args,**kwargs):
+        return dict(
+            kind=manifest["kind"],
+            ir=dict())
+
+    def compile_task(
+            manifest,version,*args,**kwargs):
+        return dict(
+            task=dict(
+                task_id="new-"+manifest["sink"],
+            ))
+
+    def compile_rebuild(
+            cfg,version,manifest,
+            source_metadata,shadow):
+        result=item(
+            manifest["kind"],
+            manifest["sink"],
+            "new-"+manifest["sink"],
+            version,shadow)
+        result["task"]["target_table"]=[
+            "a","b"
+        ][0] if False else manifest[
+            "target_table"]
+        result["task"]["target_schema"]=[
+            ("id","BIGINT")]
+        return result
+
+    with patch.object(
+        j4,"_catalog_plan_payload",
+        return_value=candidate_plan
+    ), patch.object(
+        j4.cdc_catalog,
+        "load_plan_version",
+        return_value=current_catalog
+    ), patch.object(
+        j4,"prepare_runtime_catalog_plan",
+        return_value=candidate
+    ), patch.object(
+        j4,"runtime_plan",
+        return_value=current_runtime_plan
+    ), patch.object(
+        j4,"runtime_plan_compatible",
+        return_value=(True,"compatible")
+    ), patch.object(
+        j4,"open_state",
+        side_effect=lambda path:sqlite3.connect(
+            ":memory:",isolation_level=None)
+    ), patch.object(
+        j4,"stateful_durable_task",
+        side_effect=lambda con,kind,task_id:
+            dict(durable_by_id[task_id])
+    ), patch.object(
+        j4.task_generation,
+        "maybe_info",
+        return_value=dict(
+            status="ready",
+            source_pin_released=True)
+    ), patch.object(
+        j4.stateful_catalog_runtime,
+        "source_scope",
+        return_value=dict(
+            required_sources=[],
+            capture_mappings=[],
+            source_metadata={})
+    ), patch.object(
+        j4.stateful_task_plan,
+        "compile_ir",
+        side_effect=compile_ir
+    ), patch.object(
+        j4.stateful_catalog_runtime,
+        "infer_target_schema",
+        return_value=[("id","BIGINT")]
+    ), patch.object(
+        j4.stateful_task_plan,
+        "compile_task",
+        side_effect=compile_task
+    ), patch.object(
+        j4.stateful_catalog_runtime,
+        "compile_rebuild_task",
+        side_effect=compile_rebuild
+    ), patch.object(
+        j4.stateful_rebuild,
+        "maybe_info",
+        return_value=None
+    ), patch.object(
+        j4,"catalog_plan_hash",
+        return_value="multi-rebuild-hash"
+    ):
+        validation=j4.validate_hot_catalog_plan(
+            cfg,runtime,
+            dict(
+                version=9,
+                config_revision=0))
+
+    assert validation["status"]=="rebuild_pending"
+    assert validation[
+        "stateful_changed_sinks"
+    ]==["starrocks.a","starrocks.b"]
+    assert set(validation[
+        "shadow_targets"])=={
+            "starrocks.a","starrocks.b"}
+    cached=runtime[
+        "validated_catalog_plans"
+    ]["multi-rebuild-hash"][0]
+    assert len(cached[
+        "stateful_rebuilds"])==2
+    assert {
+        spec["sink"]
+        for spec in cached[
+            "stateful_rebuilds"]
+    }=={"starrocks.a","starrocks.b"}
+    assert {
+        value["task"]["task_id"]
+        for value in cached[
+            "stateful_candidate_tasks"]
+    }=={
+        "new-starrocks.a",
+        "new-starrocks.b",
+    }
+
+
 def main():
     mixed_restart_contract()
     final_restart_promotes_plan()
     runtime_partial_switch_contract()
     activation_contract()
+    publish_busy_contract()
+    multi_validation_contract()
     print(
         "stateful_rebuild_multi_test ok "
         "mixed_restart final_plan_promotion partial_runtime_switch "
-        "multi_activation",
+        "multi_activation publish_busy multi_validation",
         flush=True,
     )
 
