@@ -6572,12 +6572,14 @@ def activate_stateful_rebuild_candidate(
         spec["new"]
         for spec in specs
     ]
-    if len({
+    sinks=[
         str(spec["sink"])
         for spec in specs
-    })!=len(specs):
+    ]
+    if len(set(sinks))!=len(sinks):
         raise RuntimeError(
             "stateful rebuild candidate contains duplicate sinks")
+
     admission_con=open_state(cfg["state"])
     try:
         admission=stateful_admission.admit_or_defer(
@@ -6588,12 +6590,14 @@ def activate_stateful_rebuild_candidate(
     finally:
         admission_con.close()
     candidate["stateful_admission"]=admission
+
     try:
         con=open_state(cfg["state"])
         try:
             replacements=stateful_catalog_runtime.compiled_by_sink(
                 candidate.get(
                     "stateful_candidate_tasks",()))
+            intent_inputs=[]
             for spec in specs:
                 old=spec["old"]
                 new=spec["new"]
@@ -6612,53 +6616,83 @@ def activate_stateful_rebuild_candidate(
                             "stateful rebuild logical target disappeared before "
                             "durable intent: "
                             +str(spec["logical_target"]))
-                    intent=stateful_rebuild.begin(
-                        con,new["kind"],sink,
-                        old["task"]["task_id"],
-                        task["task_id"],
-                        spec["logical_target"],
-                        shadow=spec["shadow_target"],
-                        original_comment=original_comment)
                     existing_intent=False
                 else:
+                    original_comment=existing[
+                        "original_comment"]
+                    existing_intent=True
+                intent_inputs.append(dict(
+                    spec=spec,
+                    old=old,
+                    new=new,
+                    task=task,
+                    sink=sink,
+                    original_comment=original_comment,
+                    existing_intent=existing_intent,
+                ))
+
+            intents={}
+            cohort=None
+            with state_transaction(con):
+                for entry in intent_inputs:
+                    spec=entry["spec"]
                     intent=stateful_rebuild.begin(
-                        con,new["kind"],sink,
-                        old["task"]["task_id"],
-                        task["task_id"],
+                        con,entry["new"]["kind"],
+                        entry["sink"],
+                        entry["old"]["task"]["task_id"],
+                        entry["task"]["task_id"],
                         spec["logical_target"],
                         shadow=spec["shadow_target"],
-                        original_comment=existing[
+                        original_comment=entry[
                             "original_comment"])
-                    existing_intent=True
-                if intent["phase"] not in {
-                    "building_shadow","fencing",
-                    "ready_to_swap"
-                }:
-                    raise RuntimeError(
-                        "cannot activate rebuild candidate from phase "
-                        +intent["phase"])
+                    if intent["phase"] not in {
+                        "building_shadow","fencing",
+                        "ready_to_swap"
+                    }:
+                        raise RuntimeError(
+                            "cannot activate rebuild candidate from phase "
+                            +intent["phase"])
+                    intents[entry["sink"]]=intent
+                if len(specs)>1:
+                    cohort=stateful_rebuild_cohort.begin(
+                        con,int(candidate["version"]),
+                        sinks)
+
+            if cohort is not None:
+                candidate[
+                    "stateful_rebuild_cohort_id"
+                ]=cohort["cohort_id"]
+
+            registered_items=[]
+            for entry in intent_inputs:
+                spec=entry["spec"]
+                intent=intents[entry["sink"]]
                 ensure_stateful_rebuild_shadow(
                     cfg,spec,
-                    existing_intent=existing_intent,
+                    existing_intent=entry[
+                        "existing_intent"],
                     recover_unmarked=(
-                        existing_intent
+                        entry["existing_intent"]
                         and intent["phase"]=="building_shadow"),
                     original_comment=intent[
                         "original_comment"])
                 registered=stateful_catalog_runtime.register_compiled(
-                    con,[new])[0]
-                if registered["task"]["descriptor_hash"]!=task[
-                    "descriptor_hash"
+                    con,[entry["new"]])[0]
+                if registered["task"]["descriptor_hash"]!=entry[
+                    "task"]["descriptor_hash"
                 ]:
                     raise RuntimeError(
                         "stateful rebuild durable descriptor changed")
-                # Intent + descriptor own the admission reservation after this
-                # point. A crash before here must leave the durable wait intact.
-                stateful_admission.clear_wait(
-                    con,additions=[registered],
-                    plan_version=int(candidate["version"]))
                 spec["new"]=registered
-                replacements[sink]=registered
+                replacements[entry["sink"]]=registered
+                registered_items.append(registered)
+
+            # All intents/cohort membership and all descriptors are durable
+            # before removing any admission wait. A crash earlier retries the
+            # exact published cohort rather than exposing a partial generation.
+            stateful_admission.clear_wait(
+                con,additions=registered_items,
+                plan_version=int(candidate["version"]))
             candidate["stateful_rebuilds"]=list(specs)
             candidate["stateful_candidate_tasks"]=[
                 replacements[name]
@@ -6668,6 +6702,14 @@ def activate_stateful_rebuild_candidate(
             con.close()
 
         activated=[]
+        cohort_id=candidate.get(
+            "stateful_rebuild_cohort_id")
+        if cohort_id:
+            with runtime["plan_lock"]:
+                runtime.setdefault(
+                    "stateful_rebuild_cohort_locks",{}
+                ).setdefault(
+                    str(cohort_id),threading.Lock())
         for spec in specs:
             mapping=spec["new"]["mapping"]
             task=spec["new"]["task"]
@@ -6719,11 +6761,12 @@ def activate_stateful_rebuild_candidate(
             activated.append(task["task_id"])
             log(
                 "STATEFUL REBUILD BUILDING sink=%s old=%s new=%s shadow=%s "
-                "writer_version=%d"
+                "writer_version=%d cohort=%s"
                 % (
                     sink,spec["old"]["task"]["task_id"],
                     task["task_id"],
-                    spec["shadow_target"],version))
+                    spec["shadow_target"],version,
+                    str(cohort_id or "single")))
         return activated
     except BaseException:
         with contextlib.suppress(BaseException):
