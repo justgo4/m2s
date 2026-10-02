@@ -56,6 +56,38 @@ def main():
     assert len(calls)==3
     assert all("MAX(" not in sql for sql in calls)
 
+    commit_times={
+        100:10.0,
+        101:11.0,
+    }
+    clock=iter([
+        12.0,12.1,12.2,12.3,
+        12.4,12.5,12.6,12.7,
+    ])
+    with patch.object(
+        longhaul_workload,"assert_live"
+    ), patch.object(
+        longhaul_workload,"visible_markers",
+        side_effect=[{100},{101}]
+    ), patch.object(
+        longhaul_workload,"read_state",
+        return_value=dict(
+            log_durable_seq=7,
+            base_applied_seq=7)
+    ), patch.object(
+        longhaul_workload.time,"monotonic",
+        side_effect=lambda: next(clock)
+    ), patch.object(
+        longhaul_workload.time,"sleep"
+    ):
+        recovered=longhaul_workload.recover_after_fault(
+            object(),Path("daemon.log"),
+            Path("state.sqlite3"),{},
+            commit_times,10)
+    assert commit_times=={}
+    assert len(recovered["latencies"])==2
+    assert recovered["state"]["base_applied_seq"]==7
+
     with tempfile.TemporaryDirectory(
         prefix="m2s-longhaul-helper-"
     ) as td:
@@ -85,7 +117,7 @@ def main():
 
     print(
         "longhaul_workload_test ok percentile source_ready "
-        "per_transaction_sentinel evidence_copy",
+        "per_transaction_sentinel crash_catchup evidence_copy",
         flush=True,
     )
 
