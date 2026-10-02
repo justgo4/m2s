@@ -866,11 +866,18 @@ def wait_stateful_retired(
         live(proc,log)
         current=state(directory/"state.sqlite3")
         if current is not None:
-            tasks=dict(current[
-                "aggregate_tasks" if kind=="aggregate"
-                else "join_tasks"])
+            rows=current[
+                "aggregate_task_rows" if kind=="aggregate"
+                else "join_task_rows"]
+            sink_rows=[
+                row for row in rows
+                if row[1]==sink
+            ]
             if (
-                tasks.get(sink)=="retired"
+                sink_rows
+                and all(
+                    row[2] in {"retired","failed"}
+                    for row in sink_rows)
                 and current["pending"]==0
                 and current["deliveries"]==0
                 and not any(
