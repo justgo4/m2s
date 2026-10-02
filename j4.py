@@ -5338,17 +5338,23 @@ def validate_hot_catalog_plan(cfg, runtime, publish_result):
     stateful_changed=sorted(
         sink for sink in set(current_stateful)&set(candidate_stateful)
         if current_stateful[sink]!=candidate_stateful[sink])
-    if stateful_changed:
-        validate_local_catalog_publish(
-            publish_result,"validate")
+    if stateful_changed and (
+        len(stateful_changed)!=1
+        or stateful_added
+        or stateful_dropped
+    ):
         return dict(
             status="rebuild_required",
             version=version,
             reason=(
-                "stateful semantic replacement reuses an existing sink/target; "
-                "an explicit generation rebuild or a new sink identity is "
-                "required before cutover: changed=%s"
-                % (stateful_changed,)),
+                "online stateful semantic rebuild currently requires exactly "
+                "one retained sink replacement per catalog publish and cannot "
+                "be combined with add/drop: changed=%s added=%s dropped=%s"
+                % (
+                    stateful_changed,
+                    stateful_added,
+                    stateful_dropped,
+                )),
             stateful_changed_sinks=stateful_changed)
 
     if stateful_dropped:
