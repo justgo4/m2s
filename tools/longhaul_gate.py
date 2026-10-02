@@ -52,8 +52,8 @@ def evaluate(
     if elapsed<float(min_elapsed_seconds):
         failures.append("elapsed_seconds")
 
-    source=dict(summary.get("source") or {})
-    log_stats=dict(source.get("log_stats") or {})
+    source_run=dict(summary.get("source_run") or {})
+    log_stats=dict(source_run.get("log_stats") or {})
     source_event_rows=0
     source_commits=0
     for table,value in sorted(log_stats.items()):
@@ -72,6 +72,8 @@ def evaluate(
         commits=source_commits,
         rows_per_second=source_rate,
     )
+    if list(source_run.get("counter_regressions") or ()):
+        failures.append("source_counter_regression")
     if not log_stats:
         failures.append("source_log_stats_missing")
     if source_rate<float(min_cdc_rows_per_second):
