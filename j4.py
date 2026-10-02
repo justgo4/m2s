@@ -10278,11 +10278,54 @@ def run_cdc(
             sync_source_base_catalog(con)
             if recovered:
                 log(f"SOURCE STATE replayed_pending_commits={recovered}")
+        startup_rebuild=recover_stateful_rebuilds_startup(
+            con,cfg,compiled_stateful,fingerprint)
+        compiled_stateful=list(
+            startup_rebuild["compiled"])
+        startup_stateful_workers=list(
+            startup_rebuild["worker_items"])
+        startup_stateful_protected=list(
+            startup_rebuild["protected"])
+        startup_rebuild_specs=list(
+            startup_rebuild["rebuild_specs"])
+        rebuild_new_ids={
+            spec["new"]["task"]["task_id"]
+            for spec in startup_rebuild_specs
+        }
         if compiled_stateful:
-            stateful_catalog_runtime.ensure_registration_safe(
-                con,cfg,compiled_stateful)
+            registration_safe=[
+                item for item in compiled_stateful
+                if item["task"]["task_id"]
+                not in rebuild_new_ids
+            ]
+            if registration_safe:
+                stateful_catalog_runtime.ensure_registration_safe(
+                    con,cfg,registration_safe)
             compiled_stateful=stateful_catalog_runtime.register_compiled(
                 con,compiled_stateful)
+            registered_by_id={
+                item["task"]["task_id"]:item
+                for item in compiled_stateful
+            }
+            if startup_rebuild_specs:
+                for spec in startup_rebuild_specs:
+                    spec["new"]=registered_by_id[
+                        spec["new"]["task"]["task_id"]]
+                startup_stateful_workers=[
+                    registered_by_id.get(
+                        item["task"]["task_id"],item)
+                    for item in startup_stateful_workers
+                ]
+                startup_stateful_protected=[
+                    registered_by_id.get(
+                        item["task"]["task_id"],item)
+                    for item in startup_stateful_protected
+                ]
+            else:
+                startup_stateful_workers=list(
+                    compiled_stateful)
+                startup_stateful_protected=list(
+                    compiled_stateful)
             share_preferences=stateful_share_policy.plan_graph(
                 con,compiled_stateful,cfg=cfg)
             if share_preferences:
@@ -10294,10 +10337,11 @@ def run_cdc(
                     ))
         # A catalog restart/drop is a cutover too. Persist a fixed retirement
         # frontier instead of immediately deleting the old consumer; this lets
-        # a crash/restart resume the exact same catch-up boundary.
+        # a crash/restart resume the exact same catch-up boundary. An in-flight
+        # semantic rebuild protects both old and new generations until SWAP.
         startup_retirement=(
             stateful_catalog_runtime.prepare_startup_retirements(
-                con,cfg,compiled_stateful,
+                con,cfg,startup_stateful_protected,
                 source_state.base_applied_seq(con)))
         if startup_retirement["abandoned"]:
             log(
@@ -10307,6 +10351,15 @@ def run_cdc(
             stateful_catalog_runtime.pending_retirements(con))
         durable_stateful_mappings=(
             stateful_catalog_runtime.durable_mappings(con))
+        for spec in startup_rebuild_specs:
+            new_item=spec["new"]
+            identity=(
+                stateful_task_plan.writer_plan_version(
+                    new_item["task"]["plan_version"]),
+                str(spec["sink"]),
+            )
+            durable_stateful_mappings[identity]=new_item[
+                "mapping"]
         migrate_sink_identity(
             con,cfg["catalog"],int(cfg.get("catalog_version",0)),
             prepared,fresh=fresh_state)
