@@ -179,7 +179,7 @@ python j4.py sql setup.sql    # 另一终端部署
 python j4.py cli              # 或交互部署
 ```
 
-正式 P11 认证使用代码内唯一 profile，避免把自定义 smoke 当成 50M/72h 结果。认证前工作树必须 clean；MySQL/StarRocks 必须是一次性测试实例，且运行目录必须为空或不存在。以下命令会固定为 **50,000,000 初始行、50 rows/s、72h、10 个动态任务、每 6h 强退一次、8 GiB m2s 内存预算、adaptive sharing**，并保留中途 checkpoint：
+正式 P11 认证使用代码内唯一 profile，避免把自定义 smoke 当成 50M/72h 结果。认证前工作树必须 clean；MySQL/StarRocks 必须是一次性测试实例；必须显式提供持久 `--work-directory`，且该目录必须为空或不存在，避免 72h 中途失败后证据随临时目录清理。以下命令会固定为 **50,000,000 初始行、50 rows/s、72h、10 个动态任务、每 6h 强退一次、8 GiB m2s 内存预算、adaptive sharing**，并保留中途 checkpoint：
 
 ```bash
 git status --porcelain
