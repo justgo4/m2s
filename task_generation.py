@@ -224,16 +224,30 @@ def ensure_build(
         fixed_w,source_pin_id)
 
 
-def import_existing(
-        con, sink_key, plan_version, source_relation, status
+def import_existing_multi(
+        con, sink_key, plan_version, source_relations_value, status
 ):
     status = str(status)
     if status not in {"history_staged","ready"}:
         raise ValueError("imported generation must already have staged history")
+    relations=normalize_source_relations(
+        source_relations_value)
     existing = maybe_info(con,sink_key,plan_version)
     if existing is not None:
+        if not existing["imported"]:
+            raise RuntimeError(
+                "cannot import over a non-imported task generation")
+        actual=source_relations(
+            con,sink_key,plan_version)
+        if actual!=relations:
+            raise RuntimeError(
+                "imported generation source set changed across restart")
+        if existing["status"] not in {"history_staged","ready"}:
+            raise RuntimeError(
+                "imported generation has invalid lifecycle status")
         return existing
     now = time.time()
+    gid=generation_id(sink_key,plan_version)
     with transaction(con):
         con.execute("""
             INSERT INTO task_generations(
@@ -242,12 +256,20 @@ def import_existing(
                 created,updated,history_staged_at,ready_at)
             VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (
-            generation_id(sink_key,plan_version),
-            str(sink_key),int(plan_version),str(source_relation),
+            gid,str(sink_key),int(plan_version),relations[0],
             None,None,1,status,1,now,now,now,
             now if status == "ready" else None,
         ))
+        _bind_sources_locked(
+            con,gid,relations)
     return info(con,sink_key,plan_version)
+
+
+def import_existing(
+        con, sink_key, plan_version, source_relation, status
+):
+    return import_existing_multi(
+        con,sink_key,plan_version,[source_relation],status)
 
 
 def mark_history_staged(con, sink_key, plan_version):
