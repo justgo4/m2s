@@ -500,18 +500,13 @@ def preference_pending(con,kind,task_id,cfg=None):
             "WHERE task_id=?",
             (str(task_id),))
         return False
-    if leader["status"]=="candidate":
-        return True
-    generation=con.execute("""
-        SELECT status FROM task_generations
-        WHERE sink_key=? AND plan_version=?
-    """,(
-        leader["sink_key"],leader["plan_version"],
-    )).fetchone()
-    return (
-        generation is None
-        or str(generation[0])!="ready"
-    )
+    # A durable graph preference is a placement fence, not a hint that
+    # disappears as soon as the owner generation reaches ready. The shared
+    # runtime revalidates physical compatibility on every bind attempt. Keep
+    # the follower out of private bootstrap while the preferred owner remains
+    # non-terminal; this closes the small race between task activation and
+    # publishing its physical-state catalog row.
+    return leader["status"] in {"candidate","active"}
 
 
 def choose(con,kind,task,candidates,cfg=None):
