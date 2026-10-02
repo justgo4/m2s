@@ -36,14 +36,16 @@ def main():
         known=True,rows=2,has_delete=False,
         target_sequence=True,
         sequence_min=7,sequence_max=8,
-        replay_safe=True)
+        sequence_guarded_upsert=True,
+        replay_safe=False)
     headers=j4.merge_commit_headers(
         sequence_mapping,cfg,profile)
-    assert headers["merge_condition"]=="_cdc_seq"
+    assert "merge_condition" not in headers
     compressed=j4.merge_payload_profile(
         sequence_mapping,
         j4.gzip.compress(upsert,mtime=0))
-    assert compressed["replay_safe"]
+    assert compressed["sequence_guarded_upsert"]
+    assert not compressed["replay_safe"]
     delete_profile=j4.merge_payload_profile(
         sequence_mapping,
         b'{"id":1,"_cdc_seq":9,"__op":1}\n')
@@ -76,7 +78,7 @@ def main():
             upsert,profile)
         assert con.execute(
             "SELECT replay_safe FROM merge_uncertain"
-        ).fetchone()==(1,)
+        ).fetchone()==(0,)
         restored=dict(
             stop=threading.Event(),
             control_lock=threading.Lock(),
@@ -84,7 +86,7 @@ def main():
         with redirect_stdout(io.StringIO()):
             assert j4.quarantine_pending_merges(
                 con,restored)==1
-        assert not j4.merge_table_quarantined(
+        assert j4.merge_table_quarantined(
             restored,'safe')
         con.close()
 
@@ -146,8 +148,8 @@ def main():
         finally:
             con.close()
     print(
-        'MERGE QUARANTINE PASS guarded upsert replay survives restart; '
-        'unsafe marker retained, no replay, unrelated worker progresses',
+        'MERGE QUARANTINE PASS sequence-guarded upsert remains fail-closed '
+        'across future delete; marker retained, no replay, unrelated worker progresses',
         flush=True)
 
 
