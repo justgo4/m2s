@@ -6691,6 +6691,8 @@ def retry_waiting_stateful_admission(
             con,now=now,due_only=False)
         due=stateful_admission.waiting_plans(
             con,now=now,due_only=True)
+        waiting_tasks=stateful_admission.waiting_tasks(
+            con)
     finally:
         con.close()
     if not waiting:
@@ -6738,7 +6740,21 @@ def retry_waiting_stateful_admission(
         # The wait queue is only for resource admission. Any result other than
         # resource_waiting means this retry crossed that gate; do not keep
         # reinstalling a hot_pending/rebuild_pending/restart-required plan.
+        # Before consuming it, release any admitted reservation that still has
+        # no durable descriptor/rebuild intent owner. This covers the crash cut
+        # admission-success -> process death -> validation changes on restart.
         if str(result.get("status",""))!="resource_waiting":
+            retry_additions=[
+                dict(task=dict(
+                    task_id=item["task_id"],
+                    sink_key=item["sink_key"]))
+                for item in waiting_tasks
+                if int(item["plan_version"])==version
+            ]
+            if retry_additions:
+                rollback_stateful_admission(
+                    cfg,retry_additions,
+                    "admission_retry_completed_without_registration")
             con=open_state(cfg["state"])
             try:
                 stateful_admission.clear_wait(
