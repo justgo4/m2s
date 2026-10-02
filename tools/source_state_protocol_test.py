@@ -74,6 +74,50 @@ def assert_gc_index_contract(directory):
 
 
 
+def assert_scratch_schema_migration(directory):
+    path=os.path.join(
+        directory,"scratch-schema-migration.sqlite3")
+    con=sqlite3.connect(
+        path,timeout=30,isolation_level=None)
+    con.execute("PRAGMA foreign_keys=ON")
+    # Model the durable scratch schema left by builds before TEMP staging.
+    # Rows here are deliberately junk: neither table is authoritative.
+    con.executescript("""
+        CREATE TABLE source_apply_actions(
+            marker INTEGER NOT NULL);
+        INSERT INTO source_apply_actions VALUES(1);
+        CREATE TABLE source_snapshot_rows(
+            marker INTEGER NOT NULL);
+        INSERT INTO source_snapshot_rows VALUES(1);
+    """)
+    source_state.install(con)
+    for name in (
+        "source_apply_actions",
+        "source_snapshot_rows",
+    ):
+        assert con.execute("""
+            SELECT 1 FROM sqlite_master
+            WHERE type='table' AND name=?
+        """,(name,)).fetchone() is None
+
+    # Runtime staging is connection-local and status must report that schema,
+    # not stale/main objects from an older database format.
+    source_state._ensure_apply_staging(con)
+    source_state._ensure_snapshot_staging(con)
+    assert con.execute("""
+        SELECT 1 FROM sqlite_temp_master
+        WHERE type='table' AND name='source_apply_actions'
+    """).fetchone() is not None
+    assert con.execute("""
+        SELECT 1 FROM sqlite_temp_master
+        WHERE type='table' AND name='source_snapshot_rows'
+    """).fetchone() is not None
+    pipeline=source_state.status(con)["pipeline_stats"]
+    assert pipeline["apply_staging_rows"]==0
+    assert pipeline["snapshot_staging_rows"]==0
+    con.close()
+
+
 def assert_bounded_gc_contract(directory):
     path=os.path.join(
         directory,"bounded-gc.sqlite3")
@@ -350,6 +394,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="m2s-source-state-") as td:
         assert_log_stats_migration(td)
         assert_apply_staging_atomicity(td)
+        assert_scratch_schema_migration(td)
         assert_gc_index_contract(td)
         assert_bounded_gc_contract(td)
         path = os.path.join(td, "state.sqlite3")

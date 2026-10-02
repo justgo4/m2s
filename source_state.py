@@ -82,25 +82,6 @@ def install(con):
         CREATE INDEX IF NOT EXISTS source_commit_parts_table
             ON source_commit_parts(table_name,seq,part);
 
-        CREATE TABLE IF NOT EXISTS source_apply_actions(
-            seq INTEGER NOT NULL
-                REFERENCES source_commits(seq) ON DELETE CASCADE,
-            table_name TEXT NOT NULL,
-            pk BLOB NOT NULL,
-            deleted INTEGER NOT NULL,
-            row_payload BLOB,
-            schema_epoch INTEGER NOT NULL,
-            PRIMARY KEY(seq,table_name,pk)
-        ) WITHOUT ROWID;
-
-        CREATE TABLE IF NOT EXISTS source_snapshot_rows(
-            table_name TEXT NOT NULL,
-            pk BLOB NOT NULL,
-            row_payload BLOB NOT NULL,
-            schema_epoch INTEGER NOT NULL,
-            PRIMARY KEY(table_name,pk)
-        ) WITHOUT ROWID;
-
         CREATE TABLE IF NOT EXISTS source_versions(
             table_name TEXT NOT NULL,
             pk BLOB NOT NULL,
@@ -165,6 +146,12 @@ def install(con):
             apply_work_ns)
         VALUES(1,0,0,0,0,0,0,0,0,0);
     """)
+    # These names were durable tables in older builds, but both are rebuildable
+    # one-transaction scratch. Dropping legacy copies is safe because recovery
+    # comes from source_commit_parts/source_versions plus the durable cursors.
+    # Qualify main explicitly so an already-created TEMP table is never dropped.
+    con.execute("DROP TABLE IF EXISTS main.source_apply_actions")
+    con.execute("DROP TABLE IF EXISTS main.source_snapshot_rows")
     # Older builds maintained a wide visibility index. Current point/update
     # paths explicitly use the source_versions primary-key index and history
     # reclamation explicitly uses source_versions_gc, so retaining the old
@@ -1284,22 +1271,22 @@ def status(con):
     if pipeline_row is None:
         pipeline_row=(0,0,0,0,0,0,0,0,0)
     has_apply_staging=con.execute("""
-        SELECT 1 FROM sqlite_master
+        SELECT 1 FROM sqlite_temp_master
         WHERE type='table' AND name='source_apply_actions'
     """).fetchone() is not None
     apply_staging_rows=(
         int(con.execute(
-            "SELECT COUNT(*) FROM source_apply_actions"
+            "SELECT COUNT(*) FROM temp.source_apply_actions"
         ).fetchone()[0])
         if has_apply_staging else 0
     )
     has_snapshot_staging=con.execute("""
-        SELECT 1 FROM sqlite_master
+        SELECT 1 FROM sqlite_temp_master
         WHERE type='table' AND name='source_snapshot_rows'
     """).fetchone() is not None
     snapshot_staging_rows=(
         int(con.execute(
-            "SELECT COUNT(*) FROM source_snapshot_rows"
+            "SELECT COUNT(*) FROM temp.source_snapshot_rows"
         ).fetchone()[0])
         if has_snapshot_staging else 0
     )

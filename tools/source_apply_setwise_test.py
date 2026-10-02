@@ -95,9 +95,10 @@ def main():
         assert con.execute(
             "SELECT COUNT(*) FROM temp.source_apply_actions"
         ).fetchone()[0]==0
-        assert con.execute(
-            "SELECT COUNT(*) FROM main.source_apply_actions"
-        ).fetchone()[0]==0
+        assert con.execute("""
+            SELECT 1 FROM sqlite_master
+            WHERE type='table' AND name='source_apply_actions'
+        """).fetchone() is None
 
         normalized=[
             " ".join(item.split()).upper()
@@ -176,9 +177,10 @@ def main():
             FROM temp.source_apply_actions
             WHERE seq=3
         """).fetchone()[0]==0
-        assert con.execute(
-            "SELECT COUNT(*) FROM main.source_apply_actions"
-        ).fetchone()[0]==0
+        assert con.execute("""
+            SELECT 1 FROM sqlite_master
+            WHERE type='table' AND name='source_apply_actions'
+        """).fetchone() is None
         con.execute("""
             UPDATE source_commit_parts
             SET nrows=nrows-1
@@ -246,9 +248,10 @@ def main():
             FROM temp.source_apply_actions
             WHERE seq=4
         """).fetchone()[0]==0
-        assert con.execute(
-            "SELECT COUNT(*) FROM main.source_apply_actions"
-        ).fetchone()[0]==0
+        assert con.execute("""
+            SELECT 1 FROM sqlite_master
+            WHERE type='table' AND name='source_apply_actions'
+        """).fetchone() is None
         assert con.execute("""
             SELECT base_applied
             FROM source_commits

@@ -132,9 +132,10 @@ def main():
         assert con.execute(
             "SELECT COUNT(*) FROM temp.source_snapshot_rows"
         ).fetchone()[0]==0
-        assert con.execute(
-            "SELECT COUNT(*) FROM main.source_snapshot_rows"
-        ).fetchone()[0]==0
+        assert con.execute("""
+            SELECT 1 FROM sqlite_master
+            WHERE type='table' AND name='source_snapshot_rows'
+        """).fetchone() is None
         assert source_state.status(con)[
             "pipeline_stats"]["snapshot_staging_rows"]==0
 
@@ -171,9 +172,10 @@ def main():
         assert con.execute(
             "SELECT COUNT(*) FROM temp.source_snapshot_rows"
         ).fetchone()[0]==0
-        assert con.execute(
-            "SELECT COUNT(*) FROM main.source_snapshot_rows"
-        ).fetchone()[0]==0
+        assert con.execute("""
+            SELECT 1 FROM sqlite_master
+            WHERE type='table' AND name='source_snapshot_rows'
+        """).fetchone() is None
         assert con.execute("""
             SELECT COUNT(*)
             FROM source_versions
