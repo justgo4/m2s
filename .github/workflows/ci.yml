@@ -169,3 +169,4 @@ jobs:
           python tools/stateful_sharing_ab_benchmark.py --tasks 1,10,100 --output benchmark-results/stateful-sharing-ab.json
           python tools/source_apply_staging_benchmark.py --rows 5000 --part-rows 500 --key-space 2500 --output benchmark-results/source-apply-staging.json
           python tools/source_snapshot_staging_benchmark.py --rows 5000 --batch-rows 500 --output benchmark-results/source-snapshot-staging.json
+          python tools/source_capture_apply_async_benchmark.py --commits 10 --rows-per-commit 500 --part-rows 100 --key-space 2500 --max-pending-bytes 1048576 --output benchmark-results/source-capture-apply-async.json
