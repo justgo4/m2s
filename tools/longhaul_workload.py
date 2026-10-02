@@ -4,8 +4,9 @@
 This is the P11 workload generator, separate from longhaul_gate.py.  The
 production certification profile is 50M initial rows, 50 newly inserted source
 rows/s and 72h.  The driver keeps seed memory bounded, adds identical aggregate
-tasks online to exercise shared compute, can hard-kill/restart the daemon, and
-copies the daemon's final durable summary/metrics into benchmark-results.
+and INNER JOIN tasks online to exercise both shared stateful runtimes, can
+hard-kill/restart the daemon, and copies the daemon's final durable
+summary/metrics into benchmark-results.
 
 Use only disposable MySQL/StarRocks services; --isolated is mandatory.
 """
@@ -264,6 +265,17 @@ def setup_databases(source,cfg,rows,seed_chunk):
         "DISTRIBUTED BY HASH(bucket) BUCKETS 4 "
         'PROPERTIES("replication_num"="1")'
     ))
+    wait_create(cfg,(
+        "CREATE TABLE "+DATABASE+".join_000("
+        "_j4_pair_id VARCHAR(1024) NOT NULL,"
+        "event_id BIGINT NULL,"
+        "bucket INT NULL,"
+        "label VARCHAR(64) NULL,"
+        "v BIGINT NULL"
+        ") PRIMARY KEY(_j4_pair_id) "
+        "DISTRIBUTED BY HASH(_j4_pair_id) BUCKETS 8 "
+        'PROPERTIES("replication_num"="1")'
+    ))
 
     with source.cursor() as cur:
         cur.execute(
@@ -279,6 +291,19 @@ def setup_databases(source,cfg,rows,seed_chunk):
             "payload VARCHAR(64) NULL,"
             "PRIMARY KEY(id)"
             ") ENGINE=InnoDB")
+        cur.execute(
+            "CREATE TABLE "+DATABASE+".dimensions("
+            "bucket INT NOT NULL,"
+            "label VARCHAR(64) NOT NULL,"
+            "PRIMARY KEY(bucket)"
+            ") ENGINE=InnoDB")
+        cur.executemany(
+            "INSERT INTO "+DATABASE+".dimensions "
+            "VALUES(%s,%s)",
+            [
+                (bucket,"dim-%04d" % bucket)
+                for bucket in range(1024)
+            ])
     source.commit()
 
     started=time.monotonic()
@@ -370,6 +395,13 @@ def setup_catalog(
             "CREATE TABLE starrocks.agg_000 AS "
             "SELECT bucket,COUNT(*) AS n,SUM(v) AS total "
             "FROM mysql.events GROUP BY bucket"
+        ),
+        (
+            "CREATE TABLE starrocks.join_000 AS "
+            "SELECT e.id AS event_id,e.bucket AS bucket,"
+            "d.label AS label,e.v AS v "
+            "FROM mysql.events e INNER JOIN mysql.dimensions d "
+            "ON e.bucket=d.bucket"
         ),
     ])
     old_catalog=os.environ.get(
@@ -474,14 +506,23 @@ def read_state(path):
                 FROM source_relations
                 ORDER BY table_name
             """).fetchall()
-            tasks=con.execute("""
+            aggregate_tasks=con.execute("""
                 SELECT sink_key,status
                 FROM aggregate_task_descriptors
                 ORDER BY sink_key
             """).fetchall()
-            shared=int(con.execute(
+            join_tasks=con.execute("""
+                SELECT sink_key,status
+                FROM join_task_descriptors
+                ORDER BY sink_key
+            """).fetchall()
+            aggregate_shared=int(con.execute(
                 "SELECT COUNT(*) "
                 "FROM aggregate_shared_followers"
+            ).fetchone()[0])
+            join_shared=int(con.execute(
+                "SELECT COUNT(*) "
+                "FROM join_shared_followers"
             ).fetchone()[0])
             meta=dict(con.execute("""
                 SELECT key,value FROM source_state_meta
@@ -502,9 +543,16 @@ def read_state(path):
                 ],
                 aggregate_tasks=[
                     (str(row[0]),str(row[1]))
-                    for row in tasks
+                    for row in aggregate_tasks
                 ],
-                shared_followers=shared,
+                join_tasks=[
+                    (str(row[0]),str(row[1]))
+                    for row in join_tasks
+                ],
+                aggregate_shared_followers=aggregate_shared,
+                join_shared_followers=join_shared,
+                shared_followers=(
+                    aggregate_shared+join_shared),
                 log_durable_seq=int(
                     meta.get("log_durable_seq",0)),
                 base_applied_seq=int(
@@ -574,6 +622,43 @@ def add_aggregate_task(
             "longhaul dynamic aggregate was not "
             "accepted online: "+repr(activation))
     return "starrocks."+sink
+
+
+def add_join_task(
+        directory,env,index
+):
+    sink="join_%03d" % int(index)
+    activation=run_sql(
+        directory,env,"add-"+sink,
+        (
+            "CREATE TABLE starrocks."+sink+" AS "
+            "SELECT e.id AS event_id,e.bucket AS bucket,"
+            "d.label AS label,e.v AS v "
+            "FROM mysql.events e INNER JOIN mysql.dimensions d "
+            "ON e.bucket=d.bucket;"
+        ))
+    if activation.get("status") not in {
+        "hot_pending",
+        "deferred_until_snapshot_done",
+        "deferred_until_previous_plan_drained",
+    }:
+        raise RuntimeError(
+            "longhaul dynamic JOIN was not "
+            "accepted online: "+repr(activation))
+    return "starrocks."+sink
+
+
+def dynamic_task_kind(mix,index):
+    mix=str(mix)
+    index=int(index)
+    if mix=="aggregate":
+        return "aggregate"
+    if mix=="join":
+        return "join"
+    if mix=="mixed":
+        return "aggregate" if index%2 else "join"
+    raise ValueError(
+        "unsupported dynamic task mix: "+mix)
 
 
 def wait_started(
@@ -721,6 +806,75 @@ def aggregate_exactness(source,cfg,tables):
     checks={}
     for table in tables:
         actual=_aggregate_rows_target(
+            cfg,table)
+        digest=_rows_digest(actual)
+        checks[str(table)]=dict(
+            rows=len(actual),
+            digest=digest,
+            match=(
+                len(actual)==len(expected)
+                and digest==expected_digest
+                and actual==expected
+            ),
+        )
+    return dict(
+        expected_rows=len(expected),
+        expected_digest=expected_digest,
+        tables=checks,
+        all_match=all(
+            item["match"] for item in checks.values()
+        ),
+    )
+
+
+def _join_rows_source(source):
+    with source.cursor() as cur:
+        cur.execute(
+            "SELECT e.bucket,COUNT(*),SUM(e.id),SUM(e.v),"
+            "MIN(d.label),MAX(d.label) "
+            "FROM "+DATABASE+".events e "
+            "INNER JOIN "+DATABASE+".dimensions d "
+            "ON e.bucket=d.bucket "
+            "GROUP BY e.bucket ORDER BY e.bucket")
+        return [
+            (
+                int(row[0]),
+                int(row[1]),
+                int(row[2] or 0),
+                int(row[3] or 0),
+                str(row[4]),
+                str(row[5]),
+            )
+            for row in cur.fetchall()
+        ]
+
+
+def _join_rows_target(cfg,table):
+    rows,_=execute(
+        cfg,
+        "SELECT bucket,COUNT(*),SUM(event_id),SUM(v),"
+        "MIN(label),MAX(label) FROM "
+        +DATABASE+"."+str(table)
+        +" GROUP BY bucket ORDER BY bucket")
+    return [
+        (
+            int(row[0]),
+            int(row[1]),
+            int(row[2] or 0),
+            int(row[3] or 0),
+            str(row[4]),
+            str(row[5]),
+        )
+        for row in rows
+    ]
+
+
+def join_exactness(source,cfg,tables):
+    expected=_join_rows_source(source)
+    expected_digest=_rows_digest(expected)
+    checks={}
+    for table in tables:
+        actual=_join_rows_target(
             cfg,table)
         digest=_rows_digest(actual)
         checks[str(table)]=dict(
@@ -1020,26 +1174,39 @@ def run(args):
                     task_due.pop(0)
                     task_index=len(
                         added_tasks)+1
+                    kind=dynamic_task_kind(
+                        args.dynamic_task_mix,
+                        task_index)
                     sink_key=(
                         "starrocks.agg_%03d"
+                        % task_index
+                        if kind=="aggregate"
+                        else "starrocks.join_%03d"
                         % task_index)
                     task_publish[sink_key]=(
                         time.monotonic())
-                    sink=add_aggregate_task(
-                        directory,env,task_index)
+                    sink=(
+                        add_aggregate_task(
+                            directory,env,task_index)
+                        if kind=="aggregate"
+                        else add_join_task(
+                            directory,env,task_index)
+                    )
                     if sink!=sink_key:
                         raise RuntimeError(
-                            "longhaul dynamic aggregate "
+                            "longhaul dynamic "+kind+" "
                             "sink identity changed")
                     added_tasks.append(sink)
                     deployed+=1
                 return deployed
 
             def observe_task_ready(current):
-                statuses=dict(
-                    [] if current is None
-                    else current[
-                        "aggregate_tasks"])
+                statuses={}
+                if current is not None:
+                    statuses.update(dict(
+                        current["aggregate_tasks"]))
+                    statuses.update(dict(
+                        current["join_tasks"]))
                 observed=time.monotonic()
                 for sink in added_tasks:
                     if (
@@ -1096,6 +1263,8 @@ def run(args):
                         recovery_latency),
                     dynamic_tasks_requested=int(
                         args.dynamic_tasks),
+                    dynamic_task_mix=str(
+                        args.dynamic_task_mix),
                     dynamic_tasks_added=len(
                         added_tasks),
                     dynamic_tasks_ready=len(
@@ -1331,11 +1500,25 @@ def run(args):
                 ["agg_000"]+[
                     sink.split(".",1)[1]
                     for sink in added_tasks
+                    if sink.startswith(
+                        "starrocks.agg_")
                 ])
             if not aggregate_checks["all_match"]:
                 raise AssertionError(
                     "longhaul aggregate targets differ from source "
                     +repr(aggregate_checks))
+            join_checks=join_exactness(
+                source,cfg,
+                ["join_000"]+[
+                    sink.split(".",1)[1]
+                    for sink in added_tasks
+                    if sink.startswith(
+                        "starrocks.join_")
+                ])
+            if not join_checks["all_match"]:
+                raise AssertionError(
+                    "longhaul JOIN targets differ from source "
+                    +repr(join_checks))
 
             sample_daemon_resources(force=True)
             persist_checkpoint(force=True)
@@ -1416,6 +1599,8 @@ def run(args):
                     if recovery_latency else None),
                 dynamic_tasks=int(
                     args.dynamic_tasks),
+                dynamic_task_mix=str(
+                    args.dynamic_task_mix),
                 dynamic_task_ready_seconds=dict(
                     sorted(task_ready.items())),
                 faults=faults,
@@ -1424,6 +1609,7 @@ def run(args):
                 source_totals=expected,
                 target_totals=actual,
                 aggregate_checks=aggregate_checks,
+                join_checks=join_checks,
                 share_mode=args.share_mode,
                 evidence=copied,
                 catalog_version=cdc_catalog.load_plan(
@@ -1489,6 +1675,10 @@ def main():
     parser.add_argument(
         "--dynamic-tasks",type=int,
         default=10)
+    parser.add_argument(
+        "--dynamic-task-mix",
+        choices=("aggregate","join","mixed"),
+        default="mixed")
     parser.add_argument(
         "--fault-every-seconds",type=float,
         default=6*3600)
