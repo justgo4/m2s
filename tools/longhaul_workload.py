@@ -832,6 +832,16 @@ def collect_final_debt(state_path):
 
 
 
+def path_within(path,parent):
+    path=Path(path).expanduser().resolve()
+    parent=Path(parent).expanduser().resolve()
+    try:
+        path.relative_to(parent)
+        return True
+    except ValueError:
+        return False
+
+
 @contextlib.contextmanager
 def work_directory(path=None):
     """Use a disposable workspace unless an explicit empty directory is supplied.
@@ -859,7 +869,8 @@ def work_directory(path=None):
                 +str(directory))
     else:
         directory.mkdir(
-            parents=True,exist_ok=False)
+            parents=True,exist_ok=False,
+            mode=0o700)
     (directory/".m2s-longhaul-workdir").write_text(
         "format_version=1\n",
         encoding="utf-8")
@@ -1588,6 +1599,16 @@ def main():
                 "--certification-profile parameters differ: "
                 +json.dumps(
                     mismatch,sort_keys=True))
+        if args.work_directory is None:
+            parser.error(
+                "--certification-profile requires --work-directory")
+        if path_within(
+            args.work_directory,ROOT
+        ):
+            parser.error(
+                "--certification-profile work directory must be "
+                "outside the repository tree because it contains "
+                "private runtime catalog/state/log material")
     run(args)
 
 
