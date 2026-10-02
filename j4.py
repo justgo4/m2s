@@ -3788,6 +3788,26 @@ def journal_schema(mapping):
     return pa.schema(fields)
 
 
+def journal_type_compatible(actual,expected):
+    if actual==expected:
+        return True
+    string_actual=(
+        pa.types.is_string(actual)
+        or pa.types.is_large_string(actual))
+    string_expected=(
+        pa.types.is_string(expected)
+        or pa.types.is_large_string(expected))
+    if string_actual and string_expected:
+        return True
+    binary_actual=(
+        pa.types.is_binary(actual)
+        or pa.types.is_large_binary(actual))
+    binary_expected=(
+        pa.types.is_binary(expected)
+        or pa.types.is_large_binary(expected))
+    return binary_actual and binary_expected
+
+
 def arrow_table_payload(table):
     sink = pa.BufferOutputStream()
     sink.write(ARROW_JOB_MAGIC)
@@ -3821,6 +3841,26 @@ def arrow_job_table(mapping, payload):
         raise RuntimeError(f"{mapping['src_table']}: invalid Arrow routing metadata types")
     expected=journal_schema(mapping)
     if table.schema!=expected:
+        business=set(
+            name for name,_ in mapping["_schema"])
+        for actual_field,expected_field in zip(
+                table.schema,expected):
+            name=str(expected_field.name)
+            if name in business:
+                compatible=journal_type_compatible(
+                    actual_field.type,expected_field.type)
+            elif name=="_sync_key":
+                compatible=journal_type_compatible(
+                    actual_field.type,expected_field.type)
+            else:
+                compatible=(
+                    pa.types.is_integer(actual_field.type)
+                    and pa.types.is_integer(expected_field.type))
+            if not compatible:
+                raise RuntimeError(
+                    f"{mapping['src_table']}: Arrow journal field {name} "
+                    "changed logical type "
+                    f"{actual_field.type}->{expected_field.type}")
         try:
             table=table.cast(expected,safe=True)
         except (pa.ArrowInvalid,pa.ArrowNotImplementedError) as exc:
