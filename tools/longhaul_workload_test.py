@@ -47,6 +47,25 @@ def main():
         dict(source=[("db.events",None)]))
     assert longhaul_workload.source_ready(
         dict(source=[("db.events",7)]))
+    baseline=dict(
+        source=[("db.events",7)],
+        generations=[
+            ("starrocks.events","ready"),
+            ("starrocks.agg_000","ready"),
+        ],
+        aggregate_tasks=[
+            ("starrocks.agg_000","active"),
+        ],
+    )
+    assert longhaul_workload.baseline_ready(
+        baseline)
+    not_ready=dict(baseline)
+    not_ready["generations"]=[
+        ("starrocks.events","history_staged"),
+        ("starrocks.agg_000","ready"),
+    ]
+    assert not longhaul_workload.baseline_ready(
+        not_ready)
 
     calls=[]
     def fake_execute(_cfg,sql):
@@ -84,6 +103,7 @@ def main():
     commit_times={
         100:10.0,
     }
+    healthy_markers={100}
     progress_calls=[]
     def progress():
         progress_calls.append(1)
@@ -113,10 +133,14 @@ def main():
             object(),Path("daemon.log"),
             Path("state.sqlite3"),{},
             commit_times,10,
-            progress=progress)
+            progress=progress,
+            healthy_markers=healthy_markers)
     assert len(progress_calls)==2
     assert commit_times=={}
     assert len(recovered["latencies"])==2
+    assert len(
+        recovered["healthy_latencies"])==1
+    assert not healthy_markers
     assert recovered["state"]["base_applied_seq"]==7
 
     startup_progress=[]
@@ -294,7 +318,7 @@ def main():
         ).exists()
 
     print(
-        "longhaul_workload_test ok percentile clean_worktree_probe source_ready "
+        "longhaul_workload_test ok percentile clean_worktree_probe source_ready baseline_ready "
         "per_transaction_sentinel continuous_source_during_fault crash_catchup aggregate_exactness "
         "work_directory_retention checkpoint_atomic_replace evidence_copy",
         flush=True,
