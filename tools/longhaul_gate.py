@@ -239,6 +239,31 @@ def evaluate_workload(
     p99=_number(
         report.get("latency_p99_seconds"),
         "latency_p99_seconds")
+    over5=_integer(
+        report.get("latency_over_5_seconds"),
+        "latency_over_5_seconds")
+    over10=_integer(
+        report.get("latency_over_10_seconds"),
+        "latency_over_10_seconds")
+    recovery_samples=_integer(
+        report.get("recovery_latency_samples",0),
+        "recovery_latency_samples")
+    recovery_p95=report.get(
+        "recovery_latency_p95_seconds")
+    recovery_p99=report.get(
+        "recovery_latency_p99_seconds")
+    recovery_max=report.get(
+        "recovery_latency_max_seconds")
+    if recovery_samples:
+        recovery_p95=_number(
+            recovery_p95,
+            "recovery_latency_p95_seconds")
+        recovery_p99=_number(
+            recovery_p99,
+            "recovery_latency_p99_seconds")
+        recovery_max=_number(
+            recovery_max,
+            "recovery_latency_max_seconds")
 
     evidence.update(
         elapsed_seconds=elapsed,
@@ -250,6 +275,12 @@ def evaluate_workload(
         latency_samples_per_second=sample_rate,
         latency_p95_seconds=p95,
         latency_p99_seconds=p99,
+        latency_over_5_seconds=over5,
+        latency_over_10_seconds=over10,
+        recovery_latency_samples=recovery_samples,
+        recovery_latency_p95_seconds=recovery_p95,
+        recovery_latency_p99_seconds=recovery_p99,
+        recovery_latency_max_seconds=recovery_max,
     )
     if elapsed<float(min_elapsed_seconds):
         failures.append("elapsed_seconds")
@@ -327,6 +358,8 @@ def evaluate_workload(
     )
     if len(faults)<int(min_faults):
         failures.append("fault_injection")
+    if faults and recovery_samples<1:
+        failures.append("fault_recovery_latency_missing")
 
     final_state=dict(report.get("final_state") or {})
     if not final_state:
