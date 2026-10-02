@@ -496,6 +496,7 @@ def final_run_summary(runtime, cfg, prepared, con, reason):
         ),
         source=source_state.status(con),
         stateful=stateful_runtime_summary(con),
+        source=source_state.status(con),
     )
     metrics_path,summary_path = report_paths(cfg)
     append_report(metrics_path,summary,cfg.get("metrics_max_bytes",64*1024*1024))
