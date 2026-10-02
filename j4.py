@@ -6061,6 +6061,172 @@ def catalog_activation_record(runtime, validation):
     return validation
 
 
+def ensure_stateful_rebuild_shadow(
+        cfg,spec,existing_intent=False
+):
+    item=spec["new"]
+    task=item["task"]
+    shadow=str(spec["shadow_target"])
+    with mysql_connect(cfg,target=True) as target:
+        with target.cursor() as cur:
+            exists=target_table_exists(
+                cur,cfg,shadow)
+            if exists and not existing_intent:
+                raise RuntimeError(
+                    "stateful rebuild shadow target already exists without "
+                    "durable ownership: "+shadow)
+            if not exists:
+                ddl=stateful_catalog_runtime.target_ddl(
+                    shadow,task["target_schema"])
+                cur.execute(ddl)
+                if not target_table_exists(
+                    cur,cfg,shadow
+                ):
+                    raise RuntimeError(
+                        "stateful rebuild shadow CREATE returned without "
+                        "a visible table: "+shadow)
+    actual=stateful_catalog_runtime.resolve_target_schema(
+        cfg,item["kind"],task["ir"],shadow)
+    if list(actual)!=list(task["target_schema"]):
+        raise RuntimeError(
+            "stateful rebuild shadow target schema differs from compiled "
+            "generation: "+shadow)
+    return shadow
+
+
+def activate_stateful_rebuild_candidate(
+        cfg,runtime,candidate
+):
+    specs=list(
+        candidate.get("stateful_rebuilds",()) or ())
+    if not specs:
+        return []
+    if len(specs)!=1:
+        raise RuntimeError(
+            "online stateful rebuild supports one sink per plan")
+    spec=specs[0]
+    old=spec["old"]
+    new=spec["new"]
+    task=new["task"]
+    sink=str(spec["sink"])
+    if mapping_key(new["mapping"])!=sink:
+        raise RuntimeError(
+            "stateful rebuild writer sink identity changed")
+    con=open_state(cfg["state"])
+    try:
+        existing=stateful_rebuild.maybe_info(
+            con,sink)
+        if existing is None:
+            intent=stateful_rebuild.begin(
+                con,new["kind"],sink,
+                old["task"]["task_id"],
+                task["task_id"],
+                spec["logical_target"],
+                shadow=spec["shadow_target"])
+            existing_intent=False
+        else:
+            intent=stateful_rebuild.begin(
+                con,new["kind"],sink,
+                old["task"]["task_id"],
+                task["task_id"],
+                spec["logical_target"],
+                shadow=spec["shadow_target"])
+            existing_intent=True
+        if intent["phase"] not in {
+            "building_shadow","fencing",
+            "ready_to_swap"
+        }:
+            raise RuntimeError(
+                "cannot activate rebuild candidate from phase "
+                +intent["phase"])
+        ensure_stateful_rebuild_shadow(
+            cfg,spec,
+            existing_intent=existing_intent)
+        registered=stateful_catalog_runtime.register_compiled(
+            con,[new])[0]
+        if registered["task"]["descriptor_hash"]!=task[
+            "descriptor_hash"
+        ]:
+            raise RuntimeError(
+                "stateful rebuild durable descriptor changed")
+        spec["new"]=registered
+        candidate["stateful_rebuilds"]=[spec]
+        replacements=stateful_catalog_runtime.compiled_by_sink(
+            candidate.get("stateful_candidate_tasks",()))
+        replacements[sink]=registered
+        candidate["stateful_candidate_tasks"]=[
+            replacements[name]
+            for name in sorted(replacements)
+        ]
+    finally:
+        con.close()
+
+    mapping=spec["new"]["mapping"]
+    task=spec["new"]["task"]
+    version=stateful_task_plan.writer_plan_version(
+        task["plan_version"])
+    identity=(version,sink)
+    with runtime["plan_lock"]:
+        runtime.setdefault(
+            "stateful_mappings",{})[identity]=mapping
+        runtime.setdefault(
+            "stateful_active_task_ids",set()).add(
+            task["task_id"])
+        existing_tasks={
+            entry["task"]["task_id"]
+            for entry in runtime.setdefault(
+                "stateful_tasks",[])
+        }
+        if task["task_id"] not in existing_tasks:
+            runtime["stateful_tasks"].append(
+                spec["new"])
+        runtime.setdefault(
+            "stateful_rebuild_plans",{})[sink]=candidate
+
+    if sink not in runtime.get(
+        "worker_keys",set()
+    ):
+        runtime_add_sink(
+            mapping,cfg,runtime,
+            historical_snapshot=False)
+    thread=threading.Thread(
+        target=guarded_worker,
+        args=(
+            stateful_task_worker,runtime,
+            spec["new"],cfg),
+        name="stateful-rebuild-"
+        +str(spec["new"]["kind"])+"-"+sink)
+    runtime_thread_register(
+        runtime,thread)
+    with runtime["plan_lock"]:
+        runtime.setdefault(
+            "stateful_worker_threads",{})[
+                task["task_id"]]=thread
+    log(
+        "STATEFUL REBUILD BUILDING sink=%s old=%s new=%s shadow=%s "
+        "writer_version=%d"
+        % (
+            sink,old["task"]["task_id"],
+            task["task_id"],
+            spec["shadow_target"],version))
+    return [task["task_id"]]
+
+
+def install_stateful_rebuild_plan(
+        cfg,runtime,publish_result,validation,candidate
+):
+    version=int(candidate["version"])
+    with runtime["plan_lock"]:
+        runtime["plans"][version]=candidate
+    activated=activate_stateful_rebuild_candidate(
+        cfg,runtime,candidate)
+    result=dict(validation)
+    result["status"]="rebuild_pending"
+    result["activated_tasks"]=activated
+    return catalog_activation_record(
+        runtime,result)
+
+
 def install_hot_catalog_plan(cfg, runtime, publish_result, validation):
     status = str(validation.get("status",""))
     if status in ("active","restart_required","rebuild_required"):
@@ -6084,6 +6250,10 @@ def install_hot_catalog_plan(cfg, runtime, publish_result, validation):
         raise RuntimeError("validated catalog plan disappeared before install")
     candidate,_ = cached
     version = int(candidate["version"])
+    if status=="rebuild_pending":
+        return install_stateful_rebuild_plan(
+            cfg,runtime,publish_result,
+            validation,candidate)
     stateful_payload={
         name:candidate[name]
         for name in (
