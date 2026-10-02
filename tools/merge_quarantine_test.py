@@ -79,6 +79,35 @@ def main():
         assert con.execute(
             "SELECT replay_safe FROM merge_uncertain"
         ).fetchone()==(0,)
+
+        # Re-registering the exact same in-flight request is idempotent, but
+        # durable UNKNOWN evidence is immutable. A changed payload/label/table
+        # must never overwrite the only identity we have for a request whose
+        # remote outcome is unresolved.
+        j4.begin_merge_request(
+            con,sequence_mapping,
+            'safe-delivery',0,'safe-label',
+            upsert,profile)
+        durable=con.execute("""
+            SELECT table_name,lane,label,payload_sha256
+            FROM merge_uncertain
+            WHERE delivery_id='safe-delivery' AND part=0
+        """).fetchone()
+        try:
+            j4.begin_merge_request(
+                con,sequence_mapping,
+                'safe-delivery',0,'safe-label',
+                upsert+b'{"id":3,"_cdc_seq":9,"__op":0}\n',
+                profile)
+            raise AssertionError(
+                "uncertain Merge Commit payload identity was overwritten")
+        except RuntimeError as exc:
+            assert "identity changed" in str(exc)
+        assert con.execute("""
+            SELECT table_name,lane,label,payload_sha256
+            FROM merge_uncertain
+            WHERE delivery_id='safe-delivery' AND part=0
+        """).fetchone()==durable
         restored=dict(
             stop=threading.Event(),
             control_lock=threading.Lock(),
@@ -149,7 +178,7 @@ def main():
             con.close()
     print(
         'MERGE QUARANTINE PASS sequence-guarded upsert remains fail-closed '
-        'across future delete; marker retained, no replay, unrelated worker progresses',
+        'across future delete; immutable marker retained, no replay, unrelated worker progresses',
         flush=True)
 
 
