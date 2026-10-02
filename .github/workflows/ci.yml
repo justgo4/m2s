@@ -84,6 +84,7 @@ jobs:
           python tools/stateful_rebuild_test.py
           python tools/stateful_rebuild_scale_test.py
           python tools/stateful_rebuild_concurrency_test.py
+          python tools/stateful_rebuild_multi_test.py
           python tools/stateful_rebuild_cohort_test.py
           python tools/stateful_share_policy_test.py
           python tools/stateful_share_graph_test.py
