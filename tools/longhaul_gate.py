@@ -388,6 +388,70 @@ def evaluate_workload(
             cgroup_cpu_quota_cores=cpu_quota,
             cgroup_memory_limit_bytes=memory_limit,
         )
+
+    daemon_resources=report.get("daemon_resources")
+    if not isinstance(daemon_resources,dict):
+        failures.append(
+            "daemon_resource_evidence_missing")
+        evidence["daemon_resources"]={}
+    else:
+        daemon_supported=bool(
+            daemon_resources.get("supported",False))
+        daemon_samples=_integer(
+            daemon_resources.get("samples",0),
+            "daemon_resources.samples")
+        daemon_identities=_integer(
+            daemon_resources.get(
+                "process_identities_seen",0),
+            "daemon_resources.process_identities_seen")
+        daemon_peak_processes=_integer(
+            daemon_resources.get("peak_processes",0),
+            "daemon_resources.peak_processes")
+        daemon_peak_rss=_integer(
+            daemon_resources.get("peak_rss_bytes",0),
+            "daemon_resources.peak_rss_bytes")
+        daemon_cpu=_number(
+            daemon_resources.get("cpu_seconds",0),
+            "daemon_resources.cpu_seconds")
+        daemon_read=_integer(
+            daemon_resources.get("read_bytes",0),
+            "daemon_resources.read_bytes")
+        daemon_write=_integer(
+            daemon_resources.get("write_bytes",0),
+            "daemon_resources.write_bytes")
+        if not daemon_supported:
+            failures.append(
+                "daemon_resource_probe_unsupported")
+        if (
+            daemon_samples<=0
+            or daemon_identities<=0
+            or daemon_peak_processes<=0
+            or daemon_peak_rss<=0
+            or daemon_cpu<0
+            or daemon_read<0
+            or daemon_write<0
+        ):
+            failures.append(
+                "daemon_resource_evidence_incomplete")
+        memory_budget_bytes=max(
+            0,configured_memory_mb)*1024**2
+        evidence["daemon_resources"]=dict(
+            supported=daemon_supported,
+            samples=daemon_samples,
+            process_identities_seen=daemon_identities,
+            peak_processes=daemon_peak_processes,
+            peak_rss_bytes=daemon_peak_rss,
+            peak_rss_fraction_of_configured=(
+                float(daemon_peak_rss)
+                /memory_budget_bytes
+                if memory_budget_bytes>0 else None),
+            cpu_seconds=daemon_cpu,
+            cpu_core_equivalent=(
+                daemon_cpu/elapsed
+                if elapsed>0 else None),
+            read_bytes=daemon_read,
+            write_bytes=daemon_write,
+        )
     if elapsed<float(min_elapsed_seconds):
         failures.append("elapsed_seconds")
     if initial_rows<int(min_initial_rows):
