@@ -35,6 +35,7 @@ def evaluate(
         max_p95_seconds=5.0,
         max_p99_seconds=10.0,
         min_cdc_samples=1,
+        min_cdc_rows_per_second=49.0,
         require_drained=True,
 ):
     failures=[]
@@ -50,6 +51,31 @@ def evaluate(
     evidence["elapsed_seconds"]=elapsed
     if elapsed<float(min_elapsed_seconds):
         failures.append("elapsed_seconds")
+
+    source=dict(summary.get("source") or {})
+    log_stats=dict(source.get("log_stats") or {})
+    source_event_rows=0
+    source_commits=0
+    for table,value in sorted(log_stats.items()):
+        value=dict(value or {})
+        source_event_rows+=_integer(
+            value.get("event_rows",0),
+            str(table)+".source_event_rows")
+        source_commits+=_integer(
+            value.get("commits",0),
+            str(table)+".source_commits")
+    source_rate=(
+        float(source_event_rows)/elapsed
+        if elapsed>0 else 0.0)
+    evidence["source_cdc"]=dict(
+        event_rows=source_event_rows,
+        commits=source_commits,
+        rows_per_second=source_rate,
+    )
+    if not log_stats:
+        failures.append("source_log_stats_missing")
+    if source_rate<float(min_cdc_rows_per_second):
+        failures.append("source_cdc_rows_per_second")
 
     state=dict(summary.get("state") or {})
     if str(state.get("health"))!="normal":
@@ -154,6 +180,8 @@ def evaluate(
             max_p95_seconds=float(max_p95_seconds),
             max_p99_seconds=float(max_p99_seconds),
             min_cdc_samples=int(min_cdc_samples),
+            min_cdc_rows_per_second=float(
+                min_cdc_rows_per_second),
             require_drained=bool(require_drained),
         ),
     )
@@ -178,6 +206,9 @@ def main():
         "--min-cdc-samples",type=int,
         default=1)
     parser.add_argument(
+        "--min-cdc-rows-per-second",type=float,
+        default=49.0)
+    parser.add_argument(
         "--allow-undrained",action="store_true")
     parser.add_argument(
         "--output",type=Path)
@@ -192,6 +223,7 @@ def main():
         max_p95_seconds=args.max_p95_seconds,
         max_p99_seconds=args.max_p99_seconds,
         min_cdc_samples=args.min_cdc_samples,
+        min_cdc_rows_per_second=args.min_cdc_rows_per_second,
         require_drained=not args.allow_undrained,
     )
     payload=json.dumps(
