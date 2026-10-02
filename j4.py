@@ -12078,6 +12078,63 @@ def durable_status_snapshot(state_path):
                 "SELECT COUNT(*) FROM load_parts WHERE visible=0"
             ).fetchone()[0])
 
+        merge_uncertain=dict(
+            count=0,tables={},requests=[],
+            truncated=0)
+        if _status_table_exists(con,"merge_uncertain"):
+            columns={
+                str(row[1])
+                for row in con.execute(
+                    "PRAGMA table_info(merge_uncertain)").fetchall()
+            }
+            attempts_sql=(
+                "replay_attempts"
+                if "replay_attempts" in columns
+                else "0")
+            last_replay_sql=(
+                "last_replay"
+                if "last_replay" in columns
+                else "NULL")
+            merge_uncertain["count"]=int(con.execute(
+                "SELECT COUNT(*) FROM merge_uncertain"
+            ).fetchone()[0])
+            merge_uncertain["tables"]={
+                str(row[0]):int(row[1])
+                for row in con.execute("""
+                    SELECT table_name,COUNT(*)
+                    FROM merge_uncertain
+                    GROUP BY table_name
+                    ORDER BY table_name
+                """).fetchall()
+            }
+            rows=con.execute(
+                "SELECT table_name,delivery_id,part,lane,reason,"
+                "created,updated,"+attempts_sql+","+last_replay_sql+" "
+                "FROM merge_uncertain "
+                "ORDER BY created,delivery_id,part LIMIT 100"
+            ).fetchall()
+            merge_uncertain["requests"]=[
+                dict(
+                    table_name=str(row[0]),
+                    delivery_id=str(row[1]),
+                    part=int(row[2]),
+                    lane=int(row[3]),
+                    reason=str(row[4]),
+                    created=float(row[5]),
+                    updated=float(row[6]),
+                    replay_attempts=int(row[7] or 0),
+                    last_replay=(
+                        None
+                        if row[8] is None
+                        else float(row[8])),
+                )
+                for row in rows
+            ]
+            merge_uncertain["truncated"]=max(
+                0,
+                merge_uncertain["count"]
+                -len(merge_uncertain["requests"]))
+
         physical=dict(
             states=0,refs=0,pins=0,
             health={},sizes={})
@@ -12134,6 +12191,7 @@ def durable_status_snapshot(state_path):
             retirements=retirements,
             sharing=share,
             admission=admission,
+            merge_uncertain=merge_uncertain,
             physical=physical,
         )
     finally:
