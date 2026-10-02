@@ -5717,9 +5717,15 @@ def prepare_hot_stateful_additions(cfg, runtime, candidate):
             con,cfg,compiled)
         registered=stateful_catalog_runtime.register_compiled(
             con,compiled)
+        with runtime["plan_lock"]:
+            existing_tasks=list(
+                runtime.get("stateful_tasks",()))
+        preferences=stateful_share_policy.plan_graph(
+            con,existing_tasks+list(registered),cfg=cfg)
     finally:
         con.close()
     candidate["stateful_additions"]=registered
+    candidate["stateful_share_preferences"]=preferences
     if "stateful_candidate_tasks" in candidate:
         replacements=stateful_catalog_runtime.compiled_by_sink(
             registered)
@@ -9175,6 +9181,9 @@ def stateful_task_worker(item, cfg, runtime):
                 if removed:
                     break
                 raise
+            if result.get("waiting_shared_leader"):
+                stop.wait(0.05)
+                continue
             wake_loaders(runtime,mapping_key(mapping))
             if result.get("shared_physical"):
                 log(
@@ -9332,6 +9341,15 @@ def run_cdc(
                 con,cfg,compiled_stateful)
             compiled_stateful=stateful_catalog_runtime.register_compiled(
                 con,compiled_stateful)
+            share_preferences=stateful_share_policy.plan_graph(
+                con,compiled_stateful,cfg=cfg)
+            if share_preferences:
+                log(
+                    "STATEFUL SHARE GRAPH preferences=%d mode=%s"
+                    % (
+                        len(share_preferences),
+                        cfg.get("stateful_share_mode","compatible"),
+                    ))
         # A catalog restart/drop is a cutover too. Persist a fixed retirement
         # frontier instead of immediately deleting the old consumer; this lets
         # a crash/restart resume the exact same catch-up boundary.
