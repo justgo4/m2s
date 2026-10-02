@@ -237,6 +237,55 @@ def main():
         finally:
             con.close()
 
+        # Retry-time validation/install exceptions remain visible to the
+        # caller but also advance the durable backoff generation. This avoids
+        # a fixed-cadence hot loop against an unavailable target/control plane.
+        retry_error=[task(
+            "wait-error",
+            "starrocks.wait_error")]
+        con=j4.open_state(state)
+        try:
+            stateful_admission.queue_wait(
+                con,retry_error,plan_version=8,
+                reason="max_tasks",
+                retry_seconds=0)
+            before_error=stateful_admission.waiting_tasks(
+                con,plan_version=8)[0]
+        finally:
+            con.close()
+        with patch.object(
+            j4.cdc_catalog,"load_plan",
+            return_value=dict(
+                version=8,plan_hash="latest")
+        ), patch.object(
+            j4,"queue_hot_catalog_plan",
+            side_effect=RuntimeError(
+                "synthetic retry install failure")
+        ):
+            try:
+                j4.retry_waiting_stateful_admission(
+                    dict(
+                        cfg,
+                        stateful_admission_retry_seconds=5),
+                    runtime,now=10**12)
+                raise AssertionError(
+                    "retry install error was swallowed")
+            except RuntimeError as exc:
+                assert "synthetic retry install failure" in str(exc)
+        con=j4.open_state(state)
+        try:
+            after_error=stateful_admission.waiting_tasks(
+                con,plan_version=8)[0]
+            assert after_error["task_id"]=="wait-error"
+            assert after_error["retry_count"]==(
+                before_error["retry_count"]+1)
+            assert after_error["reason"]=="retry_error:RuntimeError"
+            assert after_error["next_retry"]>before_error["next_retry"]
+            stateful_admission.clear_wait(
+                con,task_ids=["wait-error"])
+        finally:
+            con.close()
+
         # If admission succeeded before a crash but no durable descriptor
         # or rebuild intent owns the reservation, a later non-waiting retry
         # outcome must release that reservation before consuming the wait.
@@ -325,7 +374,8 @@ def main():
         "superseded_plan_fence current_plan_retry "
         "control_plane_nonfatal_wait bounded_retry_backoff plan_retry_reset "
         "immediate_superseded_cleanup admission_wait_crash_fence "
-        "pending_plan_not_retried orphan_reservation_released",
+        "pending_plan_not_retried retry_error_backoff "
+        "orphan_reservation_released",
         flush=True,
     )
 
