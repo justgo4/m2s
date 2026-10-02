@@ -16,6 +16,7 @@ import join_ir
 import join_target_mapping
 import join_task_catalog
 import stateful_share_policy
+import task_generation
 
 
 AGG_SIG=[
@@ -202,6 +203,29 @@ def main():
             (narrow["state_id"],)
         ).fetchone()[0]==0
 
+        # Generation-ready/task-active is not enough to drop the placement
+        # fence: physical-state publication follows task activation in the
+        # worker. The follower must wait through that boundary instead of
+        # racing into a private bootstrap.
+        wide=aggregate_task_catalog.task_info(
+            con,"agg-wide")
+        task_generation.import_existing(
+            con,wide["sink_key"],wide["plan_version"],
+            wide["source_relation"],"ready")
+        aggregate_task_catalog.set_status(
+            con,wide["task_id"],"active")
+        waiting=aggregate_task_runner.step(
+            con,narrow["task_id"],
+            dict(stateful_share_mode="compatible"),
+            mapping=mapping)
+        assert waiting["phase"]=="waiting_shared_leader"
+        assert waiting["preferred_leader_task_id"]=="agg-wide"
+        assert con.execute(
+            "SELECT COUNT(*) FROM aggregate_states "
+            "WHERE state_id=?",
+            (narrow["state_id"],)
+        ).fetchone()[0]==0
+
         # Adaptive graph placement respects fanout caps without creating
         # follower chains. With max_followers=1, the wide aggregate owns only
         # one follower; the remaining narrow task must stay private rather
@@ -255,7 +279,8 @@ def main():
     print(
         "stateful_share_graph_test ok aggregate_superset "
         "join_projection whole_graph_no_chain adaptive_fanout "
-        "wait_before_private restart_persistence sharing_off",
+        "wait_before_private activation_publication_race "
+        "restart_persistence sharing_off",
         flush=True,
     )
 
