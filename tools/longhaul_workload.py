@@ -224,7 +224,30 @@ def wait_create(cfg,ddl):
             time.sleep(1)
 
 
-def setup_databases(source,cfg,rows,seed_chunk):
+def set_session_binlog(source,enabled):
+    source.commit()
+    expected=1 if enabled else 0
+    with source.cursor() as cur:
+        cur.execute(
+            "SET SESSION sql_log_bin="
+            +str(expected))
+        cur.execute(
+            "SELECT @@SESSION.sql_log_bin")
+        row=cur.fetchone()
+    actual=(
+        None if row is None
+        else int(row[0]))
+    if actual!=expected:
+        raise RuntimeError(
+            "MySQL session sql_log_bin did not change "
+            "expected=%d actual=%r"
+            % (expected,actual))
+
+
+def setup_databases(
+        source,cfg,rows,seed_chunk,
+        seed_binlog="off"
+):
     execute(
         cfg,"DROP DATABASE IF EXISTS "+DATABASE)
     execute(
@@ -265,34 +288,50 @@ def setup_databases(source,cfg,rows,seed_chunk):
             ") ENGINE=InnoDB")
     source.commit()
 
+    seed_binlog=str(seed_binlog).lower()
+    if seed_binlog not in {"on","off"}:
+        raise ValueError(
+            "seed_binlog must be on or off")
     started=time.monotonic()
     inserted=0
-    while inserted<int(rows):
-        upper=min(
-            int(rows),inserted+int(seed_chunk))
-        batch=[
-            (
-                index,
-                index%1024,
-                index,
-                "seed-%d" % (index%1000),
-            )
-            for index in range(inserted,upper)
-        ]
-        with source.cursor() as cur:
-            cur.executemany(
-                "INSERT INTO "+DATABASE+".events "
-                "VALUES(%s,%s,%s,%s)",
-                batch)
-        source.commit()
-        inserted=upper
-        if inserted==rows or inserted%(seed_chunk*100)==0:
-            print(
-                "longhaul seed rows=%d/%d elapsed=%.1fs"
-                % (
-                    inserted,rows,
-                    time.monotonic()-started),
-                flush=True)
+    if seed_binlog=="off":
+        set_session_binlog(
+            source,False)
+    try:
+        while inserted<int(rows):
+            upper=min(
+                int(rows),inserted+int(seed_chunk))
+            batch=[
+                (
+                    index,
+                    index%1024,
+                    index,
+                    "seed-%d" % (index%1000),
+                )
+                for index in range(inserted,upper)
+            ]
+            with source.cursor() as cur:
+                cur.executemany(
+                    "INSERT INTO "+DATABASE+".events "
+                    "VALUES(%s,%s,%s,%s)",
+                    batch)
+            source.commit()
+            inserted=upper
+            if (
+                inserted==rows
+                or inserted%(seed_chunk*100)==0
+            ):
+                print(
+                    "longhaul seed rows=%d/%d elapsed=%.1fs binlog=%s"
+                    % (
+                        inserted,rows,
+                        time.monotonic()-started,
+                        seed_binlog),
+                    flush=True)
+    finally:
+        if seed_binlog=="off":
+            set_session_binlog(
+                source,True)
     return time.monotonic()-started
 
 
@@ -938,7 +977,8 @@ def run(args):
     proc=handle=log=None
     try:
         seed_seconds=setup_databases(
-            source,cfg,args.rows,args.seed_chunk)
+            source,cfg,args.rows,args.seed_chunk,
+            seed_binlog=args.seed_binlog)
 
         mysql_selection=service_resource_probe.resolve_service_pid(
             explicit_pid=getattr(args,"mysql_resource_pid",None),
@@ -1064,6 +1104,7 @@ def run(args):
                         else "custom"),
                     protocol=args.load_mode,
                     initial_rows=int(args.rows),
+                    seed_binlog=str(args.seed_binlog),
                     rows_per_second=int(
                         args.rows_per_second),
                     duration_seconds=max(
@@ -1374,6 +1415,7 @@ def run(args):
                     else "custom"),
                 protocol=args.load_mode,
                 initial_rows=int(args.rows),
+                seed_binlog=str(args.seed_binlog),
                 rows_per_second=int(
                     args.rows_per_second),
                 duration_seconds=elapsed,
@@ -1514,6 +1556,13 @@ def main():
     parser.add_argument(
         "--seed-chunk",type=int,
         default=10000)
+    parser.add_argument(
+        "--seed-binlog",
+        choices=("on","off"),
+        default="off",
+        help=(
+            "whether synthetic historical seed rows enter MySQL binlog; "
+            "off models pre-existing history and is the certification default"))
     parser.add_argument(
         "--snapshot-rows",type=int,
         default=16384)
