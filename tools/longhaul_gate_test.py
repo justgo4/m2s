@@ -111,10 +111,16 @@ def workload():
             stateful_rows=1024,
             stateful_payload_bytes=32*1024*1024,
             max_rowset=73,
+            rowset_red=700,
             per_table_max_rowset={
                 "starrocks.events":73,
                 "starrocks.agg_000":31,
             },
+            per_table_version_recovery={
+                "starrocks.events":False,
+                "starrocks.agg_000":False,
+            },
+            version_recovery_active=False,
             pending_bytes=0,
             prepared_budget_used=0,
             field_overflow_rows=0,
@@ -242,6 +248,26 @@ def main():
     assert "version_debt_unknown" in full["failures"]
 
     bad=workload()
+    bad["debt"]["max_rowset"]=700
+    full=evaluate_workload(bad)
+    assert not full["ok"]
+    assert "rowset_red_exceeded" in full["failures"]
+
+    bad=workload()
+    bad["debt"]["version_recovery_active"]=True
+    bad["debt"]["per_table_version_recovery"][
+        "starrocks.events"]=True
+    full=evaluate_workload(bad)
+    assert not full["ok"]
+    assert "version_recovery_active" in full["failures"]
+
+    bad=workload()
+    bad["debt"]["field_overflow_rows"]=1
+    full=evaluate_workload(bad)
+    assert not full["ok"]
+    assert "field_overflow_rows" in full["failures"]
+
+    bad=workload()
     bad["debt"]={}
     full=evaluate_workload(bad)
     assert not full["ok"]
@@ -279,7 +305,8 @@ def main():
 
     print(
         "longhaul_gate_test ok 50m_72h 50rps p95_p99 cross_restart "
-        "drain stateful_health space_version_debt fail_closed",
+        "drain stateful_health space_version_debt rowset_recovery "
+        "overflow_fail_closed",
         flush=True,
     )
 
