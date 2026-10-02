@@ -6132,7 +6132,7 @@ def ensure_stateful_rebuild_shadow(
                 cur.execute(
                     "ALTER TABLE "
                     +sql_name(shadow,True)
-                    +" COMMENT %s",
+                    +" COMMENT = %s",
                     (marker,))
             else:
                 cur.execute("""
@@ -9620,7 +9620,7 @@ def stateful_rebuild_cleanup_remote(cfg,rebuild):
                     "ALTER TABLE "
                     +sql_name(
                         rebuild["logical_target"],True)
-                    +" COMMENT %s",
+                    +" COMMENT = %s",
                     (str(rebuild.get(
                         "original_comment","")),))
 
