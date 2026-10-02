@@ -29,6 +29,7 @@ sys.path.insert(0,str(ROOT))
 
 import cdc_catalog
 import j4
+import p11_profile
 from starrocks_contract import configuration,execute,wait_ready
 import process_resource_probe
 import service_resource_probe
@@ -973,6 +974,11 @@ def run(args):
                     format_version=1,
                     kind="m2s_longhaul_checkpoint",
                     complete=False,
+                    workload_profile=(
+                        p11_profile.NAME
+                        if getattr(
+                            args,"certification_profile",False)
+                        else "custom"),
                     protocol=args.load_mode,
                     initial_rows=int(args.rows),
                     rows_per_second=int(
@@ -1259,6 +1265,11 @@ def run(args):
             report=dict(
                 format_version=1,
                 kind="m2s_longhaul_workload",
+                workload_profile=(
+                    p11_profile.NAME
+                    if getattr(
+                        args,"certification_profile",False)
+                    else "custom"),
                 protocol=args.load_mode,
                 initial_rows=int(args.rows),
                 rows_per_second=int(
@@ -1350,6 +1361,12 @@ def main():
         description=__doc__)
     parser.add_argument(
         "--isolated",action="store_true")
+    parser.add_argument(
+        "--certification-profile",
+        action="store_true",
+        help=(
+            "require every workload knob to match the canonical "
+            +p11_profile.NAME+" profile exactly"))
     parser.add_argument(
         "--load-mode",
         choices=("merge_async","transaction"),
@@ -1456,6 +1473,13 @@ def main():
     if not 1<=int(args.starrocks_be_resource_port)<=65535:
         parser.error(
             "--starrocks-be-resource-port must be 1..65535")
+    if args.certification_profile:
+        mismatch=p11_profile.mismatches(args)
+        if mismatch:
+            parser.error(
+                "--certification-profile parameters differ: "
+                +json.dumps(
+                    mismatch,sort_keys=True))
     run(args)
 
 
