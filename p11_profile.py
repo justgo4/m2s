@@ -4,7 +4,7 @@ Keep this dependency-free so the workload driver, gate and offline tests share
 one exact profile identity without importing runtime/database modules.
 """
 
-NAME="p11-50m-50rps-72h-v2"
+NAME="p11-50m-50rps-72h-v3"
 
 PARAMETERS=dict(
     load_mode="merge_async",
@@ -12,6 +12,7 @@ PARAMETERS=dict(
     rows_per_second=50,
     duration_seconds=72*3600,
     dynamic_tasks=10,
+    dynamic_task_mix="mixed",
     fault_every_seconds=6*3600,
     sample_seconds=1.0,
     fault_recovery_timeout_seconds=1800.0,
