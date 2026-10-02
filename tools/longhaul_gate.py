@@ -497,6 +497,13 @@ def evaluate_workload(
                 "daemon_resource_evidence_incomplete")
         memory_budget_bytes=max(
             0,configured_memory_mb)*1024**2
+        if (
+            configured_memory_mb>0
+            and daemon_peak_rss
+                >configured_memory_mb*1024**2
+        ):
+            failures.append(
+                "daemon_rss_exceeds_configured_memory")
         evidence["daemon_resources"]=dict(
             supported=daemon_supported,
             samples=daemon_samples,

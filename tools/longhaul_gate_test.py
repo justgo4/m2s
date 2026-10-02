@@ -360,6 +360,13 @@ def main():
     assert "daemon_resource_probe_unsupported" in full["failures"]
 
     bad=workload()
+    bad["daemon_resources"]["peak_rss_bytes"]=(
+        bad["memory_mb"]*1024**2+1)
+    full=evaluate_workload(bad)
+    assert not full["ok"]
+    assert "daemon_rss_exceeds_configured_memory" in full["failures"]
+
+    bad=workload()
     bad["debt"]["max_rowset"]=-1
     full=evaluate_workload(bad)
     assert not full["ok"]
@@ -441,7 +448,7 @@ def main():
         "longhaul_gate_test ok 50m_72h 50rps lifetime_exact_p95_p99 cross_restart "
         "healthy_recovery_latency drain stateful_health space_version_debt "
         "rowset_recovery overflow_fail_closed reproducible_resource_fingerprint "
-        "daemon_process_resource_evidence software_fingerprint",
+        "daemon_process_resource_evidence daemon_rss_budget software_fingerprint",
         flush=True,
     )
 

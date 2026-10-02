@@ -1253,10 +1253,20 @@ def main():
                     +json.dumps(response,sort_keys=True))
             hot_retired=wait_stateful_retired(
                 proc,log,directory,"starrocks.agg_hot")
-            if hot_retired.get("aggregate_shared"):
+            aggregate_bindings=list(
+                hot_retired.get("aggregate_shared",()))
+            if (
+                len(aggregate_bindings)!=1
+                or "agg_subview" not in str(
+                    aggregate_bindings[0][0])
+                or any(
+                    "agg_hot" in str(value)
+                    for row in aggregate_bindings
+                    for value in row)
+            ):
                 raise AssertionError(
-                    "retired shared aggregate follower binding leaked: "
-                    +repr(hot_retired))
+                    "retired exact aggregate follower disturbed remaining "
+                    "subview binding: "+repr(hot_retired))
             if aggregate_actual(cfg,"agg_hot")!=aggregate_expected(source):
                 raise AssertionError(
                     "retired hot aggregate target was not preserved exactly")
