@@ -135,11 +135,18 @@ def _leader_candidates(con,task):
                     leader["state_id"]))
         except KeyError:
             continue
+        requested=aggregate_physical_state.physical_spec(
+            con,task["ir"])
         if (
             not state["bootstrap_complete"]
             or state["input_semantic_id"]!=task["ir_id"]
             or int(state["watermark"])!=int(consumer["watermark"])
-            or physical["health"]!="ready"
+            or not physical_state_catalog.semantic_compatible(
+                physical,requested)
+            or not physical_state_catalog.physically_reusable(
+                physical,
+                aggregate_physical_state.BACKEND,
+                aggregate_physical_state.FORMAT_TAG)
             or physical["metadata"].get(
                 "aggregate_state_id")!=leader["state_id"]
         ):
