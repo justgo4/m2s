@@ -803,6 +803,27 @@ def work_directory(path=None):
     yield directory
 
 
+def write_checkpoint(output,payload):
+    output=Path(output)
+    path=output.with_name(
+        output.stem+"-checkpoint.json")
+    path.parent.mkdir(
+        parents=True,exist_ok=True)
+    temporary=path.with_name(
+        path.name+".tmp")
+    data=json.dumps(
+        payload,indent=2,
+        sort_keys=True)+"\n"
+    with temporary.open(
+        "w",encoding="utf-8"
+    ) as handle:
+        handle.write(data)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary,path)
+    return path
+
+
 def copy_evidence(directory,output):
     state_path=directory/"state.sqlite3"
     summary=Path(
@@ -934,6 +955,74 @@ def run(args):
             daemon_index=1
             faults=[]
             source_ready_at=None
+            next_checkpoint=started
+
+            def persist_checkpoint(now=None,force=False):
+                nonlocal next_checkpoint
+                interval=float(
+                    getattr(args,"checkpoint_seconds",300.0))
+                if interval<=0 and not force:
+                    return None
+                now=(
+                    time.monotonic()
+                    if now is None else float(now))
+                if not force and now<next_checkpoint:
+                    return None
+                sample_daemon_resources(force=True)
+                payload=dict(
+                    format_version=1,
+                    kind="m2s_longhaul_checkpoint",
+                    complete=False,
+                    protocol=args.load_mode,
+                    initial_rows=int(args.rows),
+                    rows_per_second=int(
+                        args.rows_per_second),
+                    duration_seconds=max(
+                        0.0,now-started),
+                    memory_mb=int(args.memory_mb),
+                    work_directory_persistent=bool(
+                        getattr(
+                            args,"work_directory",None)),
+                    code_revision=str(
+                        software.get(
+                            "code_revision") or ""),
+                    live_rows=int(sequence),
+                    latency_samples=len(latency),
+                    latency_p95_seconds=percentile(
+                        latency,.95),
+                    latency_p99_seconds=percentile(
+                        latency,.99),
+                    recovery_latency_samples=len(
+                        recovery_latency),
+                    dynamic_tasks_requested=int(
+                        args.dynamic_tasks),
+                    dynamic_tasks_added=len(
+                        added_tasks),
+                    dynamic_tasks_ready=len(
+                        task_ready),
+                    faults=list(faults),
+                    current_state=read_state(
+                        state_path),
+                    daemon_resources=(
+                        process_resource_probe.report(
+                            resource_tracker)),
+                    service_resources={
+                        name:service_resource_probe.report(
+                            tracker)
+                        for name,tracker in sorted(
+                            service_trackers.items())
+                    },
+                )
+                path=write_checkpoint(
+                    args.output,payload)
+                next_checkpoint=(
+                    now+interval
+                    if interval>0
+                    else float("inf"))
+                return path
+
+            persist_checkpoint(
+                started,force=True)
 
             def pump_source(now=None):
                 nonlocal sequence,next_tick
@@ -975,6 +1064,7 @@ def run(args):
                 now=time.monotonic()
                 assert_live(proc,log)
                 sample_daemon_resources()
+                persist_checkpoint(now)
                 current=read_state(
                     state_path)
                 if (
@@ -1059,6 +1149,7 @@ def run(args):
                                 "state"]["base_applied_seq"],
                         ),
                     ))
+                    persist_checkpoint(force=True)
                     next_fault=(
                         time.monotonic()
                         +args.fault_every_seconds)
@@ -1099,6 +1190,7 @@ def run(args):
             while time.monotonic()<drain_deadline:
                 assert_live(proc,log)
                 sample_daemon_resources()
+                persist_checkpoint()
                 current=read_state(
                     state_path)
                 visible=visible_markers(
@@ -1153,6 +1245,7 @@ def run(args):
                     +repr(aggregate_checks))
 
             sample_daemon_resources(force=True)
+            persist_checkpoint(force=True)
             stop_daemon(
                 proc,handle,kill=False)
             proc=handle=log=None
@@ -1309,6 +1402,12 @@ def main():
         "--drain-timeout-seconds",
         type=float,default=1800)
     parser.add_argument(
+        "--checkpoint-seconds",
+        type=float,default=300.0,
+        help=(
+            "seconds between atomic progress checkpoints; "
+            "0 disables periodic checkpoints"))
+    parser.add_argument(
         "--work-directory",type=Path,
         help=(
             "optional empty directory to preserve catalog/state/logs "
@@ -1339,6 +1438,9 @@ def main():
     if args.sample_seconds<=0:
         parser.error(
             "--sample-seconds must be positive")
+    if args.checkpoint_seconds<0:
+        parser.error(
+            "--checkpoint-seconds cannot be negative")
     if args.fault_recovery_timeout_seconds<=0:
         parser.error(
             "--fault-recovery-timeout-seconds must be positive")
