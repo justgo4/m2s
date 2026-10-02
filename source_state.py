@@ -646,14 +646,15 @@ def apply_one(con, seq):
         con.execute("""
             UPDATE source_versions
             SET valid_to=?
-            WHERE valid_to IS NULL
-              AND EXISTS(
-                  SELECT 1
-                  FROM source_apply_actions a
-                  WHERE a.seq=?
-                    AND a.table_name=source_versions.table_name
-                    AND a.pk=source_versions.pk
-              )
+            WHERE rowid IN (
+                SELECT v.rowid
+                FROM source_apply_actions a
+                JOIN source_versions v
+                  ON v.table_name=a.table_name
+                 AND v.pk=a.pk
+                 AND v.valid_to IS NULL
+                WHERE a.seq=?
+            )
         """,(seq,seq))
         con.execute("""
             INSERT INTO source_versions(
