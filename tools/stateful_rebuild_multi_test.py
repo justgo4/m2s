@@ -11,6 +11,7 @@ sys.path.insert(0,str(ROOT))
 
 import j4
 import stateful_rebuild
+import stateful_rebuild_cohort
 
 
 def item(kind,sink,task_id,plan_version,target,shadow=False):
@@ -79,6 +80,7 @@ def setup_db(path):
         "CREATE TABLE meta("
         "key TEXT PRIMARY KEY,value BLOB NOT NULL)")
     stateful_rebuild.install(con)
+    stateful_rebuild_cohort.install(con)
     return con
 
 
@@ -443,6 +445,13 @@ def activation_contract():
         assert set(runtime[
             "stateful_rebuild_locks"])=={
                 "starrocks.a","starrocks.b"}
+        cohort_id=candidate[
+            "stateful_rebuild_cohort_id"]
+        assert cohort_id.startswith(
+            "rebuild-cohort-")
+        assert set(runtime[
+            "stateful_rebuild_cohort_locks"])=={
+                cohort_id}
         assert set(runtime[
             "stateful_worker_threads"])=={
                 "new-a","new-b"}
@@ -456,6 +465,10 @@ def activation_contract():
         try:
             records=stateful_rebuild.active(con)
             assert len(records)==2
+            cohorts=stateful_rebuild_cohort.active(
+                con)
+            assert len(cohorts)==1
+            assert cohorts[0]["cohort_id"]==cohort_id
             assert {
                 value["sink_key"]
                 for value in records
