@@ -511,16 +511,16 @@ def waiting_plans(con,now=None,due_only=False):
     ):
         return []
     now=time.time() if now is None else float(now)
-    where=(
-        " WHERE next_retry<=?"
+    having=(
+        " HAVING MAX(next_retry)<=?"
         if due_only else "")
     params=(now,) if due_only else ()
     rows=con.execute("""
         SELECT plan_version,COUNT(*),MIN(next_retry),
                MAX(retry_count),MIN(created),MAX(updated)
         FROM stateful_admission_waiting
-    """+where+"""
         GROUP BY plan_version
+    """+having+"""
         ORDER BY MIN(next_retry),plan_version
     """,params).fetchall()
     return [
