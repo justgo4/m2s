@@ -1244,6 +1244,12 @@ def read_config():
         stateful_share_max_observed_visible_lag=env_int(
             "CDC_STATEFUL_SHARE_MAX_OBSERVED_VISIBLE_LAG",
             10000,minimum=0,maximum=1000000000),
+        stateful_share_max_state_rows=env_int(
+            "CDC_STATEFUL_SHARE_MAX_STATE_ROWS",
+            0,minimum=0,maximum=1000000000000),
+        stateful_share_max_state_bytes=env_int(
+            "CDC_STATEFUL_SHARE_MAX_STATE_BYTES",
+            0,minimum=0,maximum=1024**5),
         plan_retain=env_int("CDC_PLAN_RETAIN",32,minimum=4,maximum=10000),
         metrics_max_bytes=env_int(
             "CDC_METRICS_MAX_BYTES",64*1024**2,
