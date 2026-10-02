@@ -3,6 +3,7 @@ from pathlib import Path
 import json
 import sys
 import tempfile
+from types import SimpleNamespace
 from unittest.mock import patch
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -18,6 +19,28 @@ def main():
         [5,1,3,2,4],0.50)==3
     assert longhaul_workload.percentile(
         [5,1,3,2,4],0.99)==4
+
+    with patch.object(
+        longhaul_workload.subprocess,
+        "run",
+        return_value=SimpleNamespace(
+            returncode=0,stdout="",stderr="")
+    ):
+        assert longhaul_workload.code_worktree_clean() is True
+    with patch.object(
+        longhaul_workload.subprocess,
+        "run",
+        return_value=SimpleNamespace(
+            returncode=0,stdout=" M j4.py\n",stderr="")
+    ):
+        assert longhaul_workload.code_worktree_clean() is False
+    with patch.object(
+        longhaul_workload.subprocess,
+        "run",
+        return_value=SimpleNamespace(
+            returncode=128,stdout="",stderr="failed")
+    ):
+        assert longhaul_workload.code_worktree_clean() is None
     assert not longhaul_workload.source_ready(None)
     assert not longhaul_workload.source_ready(dict(source=[]))
     assert not longhaul_workload.source_ready(
@@ -271,7 +294,7 @@ def main():
         ).exists()
 
     print(
-        "longhaul_workload_test ok percentile source_ready "
+        "longhaul_workload_test ok percentile clean_worktree_probe source_ready "
         "per_transaction_sentinel continuous_source_during_fault crash_catchup aggregate_exactness "
         "work_directory_retention checkpoint_atomic_replace evidence_copy",
         flush=True,
