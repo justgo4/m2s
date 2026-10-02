@@ -450,6 +450,47 @@ def visible_markers(cfg,marker_ids):
     return result
 
 
+def recover_after_fault(
+        proc,log,state_path,cfg,commit_times,
+        timeout_seconds
+):
+    pending=set(
+        int(value) for value in commit_times)
+    started=time.monotonic()
+    deadline=started+float(timeout_seconds)
+    recorded=[]
+    while time.monotonic()<deadline:
+        assert_live(proc,log)
+        visible=visible_markers(
+            cfg,pending)
+        if visible:
+            observed=time.monotonic()
+            for marker in visible:
+                committed=commit_times.pop(
+                    marker,None)
+                pending.discard(marker)
+                if committed is not None:
+                    recorded.append(
+                        observed-committed)
+        current=read_state(state_path)
+        if (
+            not pending
+            and current is not None
+            and current["log_durable_seq"]
+                ==current["base_applied_seq"]
+        ):
+            return dict(
+                seconds=time.monotonic()-started,
+                latencies=recorded,
+                state=current,
+            )
+        time.sleep(.2)
+    raise RuntimeError(
+        "longhaul fault recovery timed out "
+        "pending_markers=%d state=%r"
+        % (len(pending),read_state(state_path)))
+
+
 def source_target_totals(source,cfg):
     with source.cursor() as cur:
         cur.execute(
@@ -598,14 +639,28 @@ def run(args):
                         directory,env,daemon_index)
                     wait_started(
                         proc,log,state_path)
+                    restart_seconds=(
+                        time.monotonic()-fault_started)
+                    recovered=recover_after_fault(
+                        proc,log,state_path,cfg,
+                        commit_times,
+                        args.fault_recovery_timeout_seconds)
+                    latency.extend(
+                        recovered["latencies"])
                     faults.append(dict(
                         sequence=before,
-                        restart_seconds=(
-                            time.monotonic()
-                            -fault_started),
+                        restart_seconds=restart_seconds,
+                        catchup_seconds=recovered["seconds"],
+                        source_frontier=dict(
+                            log_durable_seq=recovered[
+                                "state"]["log_durable_seq"],
+                            base_applied_seq=recovered[
+                                "state"]["base_applied_seq"],
+                        ),
                     ))
                     next_fault=(
-                        now+args.fault_every_seconds)
+                        time.monotonic()
+                        +args.fault_every_seconds)
 
                 if now>=next_tick:
                     count=max(
@@ -810,6 +865,9 @@ def main():
         "--sample-seconds",type=float,
         default=1.0)
     parser.add_argument(
+        "--fault-recovery-timeout-seconds",
+        type=float,default=1800)
+    parser.add_argument(
         "--seed-chunk",type=int,
         default=10000)
     parser.add_argument(
@@ -851,6 +909,9 @@ def main():
     if args.sample_seconds<=0:
         parser.error(
             "--sample-seconds must be positive")
+    if args.fault_recovery_timeout_seconds<=0:
+        parser.error(
+            "--fault-recovery-timeout-seconds must be positive")
     if args.seed_chunk<1:
         parser.error("--seed-chunk must be positive")
     run(args)
