@@ -41,8 +41,32 @@ def ratio(numerator,denominator):
     return float(numerator)/float(denominator)
 
 
+def seed_history(
+        con,seed_commits,rows_per_commit,part_rows,key_space
+):
+    for seed_index in range(int(seed_commits)):
+        start=seed_index*int(rows_per_commit)
+        seq=source_state.log_commit(
+            con,"gc-overlap",
+            ("binlog.000001",100+seed_index*20),
+            None,
+            parts(
+                "db.events",start,
+                rows_per_commit,part_rows,key_space))
+        if seq!=seed_index+1:
+            raise AssertionError(
+                "unexpected seed source sequence")
+    applied=source_state.apply_pending(con)
+    if applied!=int(seed_commits):
+        raise AssertionError(
+            "seed source history did not fully apply")
+    if source_state.base_applied_seq(con)!=int(seed_commits):
+        raise AssertionError(
+            "seed source base frontier mismatch")
+
+
 def run_case(
-        commits,rows_per_commit,part_rows,key_space,
+        commits,seed_commits,rows_per_commit,part_rows,key_space,
         gc_enabled,gc_version_rows,gc_commit_rows,gc_sleep_ms
 ):
     with tempfile.TemporaryDirectory(
@@ -56,6 +80,9 @@ def run_case(
         source_state.stage_snapshot_batch(
             capture,"db.events",batch(0,0,key_space),
             cursor=None,is_last=True)
+        seed_history(
+            capture,seed_commits,
+            rows_per_commit,part_rows,key_space)
 
         stop=threading.Event()
         wake=threading.Event()
@@ -85,11 +112,17 @@ def run_case(
         gc_commits=[0]
         gc_calls=[0]
         gc_thread=None
+        gc_go=threading.Event()
 
         if gc_enabled:
             def gc_loop():
                 con=j4.open_state(str(path))
                 try:
+                    while (
+                        not stop.is_set()
+                        and not gc_go.wait(.05)
+                    ):
+                        pass
                     while not stop.is_set():
                         started=time.monotonic()
                         result=source_state.gc(
@@ -131,25 +164,28 @@ def run_case(
         commit_latencies=[]
         peak_pending=0
         total_rows=int(commits)*int(rows_per_commit)
+        seed_rows=int(seed_commits)*int(rows_per_commit)
         capture_started=time.monotonic()
+        gc_go.set()
         try:
             for commit_index in range(int(commits)):
                 if errors:
                     raise RuntimeError(
                         "background source worker failed: %r"
                         % (errors,))
-                start=commit_index*int(rows_per_commit)
+                logical_index=int(seed_commits)+commit_index
+                start=logical_index*int(rows_per_commit)
                 commit_started=time.monotonic()
                 seq=source_state.log_commit(
                     capture,"gc-overlap",
-                    ("binlog.000001",100+commit_index*20),
+                    ("binlog.000001",100+logical_index*20),
                     None,
                     parts(
                         "db.events",start,
                         rows_per_commit,part_rows,key_space))
                 commit_latencies.append(
                     time.monotonic()-commit_started)
-                if seq!=commit_index+1:
+                if seq!=int(seed_commits)+commit_index+1:
                     raise AssertionError(
                         "unexpected durable source sequence")
                 wake.set()
@@ -161,7 +197,7 @@ def run_case(
                 time.monotonic()-capture_started)
             drain_started=time.monotonic()
             wait_applied(
-                capture,commits,
+                capture,int(seed_commits)+int(commits),
                 max(30,int(commits)*2))
             drain_seconds=(
                 time.monotonic()-drain_started)
@@ -184,6 +220,16 @@ def run_case(
             raise RuntimeError(
                 "background source worker failed: %r"
                 % (errors,))
+        if (
+            gc_enabled
+            and (
+                gc_versions[0]<=0
+                or gc_commits[0]<=0
+            )
+        ):
+            raise AssertionError(
+                "GC contention case did not reclaim both "
+                "source versions and commits")
 
         cleanup_calls=0
         while True:
@@ -208,7 +254,7 @@ def run_case(
               AND deleted=0
         """).fetchone()[0])
         expected_current=min(
-            int(key_space),total_rows)
+            int(key_space),seed_rows+total_rows)
         if current!=expected_current:
             raise AssertionError(
                 "source current state mismatch %d != %d"
@@ -227,7 +273,9 @@ def run_case(
         result=dict(
             gc_enabled=bool(gc_enabled),
             commits=int(commits),
+            seed_commits=int(seed_commits),
             rows_per_commit=int(rows_per_commit),
+            seed_rows=seed_rows,
             total_rows=total_rows,
             key_space=int(key_space),
             capture_wall_seconds=capture_seconds,
@@ -270,11 +318,11 @@ def run_case(
 
 
 def run(
-        commits,rows_per_commit,part_rows,key_space,
+        commits,seed_commits,rows_per_commit,part_rows,key_space,
         gc_version_rows,gc_commit_rows,gc_sleep_ms
 ):
     values=[
-        int(commits),int(rows_per_commit),
+        int(commits),int(seed_commits),int(rows_per_commit),
         int(part_rows),int(key_space),
         int(gc_version_rows),int(gc_commit_rows),
         int(gc_sleep_ms),
@@ -285,15 +333,19 @@ def run(
     if int(part_rows)>int(rows_per_commit):
         raise ValueError(
             "part_rows cannot exceed rows_per_commit")
-    if int(key_space)>int(commits)*int(rows_per_commit):
+    if int(key_space)>(
+        int(seed_commits)+int(commits)
+    )*int(rows_per_commit):
         raise ValueError(
-            "key_space cannot exceed total rows")
+            "key_space cannot exceed seeded plus measured rows")
 
     baseline=run_case(
-        commits,rows_per_commit,part_rows,key_space,
+        commits,seed_commits,
+        rows_per_commit,part_rows,key_space,
         False,gc_version_rows,gc_commit_rows,gc_sleep_ms)
     bounded=run_case(
-        commits,rows_per_commit,part_rows,key_space,
+        commits,seed_commits,
+        rows_per_commit,part_rows,key_space,
         True,gc_version_rows,gc_commit_rows,gc_sleep_ms)
     base_latency=baseline["commit_latency_seconds"]
     gc_latency=bounded["commit_latency_seconds"]
@@ -342,6 +394,8 @@ def main():
     parser.add_argument(
         "--commits",type=int,default=80)
     parser.add_argument(
+        "--seed-commits",type=int,default=40)
+    parser.add_argument(
         "--rows-per-commit",type=int,default=500)
     parser.add_argument(
         "--part-rows",type=int,default=250)
@@ -356,7 +410,8 @@ def main():
     parser.add_argument("--output",type=Path)
     args=parser.parse_args()
     result=run(
-        args.commits,args.rows_per_commit,
+        args.commits,args.seed_commits,
+        args.rows_per_commit,
         args.part_rows,args.key_space,
         args.gc_version_rows,args.gc_commit_rows,
         args.gc_sleep_ms)
