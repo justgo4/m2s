@@ -238,11 +238,13 @@ def state(path):
             uri=True,timeout=2)
         try:
             agg=con.execute("""
-                SELECT sink_key,status FROM aggregate_task_descriptors
+                SELECT task_id,sink_key,status
+                FROM aggregate_task_descriptors
                 ORDER BY task_id
             """).fetchall()
             joins=con.execute("""
-                SELECT sink_key,status FROM join_task_descriptors
+                SELECT task_id,sink_key,status
+                FROM join_task_descriptors
                 ORDER BY task_id
             """).fetchall()
             retirements=con.execute("""
@@ -279,12 +281,18 @@ def state(path):
                 ORDER BY follower_task_id
             """).fetchall()
             return dict(
-                aggregate=[row[1] for row in agg],
-                join=[row[1] for row in joins],
+                aggregate=[row[2] for row in agg],
+                join=[row[2] for row in joins],
                 aggregate_tasks=[
-                    (str(row[0]),str(row[1])) for row in agg],
+                    (str(row[1]),str(row[2])) for row in agg],
                 join_tasks=[
-                    (str(row[0]),str(row[1])) for row in joins],
+                    (str(row[1]),str(row[2])) for row in joins],
+                aggregate_task_rows=[
+                    (str(row[0]),str(row[1]),str(row[2]))
+                    for row in agg],
+                join_task_rows=[
+                    (str(row[0]),str(row[1]),str(row[2]))
+                    for row in joins],
                 retirements=[
                     (str(row[0]),str(row[1]),int(row[2]))
                     for row in retirements],
