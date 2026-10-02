@@ -261,6 +261,26 @@ def main():
         except KeyError:
             pass
 
+        # Planning and binding are separate moments. If adaptive admission
+        # rejects a previously preferred owner at bind time (for example
+        # because fanout or observed lag changed), the preference must stop
+        # fencing private bootstrap instead of leaving the task waiting
+        # forever.
+        stateful_share_policy._record(
+            con,only_follower,"aggregate","adaptive",
+            "adaptive_rejected_all",
+            dict(rejected=[dict(reasons=["followers"])]))
+        assert not stateful_share_policy.preference_pending(
+            con,"aggregate",only_follower,
+            cfg=dict(stateful_share_mode="adaptive"))
+        try:
+            stateful_share_policy.preference_info(
+                con,only_follower)
+            raise AssertionError(
+                "adaptive rejection retained a stale preference fence")
+        except KeyError:
+            pass
+
         # Disabling sharing clears candidate preferences on the next graph
         # planning pass and restores independent bootstrap behavior.
         assert stateful_share_policy.plan_graph(
@@ -280,7 +300,7 @@ def main():
         "stateful_share_graph_test ok aggregate_superset "
         "join_projection whole_graph_no_chain adaptive_fanout "
         "wait_before_private activation_publication_race "
-        "restart_persistence sharing_off",
+        "restart_persistence adaptive_rejection_fallback sharing_off",
         flush=True,
     )
 
