@@ -10,6 +10,7 @@ copies the daemon's final durable summary/metrics into benchmark-results.
 Use only disposable MySQL/StarRocks services; --isolated is mandatory.
 """
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -507,6 +508,74 @@ def source_target_totals(source,cfg):
     )
 
 
+def _aggregate_rows_source(source):
+    with source.cursor() as cur:
+        cur.execute(
+            "SELECT bucket,COUNT(*),SUM(v) "
+            "FROM "+DATABASE+".events "
+            "GROUP BY bucket ORDER BY bucket")
+        return [
+            (
+                int(row[0]),
+                int(row[1]),
+                int(row[2] or 0),
+            )
+            for row in cur.fetchall()
+        ]
+
+
+def _aggregate_rows_target(cfg,table):
+    rows,_=execute(
+        cfg,
+        "SELECT bucket,n,total FROM "
+        +DATABASE+"."+str(table)
+        +" ORDER BY bucket")
+    return [
+        (
+            int(row[0]),
+            int(row[1]),
+            int(row[2] or 0),
+        )
+        for row in rows
+    ]
+
+
+def _rows_digest(rows):
+    payload=json.dumps(
+        list(rows),
+        ensure_ascii=False,
+        separators=(",",":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def aggregate_exactness(source,cfg,tables):
+    expected=_aggregate_rows_source(source)
+    expected_digest=_rows_digest(expected)
+    checks={}
+    for table in tables:
+        actual=_aggregate_rows_target(
+            cfg,table)
+        digest=_rows_digest(actual)
+        checks[str(table)]=dict(
+            rows=len(actual),
+            digest=digest,
+            match=(
+                len(actual)==len(expected)
+                and digest==expected_digest
+                and actual==expected
+            ),
+        )
+    return dict(
+        expected_rows=len(expected),
+        expected_digest=expected_digest,
+        tables=checks,
+        all_match=all(
+            item["match"] for item in checks.values()
+        ),
+    )
+
+
 def copy_evidence(directory,output):
     state_path=directory/"state.sqlite3"
     summary=Path(
@@ -767,6 +836,16 @@ def run(args):
                     "longhaul source/target totals differ "
                     "expected=%r actual=%r"
                     % (expected,actual))
+            aggregate_checks=aggregate_exactness(
+                source,cfg,
+                ["agg_000"]+[
+                    sink.split(".",1)[1]
+                    for sink in added_tasks
+                ])
+            if not aggregate_checks["all_match"]:
+                raise AssertionError(
+                    "longhaul aggregate targets differ from source "
+                    +repr(aggregate_checks))
 
             stop_daemon(
                 proc,handle,kill=False)
@@ -810,6 +889,7 @@ def run(args):
                 final_state=final_state,
                 source_totals=expected,
                 target_totals=actual,
+                aggregate_checks=aggregate_checks,
                 share_mode=args.share_mode,
                 evidence=copied,
                 catalog_version=cdc_catalog.load_plan(
