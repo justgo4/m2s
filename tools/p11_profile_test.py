@@ -10,7 +10,7 @@ import p11_profile
 
 
 def main():
-    assert p11_profile.NAME=="p11-50m-50rps-72h-v3"
+    assert p11_profile.NAME=="p11-50m-50rps-72h-v4"
     expected=dict(
         load_mode="merge_async",
         rows=50_000_000,
