@@ -43,6 +43,15 @@ def main():
             plan_version=8,
             reason="max_state_bytes",
             retry_seconds=30)
+        now=1.0
+        con.execute("""
+            INSERT INTO merge_uncertain(
+                delivery_id,part,table_name,lane,label,payload_sha256,
+                replay_safe,reason,created,updated)
+            VALUES
+                ('safe',0,'starrocks.safe',0,'safe','00',1,'test',?,?),
+                ('unsafe',0,'starrocks.unsafe',0,'unsafe','11',0,'test',?,?)
+        """,(now,now,now,now))
         con.close()
 
         status=j4.durable_status_snapshot(path)
@@ -51,7 +60,9 @@ def main():
         assert status["state_format"]==j4.STATE_FORMAT
         assert status["source"]["base_applied_seq"]==0
         assert status["jobs"]==dict(
-            active=0,deliveries=0,invisible_parts=0)
+            active=0,deliveries=0,invisible_parts=0,
+            merge_uncertain=2,merge_replay_safe=1,
+            merge_replay_unsafe=1,merge_unsafe_tables=1)
         assert status["physical"]==dict(
             states=0,refs=0,pins=0,
             health={},sizes={})
@@ -75,7 +86,7 @@ def main():
 
     print(
         "status_test ok missing_state read_only_snapshot "
-        "rebuild retirement source jobs sharing admission physical",
+        "rebuild retirement source jobs merge_replay sharing admission physical",
         flush=True,
     )
 
