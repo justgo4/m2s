@@ -85,7 +85,7 @@ def metric_bucket():
         snapshot_read_seconds_total=0.0,snapshot_admit_seconds=[],
         snapshot_admit_seconds_total=0.0,snapshot_chunk_seconds=[],
         snapshot_chunk_seconds_total=0.0,
-        cdc_deliveries=0,cdc_rows=0,cdc_age=[],lag_over_10=0,
+        cdc_deliveries=0,cdc_rows=0,cdc_age=[],lag_over_5=0,lag_over_10=0,
         mixed_deliveries=0,mixed_rows=0,
         merge_requests=0,merge_rows=0,merge_left_ms=[],merge_txns={},
         merge_txn_window_misses=0,merge_txn_evictions=0,
@@ -218,6 +218,8 @@ def metric_add_visible(runtime, table, kind, input_rows, byte_count, loads, merg
                 bucket["cdc_deliveries"] += 1
                 bucket["cdc_rows"] += int(input_rows or 0)
                 metric_sample_add(bucket,"cdc_age",float(age or 0))
+                if float(age or 0) > 5:
+                    bucket["lag_over_5"] += 1
                 if float(age or 0) > 10:
                     bucket["lag_over_10"] += 1
             else:
@@ -304,6 +306,7 @@ def metric_bucket_summary(bucket, include_quantiles=True):
             bucket["snapshot_read_rows"]/snapshot_chunk_total if snapshot_chunk_total else None),
         cdc_deliveries=bucket["cdc_deliveries"],
         cdc_rows=bucket["cdc_rows"],
+        lag_over_5=bucket["lag_over_5"],
         lag_over_10=bucket["lag_over_10"],
         mixed_deliveries=bucket["mixed_deliveries"],
         mixed_rows=bucket["mixed_rows"],
