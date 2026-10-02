@@ -9598,7 +9598,10 @@ def stateful_rebuild_cleanup_remote(cfg,rebuild):
         rebuild["new_task_id"])
     logical=stateful_rebuild_remote_marker(
         cfg,rebuild["logical_target"])
-    if logical not in {marker,""}:
+    if logical not in {
+        marker,
+        str(rebuild.get("original_comment","")),
+    }:
         raise RuntimeError(
             "stateful rebuild logical table marker changed before cleanup")
     with mysql_connect(cfg,target=True) as target:
