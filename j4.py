@@ -55,6 +55,7 @@ import join_task_runner
 import physical_state_catalog
 import relational_ir
 import source_state
+import stateful_admission
 import stateful_catalog_runtime
 import stateful_physical_registry
 import stateful_rebuild
@@ -1345,6 +1346,24 @@ def read_config():
         stateful_share_max_promotion_bytes=env_int(
             "CDC_STATEFUL_SHARE_MAX_PROMOTION_BYTES",
             0,minimum=0,maximum=1024**5),
+        stateful_admission_max_tasks=env_int(
+            "CDC_STATEFUL_ADMISSION_MAX_TASKS",
+            0,minimum=0,maximum=1000000),
+        stateful_admission_max_building=env_int(
+            "CDC_STATEFUL_ADMISSION_MAX_BUILDING",
+            0,minimum=0,maximum=1000000),
+        stateful_admission_max_state_bytes=env_int(
+            "CDC_STATEFUL_ADMISSION_MAX_STATE_BYTES",
+            0,minimum=0,maximum=1024**5),
+        stateful_admission_reserve_state_bytes=env_int(
+            "CDC_STATEFUL_ADMISSION_RESERVE_STATE_BYTES",
+            0,minimum=0,maximum=1024**5),
+        stateful_admission_max_pending_bytes=env_int(
+            "CDC_STATEFUL_ADMISSION_MAX_PENDING_BYTES",
+            0,minimum=0,maximum=1024**5),
+        stateful_admission_max_source_lag=env_int(
+            "CDC_STATEFUL_ADMISSION_MAX_SOURCE_LAG",
+            0,minimum=0,maximum=1000000000000),
         plan_retain=env_int("CDC_PLAN_RETAIN",32,minimum=4,maximum=10000),
         metrics_max_bytes=env_int(
             "CDC_METRICS_MAX_BYTES",64*1024**2,
@@ -1759,6 +1778,7 @@ def init_state(path):
     join_task_catalog.install(con)
     aggregate_task_catalog.install(con)
     stateful_catalog_runtime.install(con)
+    stateful_admission.install(con)
     aggregate_shared_runtime.install(con)
     join_shared_runtime.install(con)
     stateful_share_policy.install(con)
@@ -5991,6 +6011,13 @@ def prepare_hot_stateful_additions(cfg, runtime, candidate):
         return []
     manifests=list(candidate.get("stateful_added_manifests",()) or ())
     metadata=dict(candidate.get("stateful_source_metadata",{}) or {})
+    admission_con=open_state(cfg["state"])
+    try:
+        admission=stateful_admission.admit_or_raise(
+            admission_con,additions,cfg)
+    finally:
+        admission_con.close()
+    candidate["stateful_admission"]=admission
     ensure_stateful_hot_add_targets_empty(
         cfg,additions,allow_missing=True)
     compiled=stateful_catalog_runtime.compile_catalog_tasks(
