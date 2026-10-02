@@ -20,11 +20,10 @@ MODES={"compatible","off","adaptive"}
 
 
 def install(con):
-    size_table_exists=con.execute("""
-        SELECT 1 FROM sqlite_master
-        WHERE type='table' AND name='stateful_state_sizes'
-    """).fetchone() is not None
     con.executescript("""
+        CREATE TABLE IF NOT EXISTS stateful_share_meta(
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS stateful_state_sizes(
             kind TEXT NOT NULL,
             state_id TEXT NOT NULL,
@@ -169,28 +168,48 @@ def install(con):
             ON stateful_share_preferences(
                 preferred_leader_task_id,task_id);
     """)
-    if not size_table_exists:
-        con.execute("""
-            INSERT INTO stateful_state_sizes(
-                kind,state_id,rows,payload_bytes)
-            SELECT 'aggregate',state_id,COUNT(*),
-                   COALESCE(SUM(
-                       length(key_blob)+length(key_payload)
-                       +length(accum_payload)),0)
-            FROM aggregate_groups
-            GROUP BY state_id
-        """)
-        con.execute("""
-            INSERT INTO stateful_state_sizes(
-                kind,state_id,rows,payload_bytes)
-            SELECT 'inner_join',state_id,COUNT(*),
-                   COALESCE(SUM(
-                       length(pk_blob)
-                       +COALESCE(length(join_blob),0)
-                       +length(row_payload)),0)
-            FROM join_rows
-            GROUP BY state_id
-        """)
+    marker=con.execute("""
+        SELECT value FROM stateful_share_meta
+        WHERE key='size_counters_v1'
+    """).fetchone()
+    if marker is None:
+        own_txn=not con.in_transaction
+        if own_txn:
+            con.execute("BEGIN IMMEDIATE")
+        try:
+            con.execute(
+                "DELETE FROM stateful_state_sizes")
+            con.execute("""
+                INSERT INTO stateful_state_sizes(
+                    kind,state_id,rows,payload_bytes)
+                SELECT 'aggregate',state_id,COUNT(*),
+                       COALESCE(SUM(
+                           length(key_blob)+length(key_payload)
+                           +length(accum_payload)),0)
+                FROM aggregate_groups
+                GROUP BY state_id
+            """)
+            con.execute("""
+                INSERT INTO stateful_state_sizes(
+                    kind,state_id,rows,payload_bytes)
+                SELECT 'inner_join',state_id,COUNT(*),
+                       COALESCE(SUM(
+                           length(pk_blob)
+                           +COALESCE(length(join_blob),0)
+                           +length(row_payload)),0)
+                FROM join_rows
+                GROUP BY state_id
+            """)
+            con.execute("""
+                INSERT INTO stateful_share_meta(key,value)
+                VALUES('size_counters_v1','1')
+            """)
+            if own_txn:
+                con.execute("COMMIT")
+        except BaseException:
+            if own_txn and con.in_transaction:
+                con.execute("ROLLBACK")
+            raise
 
 
 def _text(value,name):
