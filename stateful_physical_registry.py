@@ -8,6 +8,7 @@ adapters, then attaches task ownership through physical-state refs.
 import aggregate_physical_state
 import aggregate_shared_runtime
 import join_physical_state
+import join_shared_runtime
 import physical_state_catalog
 
 
@@ -70,16 +71,22 @@ def sync_runtime_result(con,item,result):
     task=result.get("task") or item["task"]
     generation=result.get("generation") or {}
     if result.get("shared_physical"):
-        if item["kind"]!="aggregate":
-            raise RuntimeError(
-                "unsupported shared physical runtime kind: "
-                +str(item["kind"]))
         binding=result.get("shared_state_id")
         if not binding:
             raise RuntimeError(
-                "shared aggregate runtime omitted physical state identity")
+                "shared stateful runtime omitted physical state identity")
+        if item["kind"]=="aggregate":
+            identity=aggregate_physical_state.instance_id(
+                binding)
+        elif item["kind"]=="inner_join":
+            identity=join_physical_state.instance_id(
+                binding)
+        else:
+            raise RuntimeError(
+                "unsupported shared physical runtime kind: "
+                +str(item["kind"]))
         return physical_state_catalog.state_info(
-            con,aggregate_physical_state.instance_id(binding))
+            con,identity)
     if (
         str(task.get("status"))=="active"
         and str(generation.get("status"))=="ready"
@@ -187,6 +194,16 @@ def gc_retired(con,limit=64):
         for item in aggregate_shared_runtime.gc_retired_followers(
             con,limit=limit)
     ]
+    removed.extend(
+        dict(
+            instance_id=None,
+            kind="join_shared_follower",
+            task_id=item["follower_task_id"],
+            state_id=item["shared_state_id"],
+        )
+        for item in join_shared_runtime.gc_retired_followers(
+            con,limit=limit)
+    )
     rows=con.execute("""
         SELECT instance_id,format_tag,metadata_json
         FROM physical_states
