@@ -452,6 +452,74 @@ def evaluate_workload(
             cgroup_memory_limit_bytes=memory_limit,
         )
 
+    topology=report.get(
+        "topology_resource_preflight")
+    if not isinstance(topology,dict):
+        if require_profile is not None:
+            failures.append(
+                "topology_resource_preflight_missing")
+        evidence["topology_resource_preflight"]=None
+    else:
+        topology_ok=bool(
+            topology.get("ok",False))
+        initial_sinks=_integer(
+            topology.get("initial_physical_sinks",0),
+            "topology_resource_preflight.initial_physical_sinks")
+        final_sinks=_integer(
+            topology.get("final_physical_sinks",0),
+            "topology_resource_preflight.final_physical_sinks")
+        requested_memory=_integer(
+            topology.get(
+                "requested_memory_mb",
+                topology.get("memory_mb",0)),
+            "topology_resource_preflight.requested_memory_mb")
+        failing_sinks=[
+            int(value)
+            for value in (
+                topology.get("failing_physical_sinks")
+                or ())
+        ]
+        stages=list(
+            topology.get("stages") or ())
+        stage_sinks=[
+            _integer(
+                (item or {}).get("physical_sinks",0),
+                "topology_resource_preflight.stage.physical_sinks")
+            for item in stages
+        ]
+        stage_admitted=[
+            bool((item or {}).get("admitted",False))
+            for item in stages
+        ]
+        topology_valid=(
+            topology_ok
+            and initial_sinks==3
+            and final_sinks==3+_integer(
+                report.get("dynamic_tasks",0),
+                "dynamic_tasks")
+            and requested_memory==configured_memory_mb
+            and not failing_sinks
+            and stage_sinks==list(
+                range(initial_sinks,final_sinks+1))
+            and all(stage_admitted)
+        )
+        if not topology_valid:
+            failures.append(
+                "topology_resource_preflight_failed")
+        evidence["topology_resource_preflight"]=dict(
+            ok=topology_ok,
+            valid=topology_valid,
+            initial_physical_sinks=initial_sinks,
+            final_physical_sinks=final_sinks,
+            requested_memory_mb=requested_memory,
+            cpu_cap=topology.get("cpu_cap"),
+            cpu_target=topology.get("cpu_target"),
+            minimum_per_engine_cap_mb=topology.get(
+                "minimum_per_engine_cap_mb"),
+            failing_physical_sinks=failing_sinks,
+            stages=len(stages),
+        )
+
     software=report.get("software_fingerprint")
     if not isinstance(software,dict) or not software:
         failures.append(
@@ -795,6 +863,51 @@ def evaluate_workload(
         dynamic_aggregate_tasks=(
             dynamic_tasks+1)//2
         dynamic_join_tasks=dynamic_tasks//2
+
+    if require_profile is not None:
+        profile_values=dict(
+            load_mode=str(
+                report.get("protocol") or ""),
+            rows=initial_rows,
+            rows_per_second=configured_rate,
+            duration_seconds=source_schedule,
+            dynamic_tasks=dynamic_tasks,
+            dynamic_task_mix=dynamic_task_mix,
+            fault_every_seconds=_number(
+                report.get("fault_every_seconds"),
+                "fault_every_seconds"),
+            sample_seconds=_number(
+                report.get("sample_seconds"),
+                "sample_seconds"),
+            fault_recovery_timeout_seconds=_number(
+                report.get(
+                    "fault_recovery_timeout_seconds"),
+                "fault_recovery_timeout_seconds"),
+            seed_chunk=_integer(
+                report.get("seed_chunk"),
+                "seed_chunk"),
+            snapshot_rows=_integer(
+                report.get("snapshot_rows"),
+                "snapshot_rows"),
+            memory_mb=configured_memory_mb,
+            share_mode=str(
+                report.get("share_mode") or ""),
+            drain_timeout_seconds=_number(
+                report.get("drain_timeout_seconds"),
+                "drain_timeout_seconds"),
+            checkpoint_seconds=_number(
+                report.get("checkpoint_seconds"),
+                "checkpoint_seconds"),
+        )
+        profile_mismatches=p11_profile.mismatches(
+            profile_values)
+        evidence["profile_parameters"]=dict(
+            values=profile_values,
+            mismatches=profile_mismatches,
+        )
+        if profile_mismatches:
+            failures.append(
+                "workload_profile_parameters_mismatch")
 
     ready=dict(
         report.get("dynamic_task_ready_seconds") or {})
