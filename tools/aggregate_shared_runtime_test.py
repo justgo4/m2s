@@ -112,8 +112,9 @@ def main():
     with tempfile.TemporaryDirectory(
         prefix="m2s-aggregate-shared-"
     ) as td:
+        state_path=os.path.join(td,"state.sqlite3")
         con=j4.init_state(
-            os.path.join(td,"state.sqlite3"))
+            state_path)
         source_state.register_relation(
             con,"db.orders","source-a",
             source_schema(),["id"],schema_epoch=1)
@@ -184,6 +185,18 @@ def main():
             for row in physical_state_catalog.state_refs(
                 con,leader_physical["instance_id"])
         }
+
+        # Crash/restart must preserve the follower binding, physical
+        # dependency ref and independent target/source frontier.
+        con.close()
+        con=j4.init_state(
+            state_path)
+        leader=aggregate_task_catalog.task_info(
+            con,leader["task_id"])
+        follower=aggregate_task_catalog.task_info(
+            con,follower["task_id"])
+        assert aggregate_shared_runtime.binding_info(
+            con,follower["task_id"])["leader_task_id"]==leader["task_id"]
 
         # Leader computes source seq 1 once. Follower copies the exact durable
         # output commit bytes and advances its own retention/target frontier.
