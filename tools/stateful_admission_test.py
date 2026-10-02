@@ -119,6 +119,25 @@ def main():
         con,now=plans[0]["next_retry"]+1,due_only=True
     )[0]["plan_version"]==7
 
+    # One task in a plan may have a later backoff generation. Retrying the
+    # whole published plan before every waiter is due would bypass that task's
+    # backoff and can hot-loop target/catalog validation.
+    first_due=stateful_admission.waiting_tasks(
+        con,plan_version=7)[0]["next_retry"]
+    stateful_admission.queue_wait(
+        con,[item("new-d","starrocks.d")],
+        plan_version=7,reason=rejected["reason"],
+        retry_seconds=30,max_retry_seconds=300)
+    staggered=stateful_admission.waiting_tasks(
+        con,plan_version=7)
+    last_due=max(item["next_retry"] for item in staggered)
+    assert last_due>first_due
+    assert not stateful_admission.waiting_plans(
+        con,now=(first_due+last_due)/2,due_only=True)
+    due=stateful_admission.waiting_plans(
+        con,now=last_due+1,due_only=True)
+    assert len(due)==1 and due[0]["tasks"]==2
+
     admitted=stateful_admission.admit(
         con,additions,dict(
             stateful_admission_max_tasks=10,
@@ -233,7 +252,7 @@ def main():
     print(
         "stateful_admission_test ok tasks building state_bytes "
         "pending_bytes source_lag durable_decision retry_idempotence "
-        "atomic_reservation release durable_wait_queue due_retry",
+        "atomic_reservation release durable_wait_queue due_retry whole_plan_due_fence",
         flush=True,
     )
 
