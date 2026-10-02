@@ -1,0 +1,167 @@
+#!/usr/bin/env python3
+"""Contract for asynchronous durable source capture -> base apply."""
+from pathlib import Path
+import sqlite3
+import sys
+import tempfile
+import threading
+import time
+
+import pyarrow as pa
+
+ROOT=Path(__file__).resolve().parents[1]
+sys.path.insert(0,str(ROOT))
+
+import j4
+import source_state
+
+
+def schema():
+    return pa.schema([
+        pa.field("id",pa.int64()),
+        pa.field("value",pa.string()),
+    ])
+
+
+def batch(start,count):
+    ids=list(range(int(start),int(start)+int(count)))
+    table=pa.table({
+        "id":pa.array(ids,type=pa.int64()),
+        "value":pa.array(
+            ["v-%06d" % value for value in ids],
+            type=pa.string()),
+    },schema=schema())
+    return table.append_column(
+        "_sync_op",
+        pa.array([0]*len(ids),type=pa.int8())
+    ).append_column(
+        "_sync_order",
+        pa.array(range(len(ids)),type=pa.int64())
+    )
+
+
+def wait_applied(con,seq,timeout=10):
+    deadline=time.monotonic()+timeout
+    while time.monotonic()<deadline:
+        if source_state.base_applied_seq(con)>=int(seq):
+            return
+        time.sleep(.01)
+    raise AssertionError(
+        "source apply worker did not reach seq=%d "
+        "durable=%d applied=%d pending_bytes=%d"
+        % (
+            int(seq),
+            source_state.log_durable_seq(con),
+            source_state.base_applied_seq(con),
+            source_state.apply_pending_bytes(con),
+        )
+    )
+
+
+def main():
+    with tempfile.TemporaryDirectory(
+        prefix="m2s-source-apply-worker-"
+    ) as directory:
+        path=str(Path(directory)/"state.sqlite3")
+        con=j4.init_state(path)
+        source_state.register_relation(
+            con,"db.events","epoch-async",
+            schema(),["id"])
+        source_state.stage_snapshot_batch(
+            con,"db.events",batch(0,0),
+            cursor=None,is_last=True)
+
+        parts=[
+            source_state.prepare_part(
+                "db.events",batch(0,100)),
+            source_state.prepare_part(
+                "db.events",batch(100,100)),
+        ]
+        payload_bytes=sum(
+            len(part["payload"]) for part in parts)
+        assert source_state.log_commit(
+            con,"epoch-async",
+            ("binlog.000001",100),None,
+            parts)==1
+        assert source_state.base_applied_seq(con)==0
+        assert source_state.apply_pending_bytes(
+            con)==payload_bytes
+
+        stop=threading.Event()
+        wake=threading.Event()
+        runtime=dict(
+            stop=stop,
+            source_apply_event=wake,
+        )
+        worker=threading.Thread(
+            target=j4.source_state_apply_worker,
+            args=(dict(state=path),runtime),
+            name="source-apply-contract")
+        worker.start()
+        wake.set()
+        wait_applied(con,1)
+        assert source_state.apply_pending_bytes(con)==0
+        assert source_state.status(con)[
+            "apply_pending_bytes"]==0
+
+        # Persist a second commit without waking the worker, then reconstruct
+        # the byte counter exactly as an upgrade/restart from an older state.
+        stop.set()
+        wake.set()
+        worker.join(5)
+        assert not worker.is_alive()
+
+        part=source_state.prepare_part(
+            "db.events",batch(200,50))
+        payload_bytes=len(part["payload"])
+        assert source_state.log_commit(
+            con,"epoch-async",
+            ("binlog.000001",120),None,
+            [part])==2
+        assert source_state.apply_pending_bytes(
+            con)==payload_bytes
+        con.execute("""
+            DELETE FROM source_state_meta
+            WHERE key='apply_pending_bytes'
+        """)
+        source_state.install(con)
+        assert source_state.apply_pending_bytes(
+            con)==payload_bytes
+        con.close()
+
+        con=j4.open_state(path)
+        stop=threading.Event()
+        wake=threading.Event()
+        runtime=dict(
+            stop=stop,
+            source_apply_event=wake,
+        )
+        worker=threading.Thread(
+            target=j4.source_state_apply_worker,
+            args=(dict(state=path),runtime),
+            name="source-apply-restart-contract")
+        worker.start()
+        wake.set()
+        wait_applied(con,2)
+        assert source_state.apply_pending_bytes(con)==0
+        assert con.execute("""
+            SELECT COUNT(*)
+            FROM source_versions
+            WHERE valid_to IS NULL
+              AND deleted=0
+        """).fetchone()[0]==250
+        stop.set()
+        wake.set()
+        worker.join(5)
+        assert not worker.is_alive()
+        con.close()
+
+    print(
+        "source_apply_worker_test ok durable_bytes "
+        "async_drain restart_rebuild",
+        flush=True,
+    )
+
+
+if __name__=="__main__":
+    main()
