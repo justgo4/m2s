@@ -69,6 +69,9 @@ def _limits(cfg=None):
             1,int(cfg.get("stateful_share_max_followers",1000))),
         max_surplus=max(
             0,int(cfg.get("stateful_share_max_surplus",64))),
+        max_observed_visible_lag=max(
+            0,int(cfg.get(
+                "stateful_share_max_observed_visible_lag",10000))),
     )
 
 
@@ -87,6 +90,30 @@ def _follower_count(con,kind,leader_task_id):
         "SELECT COUNT(*) FROM "+table+" WHERE leader_task_id=?",
         (str(leader_task_id),)
     ).fetchone()[0])
+
+
+def _observed_visible_lag(con,kind,leader_task_id):
+    table=(
+        "aggregate_shared_followers"
+        if kind=="aggregate"
+        else "join_shared_followers"
+        if kind=="inner_join"
+        else None
+    )
+    if table is None:
+        raise ValueError(
+            "unsupported stateful sharing kind: "+str(kind))
+    row=con.execute(
+        """
+        SELECT COALESCE(MAX(o.max_visible_lag),0)
+        FROM %s f
+        LEFT JOIN stateful_share_observations o
+          ON o.task_id=f.follower_task_id
+        WHERE f.leader_task_id=?
+        """ % table,
+        (str(leader_task_id),)
+    ).fetchone()
+    return int(row[0] or 0)
 
 
 def _state_rows(con,kind,state_id):
@@ -117,6 +144,8 @@ def candidate_metrics(con,kind,candidate):
         surplus=surplus,
         lag=max(0,applied-watermark),
         followers=_follower_count(
+            con,kind,leader["task_id"]),
+        observed_visible_lag=_observed_visible_lag(
             con,kind,leader["task_id"]),
         state_rows=_state_rows(
             con,kind,leader["state_id"]),
@@ -223,6 +252,11 @@ def choose(con,kind,task,candidates,cfg=None):
             and metrics["surplus"]>limits["max_surplus"]
         ):
             reasons.append("surplus")
+        if (
+            metrics["observed_visible_lag"]
+            >limits["max_observed_visible_lag"]
+        ):
+            reasons.append("observed_visible_lag")
         if reasons:
             rejected.append(dict(
                 leader_task_id=metrics["leader_task_id"],
@@ -232,6 +266,7 @@ def choose(con,kind,task,candidates,cfg=None):
             0 if metrics["reuse_mode"]=="exact" else 1,
             metrics["surplus"],
             metrics["lag"],
+            metrics["observed_visible_lag"],
             -metrics["state_rows"],
             metrics["followers"],
             metrics["leader_task_id"],
