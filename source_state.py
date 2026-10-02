@@ -140,6 +140,20 @@ def install(con):
         with transaction(con):
             _meta_set_int(
                 con, "min_readable_seq", base_applied_seq(con))
+    if _meta_int(con,"log_stats_v1",0)!=1:
+        with transaction(con):
+            con.execute("DELETE FROM source_log_stats")
+            con.execute("""
+                INSERT INTO source_log_stats(
+                    table_name,commits,event_rows,payload_bytes)
+                SELECT table_name,COUNT(DISTINCT seq),
+                       COALESCE(SUM(nrows),0),
+                       COALESCE(SUM(length(payload)),0)
+                FROM source_commit_parts
+                GROUP BY table_name
+            """)
+            _meta_set_int(
+                con,"log_stats_v1",1)
 
 
 def _meta_int(con, key, default=0):
