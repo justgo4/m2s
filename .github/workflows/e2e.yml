@@ -23,6 +23,7 @@ on:
       - 'tools/merge_quarantine_network_test.py'
       - 'tools/longhaul_workload.py'
       - 'tools/longhaul_gate.py'
+      - 'tools/process_resource_probe.py'
       - 'tools/starrocks_contract.py'
       - '.github/workflows/e2e.yml'
   pull_request:
@@ -46,6 +47,7 @@ on:
       - 'tools/merge_quarantine_network_test.py'
       - 'tools/longhaul_workload.py'
       - 'tools/longhaul_gate.py'
+      - 'tools/process_resource_probe.py'
       - '.github/workflows/e2e.yml'
   workflow_dispatch:
 
