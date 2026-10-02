@@ -95,9 +95,25 @@ def step(
             cfg,task)
     mapping=_validate_mapping(task,mapping,con)
 
+    rebuild=stateful_rebuild.for_task(
+        con,task["task_id"])
+    rebuild_candidate=(
+        rebuild is not None
+        and rebuild["new_task_id"]==task["task_id"]
+        and rebuild["phase"] in {
+            "building_shadow","fencing","ready_to_swap"
+        }
+    )
     binding=aggregate_shared_runtime.maybe_binding(
         con,task["task_id"])
-    if binding is None and task["status"]=="candidate":
+    if rebuild_candidate and binding is not None:
+        raise RuntimeError(
+            "aggregate rebuild generation cannot use shared follower state")
+    if (
+        binding is None
+        and task["status"]=="candidate"
+        and not rebuild_candidate
+    ):
         binding=aggregate_shared_runtime.try_bind(
             con,task,cfg=cfg)
         if (
