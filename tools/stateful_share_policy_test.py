@@ -153,8 +153,12 @@ def main():
         assert second["copied_sequences"]==3
         status=stateful_share_policy.status(con)
         assert status["decisions"]==1
-        assert status["samples"]==2
+        # status aggregates observations across all followers. The earlier
+        # "existing" follower contributes one sample in addition to the two
+        # explicit "follower" samples below.
+        assert status["samples"]==3
         assert status["copied_sequences"]==3
+        assert status["max_visible_lag"]==3
 
         con.close()
 
