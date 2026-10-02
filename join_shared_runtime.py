@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Durable exact-semantics sharing for identical INNER JOIN tasks."""
+"""Durable sharing for exact and projection-subview INNER JOIN tasks."""
 import time
 
+import join_ir
 import join_job_bridge
 import join_log_consumer
 import join_outbox
@@ -100,18 +101,25 @@ def _leader_candidates(con,task):
          AND g.plan_version=d.plan_version
         WHERE d.task_id<>?
           AND d.status='active'
-          AND d.ir_id=?
+          AND d.left_relation=?
+          AND d.right_relation=?
           AND g.status='ready'
           AND g.source_pin_released=1
         ORDER BY d.updated,d.task_id
-    """,(task["task_id"],task["ir_id"])).fetchall()
-    requested=join_physical_state.physical_spec(
-        con,task["ir"])
+    """,(
+        task["task_id"],
+        task["ir"]["sources"]["left"]["relation"],
+        task["ir"]["sources"]["right"]["relation"],
+    )).fetchall()
     result=[]
     for row in rows:
         leader=join_task_catalog.task_info(
             con,row[0])
         if maybe_binding(con,leader["task_id"]) is not None:
+            continue
+        reuse=join_ir.reuse_plan(
+            leader["ir"],task["ir"])
+        if reuse is None:
             continue
         try:
             state=join_state.state_info(
@@ -123,6 +131,8 @@ def _leader_candidates(con,task):
                     leader["state_id"]))
         except KeyError:
             continue
+        requested=join_physical_state.physical_spec(
+            con,leader["ir"])
         if (
             not state["bootstrap_complete"]
             or int(state["watermark"])!=int(consumer["watermark"])
@@ -136,8 +146,17 @@ def _leader_candidates(con,task):
                 "join_state_id")!=leader["state_id"]
         ):
             continue
-        result.append((leader,state,consumer,physical))
-    return result
+        result.append((
+            0 if reuse["mode"]=="exact" else 1,
+            int(reuse["surplus_projections"]),
+            leader["created"],leader["task_id"],
+            leader,state,consumer,physical,reuse,
+        ))
+    result.sort(key=lambda item:item[:4])
+    return [
+        item[4:]
+        for item in result
+    ]
 
 
 def try_bind(con,task):
@@ -167,7 +186,7 @@ def try_bind(con,task):
             con,task)
         if not leaders:
             return None
-        leader,state,consumer,physical=leaders[0]
+        leader,state,consumer,physical,reuse=leaders[0]
         fixed_w=int(state["watermark"])
         if fixed_w!=int(consumer["watermark"]):
             return None
@@ -200,10 +219,16 @@ def try_bind(con,task):
             con,task["consumer_id"],leader["state_id"],
             task["plan_version"],generation["generation_id"],
             fixed_w)
-        join_outbox.seed_bootstrap(
-            con,task["consumer_id"],leader["state_id"],
-            task["plan_version"],generation["generation_id"],
-            fixed_w)
+        if reuse["mode"]=="exact":
+            join_outbox.seed_bootstrap(
+                con,task["consumer_id"],leader["state_id"],
+                task["plan_version"],generation["generation_id"],
+                fixed_w)
+        else:
+            join_outbox.seed_bootstrap_projected(
+                con,task["consumer_id"],leader["state_id"],
+                task["plan_version"],generation["generation_id"],
+                fixed_w,join_ir.state_spec(task["ir"]))
         physical_state_catalog.retain_state(
             con,physical["instance_id"],
             task["task_id"],"dependency")
@@ -217,13 +242,15 @@ def _validate_binding(con,task,binding):
     if leader["status"]!="active":
         raise RuntimeError(
             "JOIN shared leader is not active")
+    reuse=join_ir.reuse_plan(
+        leader["ir"],task["ir"])
     if (
-        leader["ir_id"]!=task["ir_id"]
+        reuse is None
         or leader["state_id"]!=binding["shared_state_id"]
         or leader["consumer_id"]!=binding["leader_consumer_id"]
     ):
         raise RuntimeError(
-            "JOIN shared leader identity changed")
+            "JOIN shared leader identity/coverage changed")
     follower=source_state.consumer_info(
         con,task["consumer_id"])
     if follower["metadata"]!=_follower_metadata(
@@ -239,13 +266,13 @@ def _validate_binding(con,task,binding):
     ):
         raise RuntimeError(
             "JOIN shared follower outbox binding changed")
-    return leader,follower,stream
+    return leader,follower,stream,reuse
 
 
 def step(con,task,mapping,cfg):
     binding=binding_info(
         con,task["task_id"])
-    leader,follower,_=_validate_binding(
+    leader,follower,_,reuse=_validate_binding(
         con,task,binding)
     leader_consumer=source_state.consumer_info(
         con,leader["consumer_id"])
@@ -261,9 +288,15 @@ def step(con,task,mapping,cfg):
         leader_consumer["watermark"]
     ):
         next_seq=int(follower["watermark"])+1
-        join_outbox.copy_commit(
-            con,leader["consumer_id"],
-            task["consumer_id"],next_seq)
+        if reuse["mode"]=="exact":
+            join_outbox.copy_commit(
+                con,leader["consumer_id"],
+                task["consumer_id"],next_seq)
+        else:
+            join_outbox.copy_commit_projected(
+                con,leader["consumer_id"],
+                task["consumer_id"],next_seq,
+                join_ir.state_spec(task["ir"]))
         source_state.advance_consumer(
             con,task["consumer_id"],next_seq)
         follower=source_state.consumer_info(
@@ -297,17 +330,27 @@ def step(con,task,mapping,cfg):
         shared_physical=True,
         shared_leader_task_id=leader["task_id"],
         shared_state_id=leader["state_id"],
+        shared_reuse_mode=reuse["mode"],
     )
 
 
-def _copy_through(con,leader_consumer_id,follower_consumer_id,through_w):
+def _copy_through(
+        con,leader_consumer_id,follower_consumer_id,
+        through_w,reuse,target_ir
+):
     follower=source_state.consumer_info(
         con,follower_consumer_id)
     while int(follower["watermark"])<int(through_w):
         seq=int(follower["watermark"])+1
-        join_outbox.copy_commit(
-            con,leader_consumer_id,
-            follower_consumer_id,seq)
+        if reuse["mode"]=="exact":
+            join_outbox.copy_commit(
+                con,leader_consumer_id,
+                follower_consumer_id,seq)
+        else:
+            join_outbox.copy_commit_projected(
+                con,leader_consumer_id,
+                follower_consumer_id,seq,
+                join_ir.state_spec(target_ir))
         follower=source_state.advance_consumer(
             con,follower_consumer_id,seq)
     return follower
@@ -335,17 +378,30 @@ def promote_followers(con,leader_task):
                 con,binding["follower_task_id"])
             if follower_task["status"] in {"retired","failed"}:
                 continue
+            reuse=join_ir.reuse_plan(
+                leader_task["ir"],follower_task["ir"])
+            if reuse is None:
+                raise RuntimeError(
+                    "cannot promote JOIN follower after reuse semantics changed")
             _copy_through(
                 con,leader_task["consumer_id"],
-                follower_task["consumer_id"],frontier)
+                follower_task["consumer_id"],frontier,
+                reuse,follower_task["ir"])
             try:
                 private=join_state.state_info(
                     con,follower_task["state_id"])
             except KeyError:
-                private=join_state.clone_complete_state(
-                    con,leader_task["state_id"],
-                    follower_task["state_id"],
-                    leader_state["spec"],frontier)
+                if reuse["mode"]=="exact":
+                    private=join_state.clone_complete_state(
+                        con,leader_task["state_id"],
+                        follower_task["state_id"],
+                        leader_state["spec"],frontier)
+                else:
+                    private=join_state.clone_projected_state(
+                        con,leader_task["state_id"],
+                        follower_task["state_id"],
+                        join_ir.state_spec(
+                            follower_task["ir"]),frontier)
             if int(private["watermark"])!=frontier:
                 raise RuntimeError(
                     "promoted JOIN follower private state has wrong W")
