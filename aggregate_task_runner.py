@@ -12,6 +12,7 @@ import aggregate_shared_runtime
 import aggregate_target_mapping
 import aggregate_task_catalog
 import j4
+import stateful_share_policy
 import task_generation
 
 
@@ -83,6 +84,20 @@ def step(
     if binding is None and task["status"]=="candidate":
         binding=aggregate_shared_runtime.try_bind(
             con,task,cfg=cfg)
+        if (
+            binding is None
+            and stateful_share_policy.preference_pending(
+                con,"aggregate",task["task_id"],cfg=cfg)
+        ):
+            preference=stateful_share_policy.preference_info(
+                con,task["task_id"])
+            return dict(
+                task=task,
+                phase="waiting_shared_leader",
+                waiting_shared_leader=True,
+                preferred_leader_task_id=(
+                    preference["preferred_leader_task_id"]),
+            )
     if binding is not None:
         try:
             result=aggregate_shared_runtime.step(
