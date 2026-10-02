@@ -169,6 +169,86 @@ def install(con):
     """)
 
 
+def clone_projected_state(
+        con,source_state_id,target_state_id,target_spec,watermark
+):
+    """Atomically clone a projection-only JOIN subview at exact W."""
+    source_state_id=_text(
+        source_state_id,"source_state_id")
+    target_state_id=_text(
+        target_state_id,"target_state_id")
+    if source_state_id==target_state_id:
+        raise ValueError(
+            "JOIN projected clone source and target state ids must differ")
+    target_spec=validate_spec(target_spec)
+    watermark=int(watermark)
+    if watermark<0:
+        raise ValueError(
+            "JOIN projected clone watermark cannot be negative")
+
+    with transaction(con):
+        if con.execute(
+            "SELECT 1 FROM join_states WHERE state_id=?",
+            (target_state_id,)
+        ).fetchone():
+            raise RuntimeError(
+                "JOIN projected clone target state already exists")
+        source=state_info(
+            con,source_state_id)
+        if (
+            not source["bootstrap_complete"]
+            or not source["left_complete"]
+            or not source["right_complete"]
+        ):
+            raise RuntimeError(
+                "JOIN projected clone source bootstrap is incomplete")
+        if int(source["watermark"])!=watermark:
+            raise RuntimeError(
+                "JOIN projected clone source watermark changed")
+        source_spec=source["spec"]
+        if (
+            source_spec["sources"]!=target_spec["sources"]
+            or source_spec["semantics"]!=target_spec["semantics"]
+        ):
+            raise RuntimeError(
+                "JOIN projected clone source/join semantics differ")
+        source_outputs={
+            item["output"]:item
+            for item in source_spec["projections"]
+        }
+        for item in target_spec["projections"]:
+            if source_outputs.get(item["output"])!=item:
+                raise RuntimeError(
+                    "JOIN projected clone output is not a leader subview: "
+                    +item["output"])
+
+        now=time.time()
+        con.execute("""
+            INSERT INTO join_states(
+                state_id,spec_hash,spec_json,watermark,last_digest,
+                bootstrap_complete,left_complete,right_complete,
+                left_cursor,right_cursor,created,updated)
+            VALUES(?,?,?,?,NULL,1,1,1,NULL,NULL,?,?)
+        """,(
+            target_state_id,semantic_id(target_spec),
+            canonical_bytes(target_spec).decode("utf-8"),
+            watermark,now,now,
+        ))
+        rows=con.execute("""
+            SELECT side,row_payload
+            FROM join_rows
+            WHERE state_id=?
+            ORDER BY side,pk_blob
+        """,(source_state_id,)).fetchall()
+        for side,payload in rows:
+            row=pickle.loads(payload)
+            _put_row_locked(
+                con,target_state_id,str(side),
+                target_spec,row)
+    return state_info(
+        con,target_state_id)
+
+
 def clone_complete_state(
         con,source_state_id,target_state_id,spec,watermark
 ):
