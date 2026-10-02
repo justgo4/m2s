@@ -11,6 +11,7 @@ import join_runtime
 import join_shared_runtime
 import join_target_mapping
 import join_task_catalog
+import stateful_share_policy
 import task_generation
 
 
@@ -115,6 +116,20 @@ def step(
     if binding is None and task["status"]=="candidate":
         binding=join_shared_runtime.try_bind(
             con,task,cfg=cfg)
+        if (
+            binding is None
+            and stateful_share_policy.preference_pending(
+                con,"inner_join",task["task_id"],cfg=cfg)
+        ):
+            preference=stateful_share_policy.preference_info(
+                con,task["task_id"])
+            return dict(
+                task=task,
+                phase="waiting_shared_leader",
+                waiting_shared_leader=True,
+                preferred_leader_task_id=(
+                    preference["preferred_leader_task_id"]),
+            )
     if binding is not None:
         try:
             result=join_shared_runtime.step(
