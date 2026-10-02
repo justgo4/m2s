@@ -8,6 +8,7 @@ passed for repeated steps within the same process.
 """
 import j4
 import join_runtime
+import join_shared_runtime
 import join_target_mapping
 import join_task_catalog
 import task_generation
@@ -109,11 +110,31 @@ def step(
     mapping=_validate_mapping(
         task,mapping)
 
-    result=join_runtime.step(
-        con,task["sink_key"],task["plan_version"],
-        task["consumer_id"],task["ir"],
-        task["state_id"],mapping,cfg,
-        bootstrap_limit=bootstrap_limit)
+    binding=join_shared_runtime.maybe_binding(
+        con,task["task_id"])
+    if binding is None and task["status"]=="candidate":
+        binding=join_shared_runtime.try_bind(
+            con,task)
+    if binding is not None:
+        try:
+            result=join_shared_runtime.step(
+                con,task,mapping,cfg)
+        except KeyError:
+            if join_shared_runtime.maybe_binding(
+                con,task["task_id"]
+            ) is not None:
+                raise
+            result=join_runtime.step(
+                con,task["sink_key"],task["plan_version"],
+                task["consumer_id"],task["ir"],
+                task["state_id"],mapping,cfg,
+                bootstrap_limit=bootstrap_limit)
+    else:
+        result=join_runtime.step(
+            con,task["sink_key"],task["plan_version"],
+            task["consumer_id"],task["ir"],
+            task["state_id"],mapping,cfg,
+            bootstrap_limit=bootstrap_limit)
     generation=result["generation"]
     if generation["generation_id"]!=task["generation_id"]:
         raise RuntimeError(
