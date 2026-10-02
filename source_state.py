@@ -1144,6 +1144,16 @@ def status(con):
         ).fetchone()[0])
         if has_apply_staging else 0
     )
+    has_snapshot_staging=con.execute("""
+        SELECT 1 FROM sqlite_master
+        WHERE type='table' AND name='source_snapshot_rows'
+    """).fetchone() is not None
+    snapshot_staging_rows=(
+        int(con.execute(
+            "SELECT COUNT(*) FROM source_snapshot_rows"
+        ).fetchone()[0])
+        if has_snapshot_staging else 0
+    )
     pipeline=dict(
         log_commits=int(pipeline_row[0]),
         log_parts=int(pipeline_row[1]),
@@ -1161,6 +1171,7 @@ def status(con):
             float(pipeline_row[6])*1e9/float(pipeline_row[8])
             if int(pipeline_row[8])>0 else None),
         apply_staging_rows=apply_staging_rows,
+        snapshot_staging_rows=snapshot_staging_rows,
     )
     incomplete = [
         row[0] for row in con.execute(
