@@ -1451,6 +1451,17 @@ def run(args):
         source.close()
 
 
+def certification_mismatches(args):
+    mismatch=dict(
+        p11_profile.mismatches(args))
+    if getattr(args,"work_directory",None) is None:
+        mismatch["work_directory"]=dict(
+            expected="explicit persistent empty directory",
+            actual=None,
+        )
+    return mismatch
+
+
 def main():
     parser=argparse.ArgumentParser(
         description=__doc__)
@@ -1569,10 +1580,10 @@ def main():
         parser.error(
             "--starrocks-be-resource-port must be 1..65535")
     if args.certification_profile:
-        mismatch=p11_profile.mismatches(args)
+        mismatch=certification_mismatches(args)
         if mismatch:
             parser.error(
-                "--certification-profile parameters differ: "
+                "--certification-profile requirements differ: "
                 +json.dumps(
                     mismatch,sort_keys=True))
     run(args)
