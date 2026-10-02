@@ -252,6 +252,53 @@ def enqueue_incremental(
     return commit_info(con,consumer_id,source_seq)
 
 
+def copy_commit(
+        con,source_consumer_id,target_consumer_id,source_seq
+):
+    """Copy one durable serialized output commit between identical consumers.
+
+    The target stream must already exist. Copying bytes instead of recomputing
+    aggregate rows is the steady-state sharing primitive for identical queries.
+    """
+    source_consumer_id=_text(
+        source_consumer_id,"source_consumer_id")
+    target_consumer_id=_text(
+        target_consumer_id,"target_consumer_id")
+    source_seq=int(source_seq)
+    if source_consumer_id==target_consumer_id:
+        raise ValueError(
+            "aggregate output copy source and target consumers must differ")
+    source=commit_info(
+        con,source_consumer_id,source_seq)
+    stream=stream_info(
+        con,target_consumer_id)
+    rows=[
+        (bytes(key_blob),int(op),bytes(payload))
+        for key_blob,op,payload in con.execute("""
+            SELECT key_blob,op,row_payload
+            FROM aggregate_output_rows
+            WHERE consumer_id=? AND source_seq=?
+            ORDER BY key_blob
+        """,(source_consumer_id,source_seq)).fetchall()
+    ]
+    if len(rows)!=int(source["nrows"]):
+        raise RuntimeError(
+            "aggregate source output commit row count is inconsistent")
+    with transaction(con):
+        inserted=_insert_commit(
+            con,target_consumer_id,source_seq,
+            source["kind"],rows)
+    copied=commit_info(
+        con,target_consumer_id,source_seq)
+    if copied["digest"]!=source["digest"]:
+        raise RuntimeError(
+            "aggregate copied output commit digest differs from source")
+    if source_seq<int(stream["fixed_w"]):
+        raise RuntimeError(
+            "aggregate copied output commit predates target fixed-W")
+    return copied
+
+
 def commit_info(con,consumer_id,source_seq):
     row=con.execute("""
         SELECT kind,nrows,digest,visible,created,updated
