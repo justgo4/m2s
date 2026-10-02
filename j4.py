@@ -7543,26 +7543,54 @@ def merge_payload_profile(mapping,payload):
 def begin_merge_request(
         con,mapping,delivery,part,label,payload,profile=None
 ):
-    row = con.execute("SELECT lane FROM deliveries WHERE id=?",(delivery,)).fetchone()
-    if not row:
-        raise RuntimeError(f"delivery {delivery} disappeared before Merge Commit request")
     now = time.time()
     digest = hashlib.sha256(payload).hexdigest()
     profile=(
         merge_payload_profile(mapping,payload)
         if profile is None else dict(profile))
     replay_safe=int(bool(profile.get("replay_safe")))
+    table=mapping_key(mapping)
     with state_transaction(con):
+        row=con.execute(
+            "SELECT lane FROM deliveries WHERE id=?",
+            (delivery,)
+        ).fetchone()
+        if not row:
+            raise RuntimeError(
+                f"delivery {delivery} disappeared before Merge Commit request")
+        lane=int(row[0])
+        existing=con.execute("""
+            SELECT table_name,lane,label,payload_sha256
+            FROM merge_uncertain
+            WHERE delivery_id=? AND part=?
+        """,(delivery,part)).fetchone()
+        if existing is not None:
+            durable=(
+                str(existing[0]),int(existing[1]),
+                str(existing[2]),str(existing[3]))
+            incoming=(str(table),lane,str(label),str(digest))
+            if durable!=incoming:
+                raise RuntimeError(
+                    "Merge Commit uncertain request identity changed "
+                    "before resolution; refuse to overwrite durable evidence")
+            con.execute("""
+                UPDATE merge_uncertain
+                SET replay_safe=?,reason=?,updated=?
+                WHERE delivery_id=? AND part=?
+            """,(
+                replay_safe,"request_inflight_no_txn_id",now,
+                delivery,part,
+            ))
+            return
         con.execute("""
             INSERT INTO merge_uncertain(
                 delivery_id,part,table_name,lane,label,payload_sha256,
                 replay_safe,reason,created,updated
             ) VALUES(?,?,?,?,?,?,?,?,?,?)
-            ON CONFLICT(delivery_id,part) DO UPDATE SET
-                replay_safe=excluded.replay_safe,
-                reason=excluded.reason,updated=excluded.updated
-        """,(delivery,part,mapping_key(mapping),int(row[0]),label,digest,
-             replay_safe,"request_inflight_no_txn_id",now,now))
+        """,(
+            delivery,part,table,lane,label,digest,
+            replay_safe,"request_inflight_no_txn_id",now,now,
+        ))
 
 
 def clear_merge_request(con, delivery, part):
