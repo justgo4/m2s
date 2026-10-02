@@ -1313,6 +1313,13 @@ def read_config():
         load_mode=env("CDC_LOAD_MODE", "merge_async").strip().lower(),
         merge_commit_interval_ms=env_int("CDC_MERGE_COMMIT_INTERVAL_MS", 1000, maximum=60000),
         merge_commit_parallel=env_int("CDC_MERGE_COMMIT_PARALLEL", max(1,min(2,resource_target//2)), maximum=32),
+        merge_uncertain_recovery=env(
+            "CDC_MERGE_UNCERTAIN_RECOVERY","idempotent").strip().lower(),
+        merge_uncertain_replay_max=env_int(
+            "CDC_MERGE_UNCERTAIN_REPLAY_MAX",3,minimum=0,maximum=100),
+        merge_uncertain_replay_backoff_seconds=env_int(
+            "CDC_MERGE_UNCERTAIN_REPLAY_BACKOFF_SECONDS",
+            2,minimum=1,maximum=3600),
         max_row_bytes=env_int("CDC_MAX_ROW_BYTES", 64*1024*1024, maximum=64*1024*1024),
         max_backlog_bytes=env_int("CDC_MAX_BACKLOG_BYTES", 2*1024**3),
         max_prepared_bytes=env_int("CDC_MAX_PREPARED_BYTES", 512*1024**2),
@@ -1388,6 +1395,9 @@ def read_config():
     )
     if cfg["load_mode"] not in ("merge_async","transaction"):
         raise ValueError("CDC_LOAD_MODE must be merge_async or transaction")
+    if cfg["merge_uncertain_recovery"] not in ("off","idempotent"):
+        raise ValueError(
+            "CDC_MERGE_UNCERTAIN_RECOVERY must be off or idempotent")
     if cfg["stateful_share_mode"] not in stateful_share_policy.MODES:
         raise ValueError(
             "CDC_STATEFUL_SHARE_MODE must be one of "
@@ -1752,6 +1762,8 @@ def init_state(path):
             label TEXT NOT NULL,
             payload_sha256 TEXT NOT NULL,
             reason TEXT NOT NULL,
+            replay_attempts INTEGER NOT NULL DEFAULT 0,
+            last_replay REAL,
             created REAL NOT NULL,
             updated REAL NOT NULL,
             PRIMARY KEY(delivery_id,part));
@@ -1889,6 +1901,18 @@ def init_state(path):
         with state_transaction(con):
             con.execute(
                 "ALTER TABLE deliveries ADD COLUMN plan_version INTEGER NOT NULL DEFAULT 0")
+    merge_uncertain_columns = {
+        row[1] for row in con.execute(
+            "PRAGMA table_info(merge_uncertain)").fetchall()}
+    if "replay_attempts" not in merge_uncertain_columns:
+        with state_transaction(con):
+            con.execute(
+                "ALTER TABLE merge_uncertain "
+                "ADD COLUMN replay_attempts INTEGER NOT NULL DEFAULT 0")
+    if "last_replay" not in merge_uncertain_columns:
+        with state_transaction(con):
+            con.execute(
+                "ALTER TABLE merge_uncertain ADD COLUMN last_replay REAL")
     if meta_get(con,"logical_job_bytes_v1",0) != 1:
         last_id = 0
         while True:
