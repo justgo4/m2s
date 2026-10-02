@@ -61,6 +61,17 @@ def main():
     assert longhaul_workload.source_ready(
         dict(source=[("db.events",7)]))
 
+    certification=SimpleNamespace(
+        **longhaul_workload.p11_profile.PARAMETERS,
+        work_directory=None,
+    )
+    mismatch=longhaul_workload.certification_mismatches(
+        certification)
+    assert set(mismatch)=={"work_directory"}
+    certification.work_directory=Path("p11-evidence")
+    assert longhaul_workload.certification_mismatches(
+        certification)=={}
+
     calls=[]
     def fake_execute(_cfg,sql):
         calls.append(sql)
@@ -309,7 +320,8 @@ def main():
     print(
         "longhaul_workload_test ok percentile interval_overlap clean_worktree_probe source_ready "
         "per_transaction_sentinel continuous_source_during_fault crash_catchup aggregate_exactness "
-        "work_directory_retention checkpoint_atomic_replace evidence_copy",
+        "work_directory_retention certification_requires_persistent_workdir "
+        "checkpoint_atomic_replace evidence_copy",
         flush=True,
     )
 
