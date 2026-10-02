@@ -7352,7 +7352,7 @@ def submit_merge_uncertain_replay(handle, con, candidate, cfg, runtime):
         f"rows={candidate['nrows']} lanes={candidate['lanes']}")
 
     url = merge_stream_load_url(cfg,mapping)
-    headers = merge_commit_headers(mapping,cfg,label)
+    headers = merge_commit_headers(mapping,cfg)
     try:
         status,result = curl_request(
             handle,cfg,url,payload,headers,None)
