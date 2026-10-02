@@ -1219,6 +1219,68 @@ def main():
                     "promoted aggregate subview retained shared binding: "
                     +repr(promoted_state))
 
+            # Retain the same logical sink but change its aggregate semantics.
+            # The daemon must build a shadow generation, freeze old/new at one
+            # durable source frontier, atomically SWAP the StarRocks tables,
+            # retire the old generation, and restore the original table
+            # comment without a process restart.
+            original_comment="stateful-e2e-original-comment"
+            execute(
+                cfg,
+                "ALTER TABLE "+DATABASE+".agg_subview COMMENT "
+                +literal(original_comment))
+            result,response,activation=run_catalog_sql(
+                directory,env,"rebuild-agg-subview",
+                "CREATE OR REPLACE TABLE starrocks.agg_subview AS "
+                "SELECT category, COUNT(*) AS n, "
+                "SUM(amount) AS total "
+                "FROM mysql.orders WHERE amount IS NOT NULL "
+                "GROUP BY category;")
+            if (
+                result.returncode!=0
+                or activation.get("status")!="rebuild_pending"
+            ):
+                raise AssertionError(
+                    "stateful semantic rebuild was not accepted online: "
+                    +json.dumps(response,sort_keys=True))
+            rebuild_state,rebuild_before=wait_aggregate_rebuild_exact(
+                proc,log,directory,source,cfg)
+            comments,_=execute(
+                cfg,
+                "SELECT TABLE_COMMENT FROM information_schema.TABLES "
+                "WHERE TABLE_SCHEMA="+literal(DATABASE)
+                +" AND TABLE_NAME='agg_subview'")
+            if not comments or str(comments[0][0])!=original_comment:
+                raise AssertionError(
+                    "semantic rebuild did not restore logical target comment: "
+                    +repr(comments))
+            shadows,_=execute(
+                cfg,
+                "SELECT TABLE_NAME FROM information_schema.TABLES "
+                "WHERE TABLE_SCHEMA="+literal(DATABASE)
+                +" AND TABLE_NAME LIKE '__j4_rebuild_agg_subview_%'")
+            if shadows:
+                raise AssertionError(
+                    "semantic rebuild shadow table leaked after cutover: "
+                    +repr(shadows))
+            daemon_text=log.read_text(errors="replace")
+            if (
+                "STATEFUL REBUILD ACTIVE sink=starrocks.agg_subview"
+                not in daemon_text
+            ):
+                raise AssertionError(
+                    "semantic rebuild cutover was not observed in daemon "
+                    "diagnostics="+daemon_text[-10000:])
+
+            # Prove that the new generation continues incremental maintenance
+            # under its new WHERE semantics after the remote table swap.
+            mutate_after_semantic_rebuild(source)
+            rebuild_live_state,rebuild_after=wait_aggregate_rebuild_exact(
+                proc,log,directory,source,cfg)
+            if join_expected(source)!=join_actual(cfg):
+                raise AssertionError(
+                    "JOIN diverged while rebuilt aggregate advanced")
+
             result,response,activation=run_catalog_sql(
                 directory,env,"drop-agg-subview",
                 "DROP TABLE starrocks.agg_subview;")
