@@ -5585,17 +5585,16 @@ def validate_hot_catalog_plan(cfg, runtime, publish_result):
         sink for sink in set(current_stateful)&set(candidate_stateful)
         if current_stateful[sink]!=candidate_stateful[sink])
     if stateful_changed and (
-        len(stateful_changed)!=1
-        or stateful_added
+        stateful_added
         or stateful_dropped
     ):
         return dict(
             status="rebuild_required",
             version=version,
             reason=(
-                "online stateful semantic rebuild currently requires exactly "
-                "one retained sink replacement per catalog publish and cannot "
-                "be combined with add/drop: changed=%s added=%s dropped=%s"
+                "online stateful semantic rebuild cannot yet be combined "
+                "with add/drop in the same catalog publish: "
+                "changed=%s added=%s dropped=%s"
                 % (
                     stateful_changed,
                     stateful_added,
@@ -5682,178 +5681,195 @@ def validate_hot_catalog_plan(cfg, runtime, publish_result):
                 version=version,
                 reason=reason,
                 stateful_changed_sinks=stateful_changed)
-        sink=stateful_changed[0]
         live_by_sink=stateful_catalog_runtime.compiled_by_sink(
             runtime.get("stateful_tasks",()))
-        old_item=live_by_sink.get(sink)
-        if old_item is None:
-            return dict(
-                status="restart_required",
-                version=version,
-                reason=(
-                    "stateful semantic rebuild cannot bind live owner: "
-                    +sink),
-                stateful_changed_sinks=stateful_changed)
-        manifest=candidate_stateful[sink]
-        scope=stateful_catalog_runtime.source_scope(
-            cfg,[manifest],candidate["prepared"])
+        replacements={}
+        rebuild_specs=[]
         probe=open_state(cfg["state"])
         try:
-            old_task=stateful_durable_task(
-                probe,old_item["kind"],
-                old_item["task"]["task_id"])
-            generation=task_generation.maybe_info(
-                probe,old_task["sink_key"],
-                old_task["plan_version"])
-            if (
-                old_task["status"]!="active"
-                or generation is None
-                or generation["status"]!="ready"
-                or not generation["source_pin_released"]
-            ):
-                return dict(
-                    status="restart_required",
-                    version=version,
-                    reason=(
-                        "stateful semantic rebuild requires the current "
-                        "generation to be active/ready: "+sink),
-                    stateful_changed_sinks=stateful_changed)
-            for mapping in scope["capture_mappings"]:
-                source=str(mapping["src_table"])
-                if source not in set(scope["required_sources"]):
-                    continue
-                relation=source_relation_key(
-                    cfg,mapping)
-                try:
-                    info=source_state.relation_info(
-                        probe,relation)
-                except KeyError:
+            for sink in stateful_changed:
+                old_item=live_by_sink.get(sink)
+                if old_item is None:
                     return dict(
                         status="restart_required",
                         version=version,
                         reason=(
-                            "stateful semantic rebuild references a relation "
-                            "outside the live shared capture scope: "
-                            +relation),
+                            "stateful semantic rebuild cannot bind live owner: "
+                            +sink),
                         stateful_changed_sinks=stateful_changed)
-                if list(info["pk_columns"])!=pk_columns(mapping):
+                manifest=candidate_stateful[sink]
+                scope=stateful_catalog_runtime.source_scope(
+                    cfg,[manifest],candidate["prepared"])
+                old_task=stateful_durable_task(
+                    probe,old_item["kind"],
+                    old_item["task"]["task_id"])
+                generation=task_generation.maybe_info(
+                    probe,old_task["sink_key"],
+                    old_task["plan_version"])
+                if (
+                    old_task["status"]!="active"
+                    or generation is None
+                    or generation["status"]!="ready"
+                    or not generation["source_pin_released"]
+                ):
+                    return dict(
+                        status="restart_required",
+                        version=version,
+                        reason=(
+                            "stateful semantic rebuild requires the current "
+                            "generation to be active/ready: "+sink),
+                        stateful_changed_sinks=stateful_changed)
+                required_sources=set(
+                    scope["required_sources"])
+                for mapping in scope["capture_mappings"]:
+                    source=str(mapping["src_table"])
+                    if source not in required_sources:
+                        continue
+                    relation=source_relation_key(
+                        cfg,mapping)
+                    try:
+                        info=source_state.relation_info(
+                            probe,relation)
+                    except KeyError:
+                        return dict(
+                            status="restart_required",
+                            version=version,
+                            reason=(
+                                "stateful semantic rebuild references a relation "
+                                "outside the live shared capture scope: "
+                                +relation),
+                            stateful_changed_sinks=stateful_changed)
+                    if list(info["pk_columns"])!=pk_columns(mapping):
+                        return dict(
+                            status="rebuild_required",
+                            version=version,
+                            reason=(
+                                "stateful semantic rebuild source primary key "
+                                "differs from durable shared state: "+relation),
+                            stateful_changed_sinks=stateful_changed)
+                    if not info["schema"].equals(
+                        source_arrow_schema(mapping),
+                        check_metadata=False
+                    ):
+                        return dict(
+                            status="rebuild_required",
+                            version=version,
+                            reason=(
+                                "stateful semantic rebuild source schema differs "
+                                "from durable shared state: "+relation),
+                            stateful_changed_sinks=stateful_changed)
+                base=stateful_task_plan.compile_ir(
+                    manifest,cfg["mysql"]["database"],
+                    scope["source_metadata"])
+                if str(base["kind"])!=str(old_item["kind"]):
                     return dict(
                         status="rebuild_required",
                         version=version,
                         reason=(
-                            "stateful semantic rebuild source primary key "
-                            "differs from durable shared state: "+relation),
+                            "online semantic rebuild does not yet change "
+                            "stateful operator kind: "+sink),
                         stateful_changed_sinks=stateful_changed)
-                if not info["schema"].equals(
-                    source_arrow_schema(mapping),
-                    check_metadata=False
+                inferred=stateful_catalog_runtime.infer_target_schema(
+                    base["kind"],base["ir"])
+                provisional=stateful_task_plan.compile_task(
+                    manifest,version,cfg["mysql"]["database"],
+                    scope["source_metadata"],inferred)
+                shadow=stateful_rebuild.shadow_target(
+                    manifest["target_table"],
+                    provisional["task"]["task_id"])
+                new_item=stateful_catalog_runtime.compile_rebuild_task(
+                    cfg,version,manifest,
+                    scope["source_metadata"],shadow)
+                if list(new_item["task"]["target_schema"])!=list(
+                    old_task["target_schema"]
                 ):
                     return dict(
                         status="rebuild_required",
                         version=version,
                         reason=(
-                            "stateful semantic rebuild source schema differs "
-                            "from durable shared state: "+relation),
+                            "online stateful semantic rebuild currently requires "
+                            "an unchanged target schema; publish a new sink or "
+                            "restart for schema migration: "+sink),
                         stateful_changed_sinks=stateful_changed)
-            base=stateful_task_plan.compile_ir(
-                manifest,cfg["mysql"]["database"],
-                scope["source_metadata"])
-            if str(base["kind"])!=str(old_item["kind"]):
-                return dict(
-                    status="rebuild_required",
-                    version=version,
-                    reason=(
-                        "online semantic rebuild does not yet change "
-                        "stateful operator kind: "+sink),
-                    stateful_changed_sinks=stateful_changed)
-            inferred=stateful_catalog_runtime.infer_target_schema(
-                base["kind"],base["ir"])
-            provisional=stateful_task_plan.compile_task(
-                manifest,version,cfg["mysql"]["database"],
-                scope["source_metadata"],inferred)
-            shadow=stateful_rebuild.shadow_target(
-                manifest["target_table"],
-                provisional["task"]["task_id"])
-            new_item=stateful_catalog_runtime.compile_rebuild_task(
-                cfg,version,manifest,
-                scope["source_metadata"],shadow)
-            if list(new_item["task"]["target_schema"])!=list(
-                old_task["target_schema"]
-            ):
-                return dict(
-                    status="rebuild_required",
-                    version=version,
-                    reason=(
-                        "online stateful semantic rebuild currently requires "
-                        "an unchanged target schema; publish a new sink or "
-                        "restart for schema migration: "+sink),
-                    stateful_changed_sinks=stateful_changed)
-            if mapping_key(new_item["mapping"]) in set(
-                candidate["by_table"]
-            ):
-                return dict(
-                    status="rebuild_required",
-                    version=version,
-                    reason=(
-                        "stateful/stateless sink identity collision during "
-                        "semantic rebuild: "+sink),
-                    stateful_changed_sinks=stateful_changed)
-            existing=stateful_rebuild.maybe_info(
-                probe,sink)
-            if existing is not None and existing["phase"] not in {
-                "complete","failed"
-            } and (
-                existing["old_task_id"]!=old_task["task_id"]
-                or existing["new_task_id"]
-                !=new_item["task"]["task_id"]
-            ):
-                return dict(
-                    status="restart_required",
-                    version=version,
-                    reason=(
-                        "another durable semantic rebuild is already active "
-                        "for sink "+sink),
-                    stateful_changed_sinks=stateful_changed)
-        finally:
-            probe.close()
-        current_compiled=stateful_catalog_runtime.compiled_by_sink(
-            runtime.get("stateful_tasks",()))
-        candidate_compiled=[]
-        for candidate_sink in candidate_stateful:
-            if candidate_sink==sink:
-                candidate_compiled.append(
-                    new_item)
-            else:
-                retained=current_compiled.get(
-                    candidate_sink)
-                if retained is None:
+                if mapping_key(new_item["mapping"]) in set(
+                    candidate["by_table"]
+                ):
+                    return dict(
+                        status="rebuild_required",
+                        version=version,
+                        reason=(
+                            "stateful/stateless sink identity collision during "
+                            "semantic rebuild: "+sink),
+                        stateful_changed_sinks=stateful_changed)
+                existing=stateful_rebuild.maybe_info(
+                    probe,sink)
+                if existing is not None and existing["phase"] not in {
+                    "complete","failed"
+                } and (
+                    existing["old_task_id"]!=old_task["task_id"]
+                    or existing["new_task_id"]
+                    !=new_item["task"]["task_id"]
+                ):
                     return dict(
                         status="restart_required",
                         version=version,
                         reason=(
-                            "live runtime lacks retained stateful task "
-                            +candidate_sink))
+                            "another durable semantic rebuild is already active "
+                            "for sink "+sink),
+                        stateful_changed_sinks=stateful_changed)
+                replacements[sink]=new_item
+                rebuild_specs.append(dict(
+                    sink=sink,
+                    old=old_item,
+                    new=new_item,
+                    shadow_target=shadow,
+                    logical_target=str(
+                        manifest["target_table"]),
+                ))
+        finally:
+            probe.close()
+
+        current_compiled=stateful_catalog_runtime.compiled_by_sink(
+            runtime.get("stateful_tasks",()))
+        candidate_compiled=[]
+        for candidate_sink in candidate_stateful:
+            replacement=replacements.get(
+                candidate_sink)
+            if replacement is not None:
                 candidate_compiled.append(
-                    retained)
+                    replacement)
+                continue
+            retained=current_compiled.get(
+                candidate_sink)
+            if retained is None:
+                return dict(
+                    status="restart_required",
+                    version=version,
+                    reason=(
+                        "live runtime lacks retained stateful task "
+                        +candidate_sink))
+            candidate_compiled.append(
+                retained)
         candidate["stateful_candidate_tasks"]=candidate_compiled
-        candidate["stateful_rebuilds"]=[dict(
-            sink=sink,
-            old=old_item,
-            new=new_item,
-            shadow_target=shadow,
-            logical_target=str(
-                manifest["target_table"]),
-        )]
+        candidate["stateful_rebuilds"]=rebuild_specs
         validation=dict(
             status="rebuild_pending",
             version=version,
             reason=(
-                "semantic replacement will build an isolated shadow "
-                "generation and atomically swap after a common visible "
-                "source frontier"),
+                "semantic replacements will build isolated shadow "
+                "generations and atomically swap each sink after its common "
+                "visible source frontier; global plan activation waits for "
+                "all replacements"),
             history_mode="stateful_shadow_rebuild",
-            stateful_changed_sinks=[sink],
-            shadow_target=shadow)
+            stateful_changed_sinks=list(
+                stateful_changed),
+            shadow_targets={
+                spec["sink"]:spec["shadow_target"]
+                for spec in rebuild_specs
+            })
+        if len(rebuild_specs)==1:
+            validation["shadow_target"]=rebuild_specs[
+                0]["shadow_target"]
         with runtime["plan_lock"]:
             runtime.setdefault(
                 "validated_catalog_plans",{})[
