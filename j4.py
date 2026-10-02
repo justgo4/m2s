@@ -382,6 +382,67 @@ def metrics_status_record(runtime, cfg, prepared, state):
     return record
 
 
+def stateful_runtime_summary(con):
+    def grouped(table,column):
+        return {
+            str(row[0]):int(row[1])
+            for row in con.execute(
+                "SELECT "+column+",COUNT(*) FROM "+table
+                +" GROUP BY "+column
+            ).fetchall()
+        }
+
+    physical_health=grouped(
+        "physical_states","health")
+    size_rows=con.execute("""
+        SELECT kind,COALESCE(SUM(rows),0),
+               COALESCE(SUM(payload_bytes),0)
+        FROM stateful_state_sizes
+        GROUP BY kind
+    """).fetchall()
+    sizes={
+        str(row[0]):dict(
+            rows=int(row[1]),
+            payload_bytes=int(row[2]),
+        )
+        for row in size_rows
+    }
+    rebuild_phases=grouped(
+        "stateful_rebuilds","phase")
+    return dict(
+        aggregate_tasks=grouped(
+            "aggregate_task_descriptors","status"),
+        join_tasks=grouped(
+            "join_task_descriptors","status"),
+        aggregate_shared_followers=int(con.execute(
+            "SELECT COUNT(*) FROM aggregate_shared_followers"
+        ).fetchone()[0]),
+        join_shared_followers=int(con.execute(
+            "SELECT COUNT(*) FROM join_shared_followers"
+        ).fetchone()[0]),
+        sharing=stateful_share_policy.status(con),
+        physical=dict(
+            total=int(con.execute(
+                "SELECT COUNT(*) FROM physical_states"
+            ).fetchone()[0]),
+            health=physical_health,
+            refs=int(con.execute(
+                "SELECT COUNT(*) FROM physical_state_refs"
+            ).fetchone()[0]),
+            pins=int(con.execute(
+                "SELECT COUNT(*) FROM physical_state_pins"
+            ).fetchone()[0]),
+            sizes=sizes,
+        ),
+        rebuilds=dict(
+            active=sum(
+                count for phase,count in rebuild_phases.items()
+                if phase not in {"complete","failed"}),
+            phases=rebuild_phases,
+        ),
+    )
+
+
 def final_run_summary(runtime, cfg, prepared, con, reason):
     metrics = runtime["metrics"]
     now = time.time()
@@ -433,6 +494,7 @@ def final_run_summary(runtime, cfg, prepared, con, reason):
             quarantined_tables=dict(runtime.get("quarantined_tables",{})),
             health="degraded" if runtime.get("quarantined_tables") else "normal",
         ),
+        stateful=stateful_runtime_summary(con),
     )
     metrics_path,summary_path = report_paths(cfg)
     append_report(metrics_path,summary,cfg.get("metrics_max_bytes",64*1024*1024))
