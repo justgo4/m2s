@@ -201,6 +201,8 @@ def run(rows,part_rows,key_space):
             part_rows=part_rows,
             parts=(rows+part_rows-1)//part_rows,
             key_space=key_space,
+            sqlite_temp_store=source_state.temp_store_info(
+                con),
             sqlite_journal_mode=str(
                 con.execute(
                     "PRAGMA journal_mode").fetchone()[0]),

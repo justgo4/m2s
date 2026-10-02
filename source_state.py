@@ -27,6 +27,44 @@ SOURCE_ARROW_MAGIC = b"M2SSRC1\0"
 SOURCE_ARROW_WRITE_OPTIONS = pa.ipc.IpcWriteOptions(compression="zstd")
 
 
+def temp_store_info(con):
+    mode=int(con.execute("PRAGMA temp_store").fetchone()[0])
+    options=[
+        str(row[0])
+        for row in con.execute("PRAGMA compile_options")
+        if str(row[0]).startswith("TEMP_STORE=")
+    ]
+    return dict(
+        mode=mode,
+        name={0:"default",1:"file",2:"memory"}.get(
+            mode,"unknown"),
+        compile_option=(
+            options[0] if len(options)==1
+            else ",".join(sorted(options)) or None
+        ),
+    )
+
+
+def require_file_temp_store(con):
+    info=temp_store_info(con)
+    if info["mode"]==1:
+        return info
+    if con.execute("""
+        SELECT 1 FROM sqlite_temp_master
+        LIMIT 1
+    """).fetchone() is not None:
+        raise RuntimeError(
+            "SQLite temp_store must be configured before TEMP objects exist")
+    con.execute("PRAGMA temp_store=FILE")
+    info=temp_store_info(con)
+    if info["mode"]!=1:
+        raise RuntimeError(
+            "SQLite temp_store=FILE is required for bounded source staging; "
+            "actual=%s compile_option=%s"
+            % (info["name"],info["compile_option"]))
+    return info
+
+
 @contextlib.contextmanager
 def transaction(con):
     if con.in_transaction:
@@ -551,6 +589,9 @@ def _values_key(values, row_index, pk_columns):
 def _ensure_apply_staging(con):
     # Durable replay comes from source_commit_parts. This is one-transaction
     # scratch, so keeping it in the main WAL only duplicates write traffic.
+    # FILE is a hard contract so a large transaction cannot silently turn the
+    # whole net-change table into process RSS under a MEMORY/default build.
+    require_file_temp_store(con)
     con.execute("""
         CREATE TEMP TABLE IF NOT EXISTS source_apply_actions(
             seq INTEGER NOT NULL,
@@ -567,6 +608,7 @@ def _ensure_apply_staging(con):
 def _ensure_snapshot_staging(con):
     # Snapshot cursor/source_versions are durable. Page scratch is rebuildable
     # and therefore belongs in the connection-local TEMP schema.
+    require_file_temp_store(con)
     con.execute("""
         CREATE TEMP TABLE IF NOT EXISTS source_snapshot_rows(
             table_name TEXT NOT NULL,

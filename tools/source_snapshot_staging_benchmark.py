@@ -145,6 +145,8 @@ def run(rows,batch_rows):
             rows=rows,
             batch_rows=batch_rows,
             batches=(rows+batch_rows-1)//batch_rows,
+            sqlite_temp_store=source_state.temp_store_info(
+                con),
             sqlite_journal_mode=str(
                 con.execute("PRAGMA journal_mode").fetchone()[0]),
             sqlite_synchronous=int(

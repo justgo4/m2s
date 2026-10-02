@@ -118,6 +118,25 @@ def assert_scratch_schema_migration(directory):
     con.close()
 
 
+def assert_temp_store_contract(directory):
+    path=os.path.join(
+        directory,"temp-store-contract.sqlite3")
+    con=open_db(path)
+    before=source_state.temp_store_info(con)
+    source_state._ensure_apply_staging(con)
+    after=source_state.temp_store_info(con)
+    assert after["mode"]==1,(before,after)
+    assert after["name"]=="file",after
+    source_state._ensure_snapshot_staging(con)
+    assert source_state.temp_store_info(con)==after
+    assert con.execute("""
+        SELECT COUNT(*) FROM sqlite_temp_master
+        WHERE type='table'
+          AND name IN ('source_apply_actions','source_snapshot_rows')
+    """).fetchone()[0]==2
+    con.close()
+
+
 def assert_bounded_gc_contract(directory):
     path=os.path.join(
         directory,"bounded-gc.sqlite3")
@@ -395,6 +414,7 @@ def main():
         assert_log_stats_migration(td)
         assert_apply_staging_atomicity(td)
         assert_scratch_schema_migration(td)
+        assert_temp_store_contract(td)
         assert_gc_index_contract(td)
         assert_bounded_gc_contract(td)
         path = os.path.join(td, "state.sqlite3")
