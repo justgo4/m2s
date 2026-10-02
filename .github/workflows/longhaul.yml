@@ -92,6 +92,10 @@ jobs:
           PY
       - name: Run fixed-resource longhaul smoke
         run: |
+          MYSQL_RESOURCE_PID="$(docker inspect --format '{{.State.Pid}}' m2s-longhaul-mysql)"
+          STARROCKS_RESOURCE_PID="$(docker inspect --format '{{.State.Pid}}' m2s-longhaul-starrocks)"
+          test "$MYSQL_RESOURCE_PID" -gt 0
+          test "$STARROCKS_RESOURCE_PID" -gt 0
           python tools/longhaul_workload.py --isolated \
             --load-mode "$LONGHAUL_PROTOCOL" \
             --rows "$LONGHAUL_ROWS" \
@@ -100,6 +104,9 @@ jobs:
             --dynamic-tasks "$LONGHAUL_TASKS" \
             --fault-every-seconds "$LONGHAUL_FAULT_EVERY" \
             --memory-mb 4096 \
+            --mysql-resource-pid "$MYSQL_RESOURCE_PID" \
+            --starrocks-fe-resource-pid "$STARROCKS_RESOURCE_PID" \
+            --starrocks-be-resource-pid "$STARROCKS_RESOURCE_PID" \
             --output benchmark-results/longhaul-workload.json
       - name: Evaluate smoke evidence with production SLO latency thresholds
         run: |
