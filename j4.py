@@ -9518,6 +9518,303 @@ def stateful_finish_retirement(
     return True
 
 
+def stateful_rebuild_writer_drained(
+        con,sink_key,task_version
+):
+    sink_key=str(sink_key)
+    writer_version=stateful_task_plan.writer_plan_version(
+        task_version)
+    if con.execute("""
+        SELECT 1 FROM active_jobs
+        WHERE table_name=? AND plan_version=?
+        LIMIT 1
+    """,(sink_key,writer_version)).fetchone():
+        return False
+    if con.execute("""
+        SELECT 1 FROM deliveries
+        WHERE table_name=? AND plan_version=?
+        LIMIT 1
+    """,(sink_key,writer_version)).fetchone():
+        return False
+    if con.execute("""
+        SELECT 1 FROM merge_uncertain
+        WHERE table_name=? LIMIT 1
+    """,(sink_key,)).fetchone():
+        return False
+    return True
+
+
+def stateful_rebuild_remote_state(cfg,rebuild):
+    marker=stateful_rebuild.remote_marker(
+        rebuild["new_task_id"])
+    logical=stateful_rebuild_remote_marker(
+        cfg,rebuild["logical_target"])
+    shadow=stateful_rebuild_remote_marker(
+        cfg,rebuild["shadow_target"])
+    if logical==marker and shadow!=marker:
+        return "swapped"
+    if shadow==marker and logical!=marker:
+        return "shadow"
+    raise RuntimeError(
+        "stateful rebuild remote marker is ambiguous "
+        "sink=%s logical_marker=%r shadow_marker=%r expected=%r"
+        % (
+            rebuild["sink_key"],logical,shadow,marker))
+
+
+def stateful_rebuild_swap_remote(cfg,rebuild):
+    state=stateful_rebuild_remote_state(
+        cfg,rebuild)
+    if state=="swapped":
+        return False
+    with mysql_connect(cfg,target=True) as target:
+        with target.cursor() as cur:
+            cur.execute(
+                "ALTER TABLE "
+                +sql_name(rebuild["logical_target"],True)
+                +" SWAP WITH "
+                +sql_name(rebuild["shadow_target"],True))
+    if stateful_rebuild_remote_state(
+        cfg,rebuild
+    )!="swapped":
+        raise RuntimeError(
+            "StarRocks returned from SWAP without publishing rebuild")
+    return True
+
+
+def stateful_rebuild_cleanup_remote(cfg,rebuild):
+    marker=stateful_rebuild.remote_marker(
+        rebuild["new_task_id"])
+    logical=stateful_rebuild_remote_marker(
+        cfg,rebuild["logical_target"])
+    if logical not in {marker,""}:
+        raise RuntimeError(
+            "stateful rebuild logical table marker changed before cleanup")
+    with mysql_connect(cfg,target=True) as target:
+        with target.cursor() as cur:
+            if target_table_exists(
+                cur,cfg,rebuild["shadow_target"]
+            ):
+                cur.execute(
+                    "DROP TABLE "
+                    +sql_name(
+                        rebuild["shadow_target"],True))
+            if target_table_exists(
+                cur,cfg,rebuild["logical_target"]
+            ):
+                cur.execute(
+                    "ALTER TABLE "
+                    +sql_name(
+                        rebuild["logical_target"],True)
+                    +" COMMENT %s",("",))
+
+
+def stateful_rebuild_freeze_if_ready(
+        con,item,result
+):
+    rebuild=stateful_rebuild.for_task(
+        con,item["task"]["task_id"])
+    if (
+        rebuild is None
+        or rebuild["new_task_id"]
+        !=item["task"]["task_id"]
+        or rebuild["phase"]!="building_shadow"
+        or result.get("phase")!="ready"
+    ):
+        return rebuild
+    consumer=result.get("consumer")
+    if consumer is None:
+        return rebuild
+    frontier=int(consumer["watermark"])
+    rebuild=stateful_rebuild.freeze_frontier(
+        con,rebuild["sink_key"],frontier)
+    log(
+        "STATEFUL REBUILD FENCE sink=%s frontier=%d old=%s new=%s"
+        % (
+            rebuild["sink_key"],frontier,
+            rebuild["old_task_id"],
+            rebuild["new_task_id"]))
+    return rebuild
+
+
+def stateful_rebuild_frontier_for_task(
+        con,task_id
+):
+    rebuild=stateful_rebuild.for_task(
+        con,task_id)
+    if (
+        rebuild is None
+        or rebuild["frontier"] is None
+        or rebuild["phase"] not in {
+            "fencing","ready_to_swap"
+        }
+    ):
+        return rebuild,None
+    return rebuild,int(rebuild["frontier"])
+
+
+def stateful_rebuild_switch_runtime(
+        runtime,rebuild,candidate
+):
+    sink=str(rebuild["sink_key"])
+    new_item=next(
+        item for item in candidate[
+            "stateful_candidate_tasks"]
+        if item["task"]["task_id"]
+        ==rebuild["new_task_id"])
+    old_item=next(
+        item for item in runtime.get(
+            "stateful_tasks",())
+        if item["task"]["task_id"]
+        ==rebuild["old_task_id"])
+    logical=dict(
+        new_item.get(
+            "logical_mapping")
+        or new_item["mapping"])
+    logical["sr_table"]=str(
+        rebuild["logical_target"])
+    live_mapping=new_item["mapping"]
+    live_mapping.clear()
+    live_mapping.update(logical)
+    version=stateful_task_plan.writer_plan_version(
+        new_item["task"]["plan_version"])
+    old_version=stateful_task_plan.writer_plan_version(
+        old_item["task"]["plan_version"])
+    with runtime["plan_lock"]:
+        runtime.setdefault(
+            "stateful_mappings",{})[
+                (version,sink)]=live_mapping
+        runtime["stateful_mappings"].pop(
+            (old_version,sink),None)
+        runtime["active_plan_version"]=int(
+            candidate["version"])
+        runtime["pending_plan"]=None
+        runtime["deferred_plan"]=None
+        runtime["stateful_tasks"]=list(
+            candidate["stateful_candidate_tasks"])
+        active_ids=runtime.setdefault(
+            "stateful_active_task_ids",set())
+        active_ids.discard(
+            rebuild["old_task_id"])
+        active_ids.add(
+            rebuild["new_task_id"])
+        runtime.setdefault(
+            "stateful_rebuild_plans",{}).pop(
+                sink,None)
+    return old_item,new_item
+
+
+def stateful_rebuild_try_cutover(
+        con,cfg,runtime,item
+):
+    task=item["task"]
+    rebuild=stateful_rebuild.for_task(
+        con,task["task_id"])
+    if (
+        rebuild is None
+        or task["task_id"]!=rebuild["new_task_id"]
+        or rebuild["frontier"] is None
+        or rebuild["phase"] not in {
+            "fencing","ready_to_swap"
+        }
+    ):
+        return False
+    frontier=int(rebuild["frontier"])
+    kind=str(rebuild["kind"])
+    old=stateful_durable_task(
+        con,kind,rebuild["old_task_id"])
+    new=stateful_durable_task(
+        con,kind,rebuild["new_task_id"])
+    try:
+        old_consumer=source_state.consumer_info(
+            con,old["consumer_id"])
+        new_consumer=source_state.consumer_info(
+            con,new["consumer_id"])
+    except KeyError:
+        return False
+    old_visible=stateful_output_frontier(
+        con,kind,old["consumer_id"])
+    new_visible=stateful_output_frontier(
+        con,kind,new["consumer_id"])
+    if not stateful_rebuild.frontier_reached(
+        rebuild,
+        old_consumer["watermark"],
+        new_consumer["watermark"],
+        old_visible,new_visible
+    ):
+        return False
+    if not (
+        stateful_rebuild_writer_drained(
+            con,rebuild["sink_key"],
+            old["plan_version"])
+        and stateful_rebuild_writer_drained(
+            con,rebuild["sink_key"],
+            new["plan_version"])
+    ):
+        return False
+
+    if rebuild["phase"]=="fencing":
+        rebuild=stateful_rebuild.mark_ready_to_swap(
+            con,rebuild["sink_key"])
+    swapped=stateful_rebuild_swap_remote(
+        cfg,rebuild)
+    rebuild=stateful_rebuild.mark_swapped(
+        con,rebuild["sink_key"])
+
+    candidate=runtime.get(
+        "stateful_rebuild_plans",{}).get(
+            rebuild["sink_key"])
+    if candidate is None:
+        raise RuntimeError(
+            "stateful rebuild candidate plan disappeared before cutover")
+    with state_transaction(con):
+        meta_set(
+            con,"active_plan_version",
+            int(candidate["version"]))
+        meta_set(
+            con,"fingerprint",
+            candidate["fingerprint"])
+        meta_set(
+            con,"plan_cutover_position",
+            meta_get(con,"read_position"))
+        meta_set(
+            con,"plan_cutover_time",
+            time.time())
+        meta_set(
+            con,"plan_history_mode",
+            "stateful_shadow_rebuild")
+        stateful_rebuild.mark_cleanup(
+            con,rebuild["sink_key"])
+
+    old_item,new_item=stateful_rebuild_switch_runtime(
+        runtime,rebuild,candidate)
+    retired=stateful_catalog_runtime.retire_task(
+        con,cfg,kind,old)
+    stateful_physical_registry.gc_retired(
+        con,kind=kind)
+    stateful_rebuild_cleanup_remote(
+        cfg,rebuild)
+    stateful_rebuild.mark_complete(
+        con,rebuild["sink_key"])
+    catalog_activation_record(
+        runtime,dict(
+            status="active",
+            version=int(candidate["version"]),
+            history_mode="stateful_shadow_rebuild",
+            stateful_changed_sinks=[
+                rebuild["sink_key"]]))
+    log(
+        "STATEFUL REBUILD ACTIVE sink=%s frontier=%d old=%s new=%s "
+        "remote_swap=%d old_status=%s"
+        % (
+            rebuild["sink_key"],frontier,
+            rebuild["old_task_id"],
+            rebuild["new_task_id"],
+            1 if swapped else 0,
+            retired["task"]["status"]))
+    return True
+
+
 def stateful_task_worker(item, cfg, runtime):
     con=open_state(cfg["state"])
     stop=runtime["stop"]
