@@ -415,6 +415,8 @@ def evaluate_workload(
         code_revision=str(
             software.get("code_revision") or ""
         ).strip().lower()
+        code_worktree_clean=software.get(
+            "code_worktree_clean")
         mysql_version=str(
             software.get("mysql_version") or ""
         ).strip()
@@ -458,8 +460,15 @@ def evaluate_workload(
         ):
             failures.append(
                 "software_fingerprint_incomplete")
+        if (
+            require_profile is not None
+            and code_worktree_clean is not True
+        ):
+            failures.append(
+                "code_worktree_not_clean")
         evidence["software"]=dict(
             code_revision=code_revision,
+            code_worktree_clean=code_worktree_clean,
             mysql_version=mysql_version,
             mysql_gtid_mode=mysql_gtid_mode,
             mysql_binlog_format=mysql_binlog_format,
