@@ -10,13 +10,14 @@ import p11_profile
 
 
 def main():
-    assert p11_profile.NAME=="p11-50m-50rps-72h-v2"
+    assert p11_profile.NAME=="p11-50m-50rps-72h-v3"
     expected=dict(
         load_mode="merge_async",
         rows=50_000_000,
         rows_per_second=50,
         duration_seconds=72*3600,
         dynamic_tasks=10,
+        dynamic_task_mix="mixed",
         fault_every_seconds=6*3600,
         sample_seconds=1.0,
         fault_recovery_timeout_seconds=1800.0,
@@ -35,13 +36,16 @@ def main():
     changed=dict(expected)
     changed["rows_per_second"]=51
     changed["memory_mb"]=4096
+    changed["dynamic_task_mix"]="aggregate"
     mismatch=p11_profile.mismatches(changed)
     assert set(mismatch)=={
-        "rows_per_second","memory_mb"}
+        "rows_per_second","memory_mb","dynamic_task_mix"}
     assert mismatch["rows_per_second"]==dict(
         expected=50,actual=51)
     assert mismatch["memory_mb"]==dict(
         expected=8192,actual=4096)
+    assert mismatch["dynamic_task_mix"]==dict(
+        expected="mixed",actual="aggregate")
 
     print(
         "p11_profile_test ok exact_identity exact_parameters "
