@@ -6723,7 +6723,10 @@ def retry_waiting_stateful_admission(
                 plan_hash=str(
                     latest.get("plan_hash") or "")))
         outcomes.append(dict(result))
-        if str(result.get("status",""))=="active":
+        # The wait queue is only for resource admission. Any result other than
+        # resource_waiting means this retry crossed that gate; do not keep
+        # reinstalling a hot_pending/rebuild_pending/restart-required plan.
+        if str(result.get("status",""))!="resource_waiting":
             con=open_state(cfg["state"])
             try:
                 stateful_admission.clear_wait(
