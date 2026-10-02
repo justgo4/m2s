@@ -8,6 +8,7 @@ import datetime
 import decimal
 import gzip
 import hashlib
+import hmac
 import io
 import os
 import pickle
@@ -8456,6 +8457,13 @@ def merge_delivery_worker(mapping, worker_id, cfg, runtime):
             if merge_table_quarantined(runtime,table):
                 if engines:
                     close_plan_engines(engines)
+                if (
+                    worker_id == 0
+                    and cfg.get("merge_uncertain_recovery","off")
+                    == "idempotent"
+                ):
+                    reconcile_merge_quarantine(
+                        con,handle,table,cfg,runtime)
                 wake.wait(1)
                 wake.clear()
                 continue
