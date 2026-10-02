@@ -7,9 +7,12 @@ adapters, then attaches task ownership through physical-state refs.
 """
 import aggregate_physical_state
 import aggregate_shared_runtime
+import aggregate_task_catalog
 import join_physical_state
 import join_shared_runtime
+import join_task_catalog
 import physical_state_catalog
+import task_generation
 
 
 def _adapter(kind):
@@ -67,32 +70,148 @@ def retire(con,kind,task):
         con,identity,"retired")
 
 
+def _task_info(con,kind,task_id):
+    if kind=="aggregate":
+        return aggregate_task_catalog.task_info(
+            con,task_id)
+    if kind=="inner_join":
+        return join_task_catalog.task_info(
+            con,task_id)
+    raise RuntimeError(
+        "unsupported stateful physical runtime kind: "
+        +str(kind))
+
+
+def _shared_binding(con,kind,task_id):
+    if kind=="aggregate":
+        return aggregate_shared_runtime.maybe_binding(
+            con,task_id)
+    if kind=="inner_join":
+        return join_shared_runtime.maybe_binding(
+            con,task_id)
+    raise RuntimeError(
+        "unsupported stateful physical runtime kind: "
+        +str(kind))
+
+
+def _stream_state_id(con,kind,consumer_id):
+    if kind=="aggregate":
+        table="aggregate_output_streams"
+    elif kind=="inner_join":
+        table="join_output_streams"
+    else:
+        raise RuntimeError(
+            "unsupported stateful physical runtime kind: "
+            +str(kind))
+    row=con.execute(
+        "SELECT state_id FROM "+table+" WHERE consumer_id=?",
+        (str(consumer_id),)).fetchone()
+    if row is None:
+        raise RuntimeError(
+            "active stateful task is missing its output stream")
+    return str(row[0])
+
+
+def _shared_identity(kind,state_id):
+    if kind=="aggregate":
+        return aggregate_physical_state.instance_id(
+            state_id)
+    if kind=="inner_join":
+        return join_physical_state.instance_id(
+            state_id)
+    raise RuntimeError(
+        "unsupported stateful physical runtime kind: "
+        +str(kind))
+
+
 def sync_runtime_result(con,item,result):
     task=result.get("task") or item["task"]
     generation=result.get("generation") or {}
+    kind=str(item["kind"])
     if result.get("shared_physical"):
-        binding=result.get("shared_state_id")
-        if not binding:
+        reported=result.get("shared_state_id")
+        if not reported:
             raise RuntimeError(
                 "shared stateful runtime omitted physical state identity")
-        if item["kind"]=="aggregate":
-            identity=aggregate_physical_state.instance_id(
-                binding)
-        elif item["kind"]=="inner_join":
-            identity=join_physical_state.instance_id(
-                binding)
-        else:
-            raise RuntimeError(
-                "unsupported shared physical runtime kind: "
-                +str(item["kind"]))
-        return physical_state_catalog.state_info(
-            con,identity)
+
+        # runner.step() and registry sync are separate calls. Owner retirement
+        # can legally promote a follower between them. Re-resolve durable
+        # ownership under one SQLite write lock instead of trusting the stale
+        # state id returned by the earlier step.
+        with physical_state_catalog.transaction(con):
+            current=_task_info(
+                con,kind,task["task_id"])
+            if current["status"] in {
+                "retired","failed"
+            }:
+                return None
+
+            binding=_shared_binding(
+                con,kind,current["task_id"])
+            stream_state=_stream_state_id(
+                con,kind,current["consumer_id"])
+
+            if binding is not None:
+                shared_state=str(
+                    binding["shared_state_id"])
+                if stream_state!=shared_state:
+                    raise RuntimeError(
+                        "shared follower durable binding and output "
+                        "stream state disagree")
+                identity=_shared_identity(
+                    kind,shared_state)
+                state=physical_state_catalog.state_info(
+                    con,identity)
+                refs=physical_state_catalog.state_refs(
+                    con,identity)
+                if not any(
+                    row["owner_id"]==current["task_id"]
+                    and row["role"]=="dependency"
+                    for row in refs
+                ):
+                    raise RuntimeError(
+                        "shared follower physical dependency ref is missing")
+                return state
+
+            # No binding means a concurrent owner retirement may have promoted
+            # this follower to its private backing state. Promotion updates the
+            # stream and removes the binding in the same transaction, so any
+            # other shape is a real durable lifecycle inconsistency.
+            if stream_state!=str(current["state_id"]):
+                raise RuntimeError(
+                    "shared follower binding disappeared without "
+                    "private output stream promotion")
+            durable_generation=task_generation.maybe_info(
+                con,current["sink_key"],
+                current["plan_version"])
+            if durable_generation is None:
+                raise RuntimeError(
+                    "promoted stateful follower is missing its generation")
+            if (
+                durable_generation["generation_id"]
+                !=current["generation_id"]
+            ):
+                raise RuntimeError(
+                    "promoted stateful follower generation identity changed")
+            if (
+                current["status"]=="active"
+                and durable_generation["status"]!="ready"
+            ):
+                raise RuntimeError(
+                    "promoted active stateful follower is not ready")
+            if durable_generation["status"]=="ready":
+                return sync_ready(
+                    con,kind,current,
+                    watermark=result.get(
+                        "visible_frontier"))
+            return None
+
     if (
         str(task.get("status"))=="active"
         and str(generation.get("status"))=="ready"
     ):
         return sync_ready(
-            con,item["kind"],task,
+            con,kind,task,
             watermark=result.get("visible_frontier"))
     return None
 
