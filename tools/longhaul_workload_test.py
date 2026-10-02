@@ -56,10 +56,16 @@ def main():
     assert len(calls)==3
     assert all("MAX(" not in sql for sql in calls)
 
+    # Recovery must keep accepting source progress and include markers
+    # created after the fault started in the catch-up boundary.
     commit_times={
         100:10.0,
-        101:11.0,
     }
+    progress_calls=[]
+    def progress():
+        progress_calls.append(1)
+        if len(progress_calls)==1:
+            commit_times[101]=11.0
     clock=iter([
         12.0,12.1,12.2,12.3,
         12.4,12.5,12.6,12.7,
@@ -83,10 +89,32 @@ def main():
         recovered=longhaul_workload.recover_after_fault(
             object(),Path("daemon.log"),
             Path("state.sqlite3"),{},
-            commit_times,10)
+            commit_times,10,
+            progress=progress)
+    assert len(progress_calls)==2
     assert commit_times=={}
     assert len(recovered["latencies"])==2
     assert recovered["state"]["base_applied_seq"]==7
+
+    startup_progress=[]
+    startup_clock=iter([20.0,20.1,20.2])
+    with patch.object(
+        longhaul_workload,"assert_live"
+    ), patch.object(
+        longhaul_workload,"read_state",
+        side_effect=[None,dict(ready=True)]
+    ), patch.object(
+        longhaul_workload.time,"monotonic",
+        side_effect=lambda: next(startup_clock)
+    ), patch.object(
+        longhaul_workload.time,"sleep"
+    ):
+        started=longhaul_workload.wait_started(
+            object(),Path("daemon.log"),
+            Path("state.sqlite3"),
+            progress=lambda: startup_progress.append(1))
+    assert started==dict(ready=True)
+    assert len(startup_progress)==2
 
     expected=[
         (0,2,10),
@@ -168,7 +196,7 @@ def main():
 
     print(
         "longhaul_workload_test ok percentile source_ready "
-        "per_transaction_sentinel crash_catchup aggregate_exactness "
+        "per_transaction_sentinel continuous_source_during_fault crash_catchup aggregate_exactness "
         "evidence_copy",
         flush=True,
     )
