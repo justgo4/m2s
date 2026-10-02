@@ -162,7 +162,10 @@ def workload():
             ),
         },
         live_rows=int(50*elapsed),
-        latency_samples=int(elapsed),
+        latency_scope="steady_state_ready_non_recovery",
+        healthy_ready_seconds=3600.0,
+        healthy_duration_seconds=elapsed-3600.0,
+        latency_samples=int(elapsed-3600.0),
         latency_p50_seconds=1.0,
         latency_p95_seconds=4.9,
         latency_p99_seconds=9.9,
@@ -369,6 +372,14 @@ def main():
         "source_rows_during_fault"]==[200,250]
     assert full["evidence"]["dynamic_tasks"]["ready"]==10
     assert full["evidence"]["latency_over_10_seconds"]==20
+    assert (
+        full["evidence"]["latency_scope"]
+        =="steady_state_ready_non_recovery"
+    )
+    assert (
+        full["evidence"]["latency_sample_denominator_seconds"]
+        ==workload()["duration_seconds"]-3600.0
+    )
     assert full["evidence"]["recovery_latency_samples"]==8
     assert full["evidence"]["debt"]["max_rowset"]==73
     assert full["evidence"]["resources"]["logical_cpus"]==8
@@ -445,6 +456,21 @@ def main():
         bad,require_profile=p11_profile.NAME)
     assert not full["ok"]
     assert "workload_profile_mismatch" in full["failures"]
+
+    bad=workload()
+    bad["latency_scope"]="all_runtime"
+    full=evaluate_workload(
+        bad,require_profile=p11_profile.NAME)
+    assert not full["ok"]
+    assert "latency_scope_mismatch" in full["failures"]
+
+    bad=workload()
+    bad["healthy_ready_seconds"]=None
+    bad["healthy_duration_seconds"]=None
+    full=evaluate_workload(
+        bad,require_profile=p11_profile.NAME)
+    assert not full["ok"]
+    assert "healthy_interval_missing" in full["failures"]
 
     bad=workload()
     bad["software_fingerprint"]["code_worktree_clean"]=False
@@ -585,7 +611,7 @@ def main():
         "rowset_recovery overflow_fail_closed reproducible_resource_fingerprint "
         "daemon_process_resource_evidence daemon_rss_budget source_sink_resource_evidence "
         "service_limit_drift_fail_closed scope_overlap_fail_closed exact_profile_gate "
-        "clean_worktree_gate software_fingerprint",
+        "healthy_interval_latency_gate clean_worktree_gate software_fingerprint",
         flush=True,
     )
 

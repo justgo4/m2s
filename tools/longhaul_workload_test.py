@@ -41,12 +41,65 @@ def main():
             returncode=128,stdout="",stderr="failed")
     ):
         assert longhaul_workload.code_worktree_clean() is None
+    class FakeCursor:
+        def __init__(self,source):
+            self.source=source
+        def __enter__(self):
+            return self
+        def __exit__(self,*_):
+            return False
+        def execute(self,sql):
+            if sql.startswith(
+                "SET SESSION sql_log_bin="
+            ):
+                self.source.binlog=int(
+                    sql.rsplit("=",1)[1])
+        def fetchone(self):
+            return (self.source.binlog,)
+
+    class FakeSource:
+        def __init__(self):
+            self.binlog=1
+            self.commits=0
+        def commit(self):
+            self.commits+=1
+        def cursor(self):
+            return FakeCursor(self)
+
+    fake_source=FakeSource()
+    longhaul_workload.set_session_binlog(
+        fake_source,False)
+    assert fake_source.binlog==0
+    longhaul_workload.set_session_binlog(
+        fake_source,True)
+    assert fake_source.binlog==1
+    assert fake_source.commits==2
+
     assert not longhaul_workload.source_ready(None)
     assert not longhaul_workload.source_ready(dict(source=[]))
     assert not longhaul_workload.source_ready(
         dict(source=[("db.events",None)]))
     assert longhaul_workload.source_ready(
         dict(source=[("db.events",7)]))
+    baseline=dict(
+        source=[("db.events",7)],
+        generations=[
+            ("starrocks.events","ready"),
+            ("starrocks.agg_000","ready"),
+        ],
+        aggregate_tasks=[
+            ("starrocks.agg_000","active"),
+        ],
+    )
+    assert longhaul_workload.baseline_ready(
+        baseline)
+    not_ready=dict(baseline)
+    not_ready["generations"]=[
+        ("starrocks.events","history_staged"),
+        ("starrocks.agg_000","ready"),
+    ]
+    assert not longhaul_workload.baseline_ready(
+        not_ready)
 
     calls=[]
     def fake_execute(_cfg,sql):
@@ -84,6 +137,7 @@ def main():
     commit_times={
         100:10.0,
     }
+    healthy_markers={100}
     progress_calls=[]
     def progress():
         progress_calls.append(1)
@@ -113,10 +167,14 @@ def main():
             object(),Path("daemon.log"),
             Path("state.sqlite3"),{},
             commit_times,10,
-            progress=progress)
+            progress=progress,
+            healthy_markers=healthy_markers)
     assert len(progress_calls)==2
     assert commit_times=={}
     assert len(recovered["latencies"])==2
+    assert len(
+        recovered["healthy_latencies"])==1
+    assert not healthy_markers
     assert recovered["state"]["base_applied_seq"]==7
 
     startup_progress=[]
@@ -169,6 +227,10 @@ def main():
         prefix="m2s-longhaul-workdir-test-"
     ) as td:
         root=Path(td)
+        assert longhaul_workload.path_within(
+            root/"child",root)
+        assert not longhaul_workload.path_within(
+            root.parent/"sibling",root)
         explicit=root/"persistent"
         with longhaul_workload.work_directory(
             explicit
@@ -294,9 +356,11 @@ def main():
         ).exists()
 
     print(
-        "longhaul_workload_test ok percentile clean_worktree_probe source_ready "
+        "longhaul_workload_test ok percentile clean_worktree_probe seed_binlog_toggle "
+        "source_ready baseline_ready "
         "per_transaction_sentinel continuous_source_during_fault crash_catchup aggregate_exactness "
-        "work_directory_retention checkpoint_atomic_replace evidence_copy",
+        "work_directory_privacy_boundary work_directory_retention "
+        "checkpoint_atomic_replace evidence_copy",
         flush=True,
     )
 

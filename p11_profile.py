@@ -16,6 +16,7 @@ PARAMETERS=dict(
     sample_seconds=1.0,
     fault_recovery_timeout_seconds=1800.0,
     seed_chunk=10_000,
+    seed_binlog="off",
     snapshot_rows=16_384,
     memory_mb=8192,
     share_mode="adaptive",
