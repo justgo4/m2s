@@ -6103,6 +6103,12 @@ def prepare_hot_stateful_additions(cfg, runtime, candidate):
                     runtime.get("stateful_tasks",()))
             preferences=stateful_share_policy.plan_graph(
                 con,existing_tasks+list(registered),cfg=cfg)
+            # Registration is now durable. Consume any resource-wait record
+            # only after this boundary so a pre-registration crash retains the
+            # exact published plan as a recovery owner for its reservation.
+            stateful_admission.clear_wait(
+                con,additions=registered,
+                plan_version=int(candidate["version"]))
         finally:
             con.close()
         candidate["stateful_additions"]=registered
@@ -6443,6 +6449,12 @@ def activate_stateful_rebuild_candidate(
                 original_comment=intent["original_comment"])
             registered=stateful_catalog_runtime.register_compiled(
                 con,[new])[0]
+            # The rebuild intent and candidate descriptor are durable before
+            # removing the admission wait. A crash earlier must leave the wait
+            # intact so startup can retry the exact published generation.
+            stateful_admission.clear_wait(
+                con,additions=[registered],
+                plan_version=int(candidate["version"]))
             if registered["task"]["descriptor_hash"]!=task[
                 "descriptor_hash"
             ]:
