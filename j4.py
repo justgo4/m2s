@@ -11372,11 +11372,13 @@ def durable_status_snapshot(state_path):
         "file:"+quote(state_path,safe="/")+"?mode=ro",
         uri=True,isolation_level=None)
     try:
-        meta=dict(
-            con.execute(
-                "SELECT key,value FROM meta"
-            ).fetchall()
-        ) if _status_table_exists(con,"meta") else {}
+        has_meta=_status_table_exists(con,"meta")
+        state_format_value=(
+            meta_get(con,"state_format")
+            if has_meta else None)
+        active_plan_value=(
+            meta_get(con,"active_plan_version")
+            if has_meta else None)
 
         source=(
             source_state.status(con)
@@ -11495,11 +11497,11 @@ def durable_status_snapshot(state_path):
             state_path=state_path,
             state_exists=True,
             state_format=(
-                None if meta.get("state_format") is None
-                else int(meta["state_format"])),
+                None if state_format_value is None
+                else int(state_format_value)),
             active_plan_version=(
-                None if meta.get("active_plan_version") is None
-                else int(meta["active_plan_version"])),
+                None if active_plan_value is None
+                else int(active_plan_value)),
             source=source,
             jobs=jobs,
             aggregate_tasks=aggregate_tasks,
