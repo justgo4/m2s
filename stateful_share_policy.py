@@ -30,6 +30,16 @@ def install(con):
             updated REAL NOT NULL);
         CREATE INDEX IF NOT EXISTS stateful_share_decisions_kind
             ON stateful_share_decisions(kind,mode,updated);
+
+        CREATE TABLE IF NOT EXISTS stateful_share_observations(
+            task_id TEXT PRIMARY KEY,
+            samples INTEGER NOT NULL,
+            max_leader_lag INTEGER NOT NULL,
+            max_source_lag INTEGER NOT NULL,
+            max_visible_lag INTEGER NOT NULL,
+            copied_sequences INTEGER NOT NULL,
+            created REAL NOT NULL,
+            updated REAL NOT NULL);
     """)
 
 
@@ -245,3 +255,93 @@ def choose(con,kind,task,candidates,cfg=None):
         selected=metrics["leader_task_id"],
         reuse_mode=metrics["reuse_mode"])
     return chosen
+
+
+
+def observe(
+        con,task_id,leader_watermark,follower_watermark,
+        source_applied,visible_frontier,copied_sequences=0
+):
+    task_id=_text(task_id,"task_id")
+    leader_watermark=int(leader_watermark)
+    follower_watermark=int(follower_watermark)
+    source_applied=int(source_applied)
+    visible_frontier=int(visible_frontier)
+    copied_sequences=max(0,int(copied_sequences))
+    leader_lag=max(0,leader_watermark-follower_watermark)
+    source_lag=max(0,source_applied-follower_watermark)
+    visible_lag=max(0,follower_watermark-visible_frontier)
+    now=time.time()
+    con.execute("""
+        INSERT INTO stateful_share_observations(
+            task_id,samples,max_leader_lag,max_source_lag,
+            max_visible_lag,copied_sequences,created,updated)
+        VALUES(?,1,?,?,?,?,?,?)
+        ON CONFLICT(task_id) DO UPDATE SET
+            samples=stateful_share_observations.samples+1,
+            max_leader_lag=MAX(
+                stateful_share_observations.max_leader_lag,
+                excluded.max_leader_lag),
+            max_source_lag=MAX(
+                stateful_share_observations.max_source_lag,
+                excluded.max_source_lag),
+            max_visible_lag=MAX(
+                stateful_share_observations.max_visible_lag,
+                excluded.max_visible_lag),
+            copied_sequences=(
+                stateful_share_observations.copied_sequences
+                +excluded.copied_sequences),
+            updated=excluded.updated
+    """,(
+        task_id,leader_lag,source_lag,visible_lag,
+        copied_sequences,now,now))
+    return observation_info(con,task_id)
+
+
+def observation_info(con,task_id):
+    row=con.execute("""
+        SELECT samples,max_leader_lag,max_source_lag,
+               max_visible_lag,copied_sequences,created,updated
+        FROM stateful_share_observations
+        WHERE task_id=?
+    """,(_text(task_id,"task_id"),)).fetchone()
+    if row is None:
+        raise KeyError(
+            "stateful share observation does not exist")
+    return dict(
+        task_id=str(task_id),
+        samples=int(row[0]),
+        max_leader_lag=int(row[1]),
+        max_source_lag=int(row[2]),
+        max_visible_lag=int(row[3]),
+        copied_sequences=int(row[4]),
+        created=float(row[5]),
+        updated=float(row[6]),
+    )
+
+
+def status(con):
+    decisions=int(con.execute(
+        "SELECT COUNT(*) FROM stateful_share_decisions"
+    ).fetchone()[0])
+    selected=int(con.execute("""
+        SELECT COUNT(*) FROM stateful_share_decisions
+        WHERE selected_leader_task_id IS NOT NULL
+    """).fetchone()[0])
+    observed=con.execute("""
+        SELECT COALESCE(SUM(samples),0),
+               COALESCE(MAX(max_leader_lag),0),
+               COALESCE(MAX(max_source_lag),0),
+               COALESCE(MAX(max_visible_lag),0),
+               COALESCE(SUM(copied_sequences),0)
+        FROM stateful_share_observations
+    """).fetchone()
+    return dict(
+        decisions=decisions,
+        selected=selected,
+        samples=int(observed[0]),
+        max_leader_lag=int(observed[1]),
+        max_source_lag=int(observed[2]),
+        max_visible_lag=int(observed[3]),
+        copied_sequences=int(observed[4]),
+    )
