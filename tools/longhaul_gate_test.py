@@ -268,8 +268,10 @@ def workload():
         source_totals=[62_960_000,12345],
         target_totals=[62_960_000,12345],
         event_checks=dict(
-            comparison="partitioned_full_rows_v2",
-            partitions=1024,
+            comparison="streamed_full_rows_v3",
+            scan_mode="full_table_unbuffered",
+            digest_algorithm="sha256_multiset_v1",
+            scan_passes=2,
             expected_rows=62_960_000,
             source_total_rows=62_960_000,
             source_uncovered_rows=0,
@@ -337,8 +339,10 @@ def workload():
             },
         ),
         join_checks=dict(
-            comparison="partitioned_full_rows_v2",
-            partitions=1024,
+            comparison="streamed_full_rows_v3",
+            scan_mode="full_table_unbuffered",
+            digest_algorithm="sha256_multiset_v1",
+            scan_passes=7,
             expected_rows=62_960_000,
             source_total_rows=62_960_000,
             source_uncovered_rows=0,
@@ -508,12 +512,12 @@ def main():
     assert "event_exactness_schema" in result["failures"]
 
     bad=workload()
-    bad["event_checks"]["partitions"]=1
+    bad["event_checks"]["scan_passes"]=1
     result=evaluate_workload(
         bad,require_profile=p11_profile.NAME)
     assert not result["ok"]
     assert (
-        "event_exactness_partition_coverage"
+        "event_exactness_scan_coverage"
         in result["failures"]
     )
 
