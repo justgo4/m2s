@@ -5,6 +5,7 @@ includes:
   - disk-backed source transaction capture
   - disk-backed net-change apply staging
   - set-wise source base apply
+  - disk-backed set-wise source snapshot staging
 scope:
   - public baseline CI
   - native contracts and isolated MySQL
