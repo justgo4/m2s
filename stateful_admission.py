@@ -257,7 +257,8 @@ def admit_or_raise(con,additions,cfg=None):
 
 
 def decision_info(con,task_id):
-    install(con)
+    if not _table_exists(con,"stateful_admission_decisions"):
+        raise KeyError("stateful admission decision does not exist")
     row=con.execute("""
         SELECT sink_key,admitted,reason,
                metrics_json,limits_json,created,updated
@@ -279,7 +280,8 @@ def decision_info(con,task_id):
 
 
 def status(con):
-    install(con)
+    if not _table_exists(con,"stateful_admission_decisions"):
+        return dict(decisions=0,admitted=0,rejected=0)
     total,admitted,rejected=con.execute("""
         SELECT COUNT(*),
                COALESCE(SUM(admitted),0),
