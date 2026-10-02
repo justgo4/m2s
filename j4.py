@@ -11703,6 +11703,9 @@ def run_cdc(
                        stateful_rebuild_locks={
                            str(spec["sink"]):threading.Lock()
                            for spec in startup_rebuild_specs},
+                       stateful_rebuild_cohort_locks={
+                           cohort["cohort_id"]:threading.Lock()
+                           for cohort in stateful_rebuild_cohort.active(con)},
                        stateful_retire_frontiers={
                            item["task"]["task_id"]:int(item["frontier"])
                            for item in retiring_stateful},
