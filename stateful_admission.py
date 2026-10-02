@@ -640,7 +640,8 @@ def status(con):
                 None if not waiting
                 else min(
                     float(item["next_retry"])
-                    for item in waiting)))
+                    for item in waiting)),
+            waiting=list(waiting))
     total,admitted,rejected=con.execute("""
         SELECT COUNT(*),
                COALESCE(SUM(admitted),0),
@@ -674,4 +675,5 @@ def status(con):
             else min(
                 float(item["next_retry"])
                 for item in waiting)),
+        waiting=list(waiting),
     )
