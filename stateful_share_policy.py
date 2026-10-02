@@ -228,6 +228,9 @@ def _limits(cfg=None):
         max_state_bytes=max(
             0,int(cfg.get(
                 "stateful_share_max_state_bytes",0))),
+        max_promotion_bytes=max(
+            0,int(cfg.get(
+                "stateful_share_max_promotion_bytes",0))),
     )
 
 
@@ -303,18 +306,23 @@ def candidate_metrics(con,kind,candidate,measure_state=False):
         if measure_state
         else dict(rows=0,payload_bytes=0)
     )
+    followers=_follower_count(
+        con,kind,leader["task_id"])
     return dict(
         leader_task_id=str(leader["task_id"]),
         state_id=str(leader["state_id"]),
         reuse_mode=str(reuse["mode"]),
         surplus=surplus,
         lag=max(0,applied-watermark),
-        followers=_follower_count(
-            con,kind,leader["task_id"]),
+        followers=followers,
         observed_visible_lag=_observed_visible_lag(
             con,kind,leader["task_id"]),
         state_rows=state_stats["rows"],
         state_payload_bytes=state_stats["payload_bytes"],
+        promotion_bytes=(
+            int(state_stats["payload_bytes"])
+            *(int(followers)+1)
+        ),
         physical_health=str(physical["health"]),
         watermark=watermark,
         source_applied=applied,
@@ -728,6 +736,7 @@ def choose(con,kind,task,candidates,cfg=None):
         and (
             limits["max_state_rows"]>0
             or limits["max_state_bytes"]>0
+            or limits["max_promotion_bytes"]>0
         )
     )
     measured=[
@@ -776,6 +785,11 @@ def choose(con,kind,task,candidates,cfg=None):
             and metrics["state_payload_bytes"]>limits["max_state_bytes"]
         ):
             reasons.append("state_bytes")
+        if (
+            limits["max_promotion_bytes"]>0
+            and metrics["promotion_bytes"]>limits["max_promotion_bytes"]
+        ):
+            reasons.append("promotion_bytes")
         if reasons:
             rejected.append(dict(
                 leader_task_id=metrics["leader_task_id"],
@@ -786,6 +800,7 @@ def choose(con,kind,task,candidates,cfg=None):
             metrics["surplus"],
             metrics["lag"],
             metrics["observed_visible_lag"],
+            metrics["promotion_bytes"],
             metrics["state_payload_bytes"],
             metrics["state_rows"],
             metrics["followers"],
