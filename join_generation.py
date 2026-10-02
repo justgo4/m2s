@@ -91,8 +91,11 @@ def begin(
         if existing["source_pin_released"]:
             state=join_state.state_info(
                 con,state_id)
-            if state["watermark"]<int(
-                existing["fixed_w"]
+            if (
+                not existing["imported"]
+                and state["watermark"]<int(
+                    existing["fixed_w"]
+                )
             ):
                 raise RuntimeError(
                     "JOIN state is behind released generation fixed-W")
