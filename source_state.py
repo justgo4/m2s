@@ -111,9 +111,6 @@ def install(con):
             schema_epoch INTEGER NOT NULL,
             PRIMARY KEY(table_name,pk,valid_from));
 
-        CREATE INDEX IF NOT EXISTS source_versions_visible
-            ON source_versions(table_name,valid_from,valid_to,deleted,pk);
-
         CREATE INDEX IF NOT EXISTS source_versions_gc
             ON source_versions(valid_to)
             WHERE valid_to IS NOT NULL;
@@ -168,6 +165,11 @@ def install(con):
             apply_work_ns)
         VALUES(1,0,0,0,0,0,0,0,0,0);
     """)
+    # Older builds maintained a wide visibility index. Current point/update
+    # paths explicitly use the source_versions primary-key index and history
+    # reclamation explicitly uses source_versions_gc, so retaining the old
+    # B-tree only amplifies every version INSERT/UPDATE/DELETE.
+    con.execute("DROP INDEX IF EXISTS source_versions_visible")
     indexes={
         str(row[1]):str(row[3])
         for row in con.execute(
@@ -178,6 +180,12 @@ def install(con):
     )!="pk":
         raise RuntimeError(
             "source_versions primary-key index contract changed")
+    if "source_versions_visible" in indexes:
+        raise RuntimeError(
+            "legacy source_versions visibility index survived migration")
+    if indexes.get("source_versions_gc")!="c":
+        raise RuntimeError(
+            "source_versions GC index contract changed")
     if _meta_int(con, "log_durable_seq", None) is None:
         with transaction(con):
             _meta_set_int(con, "log_durable_seq", 0)

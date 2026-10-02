@@ -27,6 +27,30 @@ def assert_gc_index_contract(directory):
     path=os.path.join(
         directory,"gc-index.sqlite3")
     con=open_db(path)
+    indexes={
+        str(row[1]) for row in con.execute(
+            "PRAGMA index_list(source_versions)")
+    }
+    assert "source_versions_gc" in indexes
+    assert "source_versions_visible" not in indexes
+
+    # Simulate an on-disk database created by the earlier wide-index build.
+    # Reinstall must remove it so upgrades get the same write-amplification
+    # profile as fresh databases.
+    con.execute("""
+        CREATE INDEX source_versions_visible
+        ON source_versions(
+            table_name,valid_from,valid_to,deleted,pk)
+    """)
+    con.close()
+    con=open_db(path)
+    indexes={
+        str(row[1]) for row in con.execute(
+            "PRAGMA index_list(source_versions)")
+    }
+    assert "source_versions_gc" in indexes
+    assert "source_versions_visible" not in indexes
+
     sql=con.execute("""
         SELECT sql FROM sqlite_master
         WHERE type='index' AND name='source_versions_gc'
