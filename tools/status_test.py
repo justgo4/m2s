@@ -61,8 +61,8 @@ def main():
         assert status["source"]["base_applied_seq"]==0
         assert status["jobs"]==dict(
             active=0,deliveries=0,invisible_parts=0,
-            merge_uncertain=2,merge_replay_safe=1,
-            merge_replay_unsafe=1,merge_unsafe_tables=1)
+            merge_uncertain=2,merge_legacy_replay_safe=1,
+            merge_replay_blocked=2,merge_blocked_tables=2)
         assert status["physical"]==dict(
             states=0,refs=0,pins=0,
             health={},sizes={})
@@ -86,7 +86,7 @@ def main():
 
     print(
         "status_test ok missing_state read_only_snapshot "
-        "rebuild retirement source jobs merge_replay sharing admission physical",
+        "rebuild retirement source jobs merge_replay_blocked sharing admission physical",
         flush=True,
     )
 
