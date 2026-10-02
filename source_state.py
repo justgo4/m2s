@@ -121,6 +121,12 @@ def install(con):
             table_name TEXT NOT NULL,
             pk BLOB NOT NULL,
             PRIMARY KEY(table_name,pk)) WITHOUT ROWID;
+
+        CREATE TABLE IF NOT EXISTS source_log_stats(
+            table_name TEXT PRIMARY KEY,
+            commits INTEGER NOT NULL CHECK(commits>=0),
+            event_rows INTEGER NOT NULL CHECK(event_rows>=0),
+            payload_bytes INTEGER NOT NULL CHECK(payload_bytes>=0));
     """)
     if _meta_int(con, "log_durable_seq", None) is None:
         with transaction(con):
@@ -311,14 +317,27 @@ def log_commit_tx(con, source_epoch, position, gtid, parts):
             raise RuntimeError("source epoch mismatch while logging source commit")
         if int(part["schema_epoch"]) != info["schema_epoch"]:
             raise RuntimeError("schema epoch mismatch while logging source commit")
+        payload=sqlite_blob(part["payload"])
+        nrows=int(part["nrows"])
         con.execute("""
             INSERT INTO source_commit_parts(
                 seq,part,table_name,schema_epoch,payload,nrows)
             VALUES(?,?,?,?,?,?)
         """, (
             seq, int(part_no), part["table_name"],
-            int(part["schema_epoch"]), sqlite_blob(part["payload"]),
-            int(part["nrows"]),
+            int(part["schema_epoch"]), payload,nrows,
+        ))
+        con.execute("""
+            INSERT INTO source_log_stats(
+                table_name,commits,event_rows,payload_bytes)
+            VALUES(?,1,?,?)
+            ON CONFLICT(table_name) DO UPDATE SET
+                commits=source_log_stats.commits+1,
+                event_rows=source_log_stats.event_rows+excluded.event_rows,
+                payload_bytes=(
+                    source_log_stats.payload_bytes+excluded.payload_bytes)
+        """,(
+            str(part["table_name"]),nrows,len(payload),
         ))
     previous = log_durable_seq(con)
     if seq <= previous:
@@ -839,6 +858,17 @@ def status(con):
             FROM source_consumers ORDER BY consumer_id
         """)
     ]
+    log_stats = {
+        str(row[0]):dict(
+            commits=int(row[1]),
+            event_rows=int(row[2]),
+            payload_bytes=int(row[3]),
+        )
+        for row in con.execute("""
+            SELECT table_name,commits,event_rows,payload_bytes
+            FROM source_log_stats ORDER BY table_name
+        """)
+    }
     return dict(
         log_durable_seq=log_durable_seq(con),
         base_applied_seq=base_applied_seq(con),
@@ -848,4 +878,5 @@ def status(con):
         incomplete_relations=incomplete,
         pins=pins,
         consumers=consumers,
+        log_stats=log_stats,
     )
