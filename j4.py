@@ -10472,12 +10472,21 @@ def run_cdc(
             current_stateful_keys.add(key)
 
         worker_by_table = dict(active_plan["by_table"])
+        rebuild_sinks={
+            str(spec["sink"])
+            for spec in startup_rebuild_specs
+        }
         for mapping in stateful_mappings.values():
             key=mapping_key(mapping)
             previous=worker_by_table.get(key)
             if previous is not None and previous is not mapping:
-                raise RuntimeError(
-                    "multiple active writer mappings for sink "+key)
+                if key not in rebuild_sinks:
+                    raise RuntimeError(
+                        "multiple active writer mappings for sink "+key)
+                # During a semantic rebuild one physical writer pool drains
+                # jobs for both generation versions; runtime_mapping() binds
+                # each delivery back to its exact old/new mapping.
+                continue
             worker_by_table[key]=mapping
 
         durable_versions = con.execute("""
