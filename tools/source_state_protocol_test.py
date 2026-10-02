@@ -98,7 +98,7 @@ def assert_bounded_gc_contract(directory):
         WHERE valid_to IS NOT NULL AND valid_to<=6
     """).fetchone()[0]==0
     assert [
-        item["seq"] for item in source_state.read_commits(con,0)
+        item["seq"] for item in source_state.read_commits(con,0,allow_truncated=True)
     ]==[6]
 
     pin=source_state.acquire_pin(
@@ -383,13 +383,21 @@ def main():
         assert before["floor"] == 1
         assert before["min_readable_seq"] == 1
         snapshot_values(con, pin1, {1: "a2", 2: "b"})
-        assert [c["seq"] for c in source_state.read_commits(con, 0)] == [1, 2]
+        assert [c["seq"] for c in source_state.read_commits(con, 0, allow_truncated=True)] == [1, 2]
 
         source_state.release_pin(con, pin1["pin_id"])
         after = source_state.gc(con)
         assert after["floor"] == 2
         assert after["min_readable_seq"] == 2
-        assert [c["seq"] for c in source_state.read_commits(con, 0)] == [2]
+        try:
+            source_state.read_commits(con, 0)
+            raise AssertionError(
+                "source changelog gap was silently truncated")
+        except RuntimeError as exc:
+            assert "changelog gap" in str(exc)
+        assert [c["seq"] for c in source_state.read_commits(
+            con, 0, allow_truncated=True
+        )] == [2]
         snapshot_values(con, pin2, {2: "b", 3: "c"})
 
         source_state.release_pin(con, pin2["pin_id"])
@@ -440,12 +448,12 @@ def main():
         # A retention decision alone does not change physical readability.
         assert source_state.min_readable_seq(con) == 2
         assert source_state.gc(con)["floor"] == 2
-        assert [c["seq"] for c in source_state.read_commits(con, 0)] == [2, 3, 4]
+        assert [c["seq"] for c in source_state.read_commits(con, 0, allow_truncated=True)] == [2, 3, 4]
 
         consumer = source_state.advance_consumer(con, "task-q1", 3)
         assert consumer["watermark"] == 3
         assert source_state.gc(con)["floor"] == 3
-        assert [c["seq"] for c in source_state.read_commits(con, 0)] == [3, 4]
+        assert [c["seq"] for c in source_state.read_commits(con, 0, allow_truncated=True)] == [3, 4]
 
         # Commit 4 has no row event, but computation can still advance through it.
         consumer = source_state.advance_consumer(con, "task-q1", 4)

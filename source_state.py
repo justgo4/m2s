@@ -932,6 +932,9 @@ def acquire_or_resume_pin(con, owner, table_names):
                 )
         if watermark > base_applied_seq(con):
             raise RuntimeError("durable source-state pin is ahead of applied base")
+        if watermark < min_readable_seq(con):
+            raise RuntimeError(
+                "durable source-state pin is behind retained history")
         return dict(pin_id=str(row[0]), watermark=watermark)
     return acquire_pin(con, owner, table_names)
 
@@ -952,6 +955,9 @@ def pin_watermark(con, pin_id):
 
 def read_snapshot_batch(con, pin_id, table_name, after_key=None, limit=1000):
     watermark = pin_watermark(con, pin_id)
+    if watermark < min_readable_seq(con):
+        raise RuntimeError(
+            "source snapshot pin is behind retained history")
     info = relation_info(con, table_name)
     if info["complete_seq"] is None or info["complete_seq"] > watermark:
         raise RuntimeError("relation was not complete at pinned watermark")
@@ -986,8 +992,15 @@ def read_snapshot_batch(con, pin_id, table_name, after_key=None, limit=1000):
     return table, next_key
 
 
-def read_commits(con, after_seq, through_seq=None, limit=100):
+def read_commits(
+        con, after_seq, through_seq=None, limit=100, allow_truncated=False
+):
     after_seq = int(after_seq)
+    retained = min_readable_seq(con)
+    if after_seq < retained and not allow_truncated:
+        raise RuntimeError(
+            "source changelog gap: requested watermark=%d retained=%d"
+            % (after_seq,retained))
     clauses = ["seq>?"]
     params = [after_seq]
     if through_seq is not None:

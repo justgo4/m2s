@@ -168,7 +168,7 @@ def main():
         result=source_state.gc(con)
         assert result["floor"]==3
         assert [
-            item["seq"] for item in source_state.read_commits(con,0)
+            item["seq"] for item in source_state.read_commits(con,0,allow_truncated=True)
         ]==[3]
 
         changed=relational_ir.mapping_ir(dict(
