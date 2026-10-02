@@ -177,6 +177,23 @@ def main():
         "left.customer_id=right.id"]
     assert joined["semantic_id"]!=advanced["semantic_id"]
 
+    # One task retirement cannot terminalize state while another durable
+    # dependency still references the same physical instance.
+    physical_state_catalog.retain_state(
+        con,advanced["instance_id"],"shared-dependent","dependency")
+    retained=stateful_physical_registry.retire(
+        con,"aggregate",agg_task)
+    assert retained["health"]=="ready"
+    assert not physical_state_catalog.gc_eligible(
+        con,retained["instance_id"])
+    assert [
+        (row["owner_id"],row["role"])
+        for row in physical_state_catalog.state_refs(
+            con,retained["instance_id"])
+    ]==[("shared-dependent","dependency")]
+    physical_state_catalog.release_state(
+        con,advanced["instance_id"],"shared-dependent","dependency")
+    # Re-retirement is idempotent and terminalizes the now-unreferenced state.
     retired=stateful_physical_registry.retire(
         con,"aggregate",agg_task)
     assert retired["health"]=="retired"
@@ -251,7 +268,7 @@ def main():
     print(
         "stateful_physical_registry_test ok semantic_identity "
         "schema_epoch source_epoch current_only_pin_fence "
-        "ready_advance retire_gc backing_gc",
+        "ready_advance shared_ref_retirement retire_gc backing_gc",
         flush=True,
     )
 
