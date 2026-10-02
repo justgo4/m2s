@@ -965,6 +965,7 @@ def run(args):
                 args.drain_timeout_seconds)
             while time.monotonic()<drain_deadline:
                 assert_live(proc,log)
+                sample_daemon_resources()
                 current=read_state(
                     state_path)
                 visible=visible_markers(
