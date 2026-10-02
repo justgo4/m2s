@@ -537,6 +537,57 @@ def _pairs_for_keys_locked(con,state_id,spec,join_blobs):
     return result
 
 
+def _rows_for_keys_locked(con,state_id,join_blobs):
+    result={}
+    for join_blob in sorted({
+        bytes(value) for value in join_blobs if value is not None
+    }):
+        result[join_blob]=dict(
+            left=_rows_for_join_blob(
+                con,state_id,"left",join_blob),
+            right=_rows_for_join_blob(
+                con,state_id,"right",join_blob),
+        )
+    return result
+
+
+def _pairs_for_changed_rows(spec,rows_by_key,changed):
+    """Project only pairs whose source identity changed in this transaction.
+
+    Any pair whose left and right source PKs are both unchanged is identical
+    before/after the transaction and cannot contribute a net delta.  We still
+    snapshot every row under each affected join key so changes on either side,
+    join-key moves, fan-out, bag identity and same-transaction bilateral
+    updates retain the exact before/after semantics.
+    """
+    left_changed={bytes(value) for value in changed["left"]}
+    right_changed={bytes(value) for value in changed["right"]}
+    result={}
+    for join_blob in sorted(rows_by_key):
+        rows=rows_by_key[join_blob]
+        left_rows=rows["left"]
+        right_rows=rows["right"]
+
+        for left_pk,left_row in left_rows:
+            if left_pk not in left_changed:
+                continue
+            for right_pk,right_row in right_rows:
+                pair=_pair_id(left_pk,right_pk)
+                result[pair]=_project(
+                    spec,left_row,right_row)
+
+        for right_pk,right_row in right_rows:
+            if right_pk not in right_changed:
+                continue
+            for left_pk,left_row in left_rows:
+                if left_pk in left_changed:
+                    continue
+                pair=_pair_id(left_pk,right_pk)
+                result[pair]=_project(
+                    spec,left_row,right_row)
+    return result
+
+
 def _row_join_blob_from_store(con,state_id,side,spec,row):
     pk_blob=_pk_blob(spec,side,_source_row(spec,side,row))
     current=_stored_row(con,state_id,side,pk_blob)
@@ -637,6 +688,7 @@ def apply_transaction(
         spec=current["spec"]
 
         affected=set()
+        changed=dict(left=set(),right=set())
         for side,row in changes:
             if side not in {"left","right"}:
                 raise ValueError("JOIN change side must be left or right")
@@ -646,18 +698,26 @@ def apply_transaction(
             if op not in (0,1):
                 raise ValueError(
                     "JOIN _sync_op must be 0(upsert) or 1(delete)")
-            old_blob=_row_join_blob_from_store(
-                con,state_id,side,spec,row)
-            if old_blob is not None:
-                affected.add(bytes(old_blob))
+
+            source_row=_source_row(spec,side,row)
+            pk_blob=_pk_blob(spec,side,source_row)
+            changed[side].add(bytes(pk_blob))
+
+            current_row=_stored_row(
+                con,state_id,side,pk_blob)
+            if current_row is not None:
+                old_blob=_join_blob(
+                    spec,side,current_row)
+                if old_blob is not None:
+                    affected.add(bytes(old_blob))
             if op==0:
                 new_blob=_join_blob(
-                    spec,side,_source_row(spec,side,row))
+                    spec,side,source_row)
                 if new_blob is not None:
                     affected.add(bytes(new_blob))
 
-        before=_pairs_for_keys_locked(
-            con,state_id,spec,affected)
+        before_rows=_rows_for_keys_locked(
+            con,state_id,affected)
 
         for side,row in changes:
             if int(row["_sync_op"])==1:
@@ -670,8 +730,13 @@ def apply_transaction(
         if fault_after_rows is not None:
             fault_after_rows(source_seq)
 
-        after=_pairs_for_keys_locked(
-            con,state_id,spec,affected)
+        after_rows=_rows_for_keys_locked(
+            con,state_id,affected)
+        before=_pairs_for_changed_rows(
+            spec,before_rows,changed)
+        after=_pairs_for_changed_rows(
+            spec,after_rows,changed)
+
         deltas=[]
         for pair in sorted(set(before)|set(after)):
             old=before.get(pair)
@@ -689,7 +754,6 @@ def apply_transaction(
             WHERE state_id=?
         """,(source_seq,digest,time.time(),state_id))
     return dict(applied=True,deltas=deltas)
-
 
 def read_pairs(con,state_id):
     current=state_info(con,state_id)
