@@ -494,6 +494,7 @@ def final_run_summary(runtime, cfg, prepared, con, reason):
             quarantined_tables=dict(runtime.get("quarantined_tables",{})),
             health="degraded" if runtime.get("quarantined_tables") else "normal",
         ),
+        source=source_state.status(con),
         stateful=stateful_runtime_summary(con),
     )
     metrics_path,summary_path = report_paths(cfg)
