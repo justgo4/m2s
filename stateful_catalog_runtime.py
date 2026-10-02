@@ -8,6 +8,7 @@ persists retirement frontiers so compatible hot add/drop survives crashes.
 import re
 import time
 
+import aggregate_shared_runtime
 import aggregate_target_mapping
 import aggregate_task_catalog
 import join_target_mapping
@@ -665,6 +666,19 @@ def retire_task(con,cfg,kind,task):
 
     generation=task_generation.maybe_info(
         con,task["sink_key"],task["plan_version"])
+    shared_binding=(
+        aggregate_shared_runtime.maybe_binding(
+            con,task["task_id"])
+        if kind=="aggregate"
+        else None
+    )
+    promoted_shared=[]
+    if kind=="aggregate" and shared_binding is None:
+        # A compute owner cannot disappear under live followers. Freeze them at
+        # this owner's current frontier and atomically give each its own state
+        # before the owner consumer/generation is removed.
+        promoted_shared=aggregate_shared_runtime.promote_followers(
+            con,task)
 
     # Materialize any remaining outbox rows before removing the retention
     # consumer. For an active hot-drop this is normally a no-op because the
@@ -699,11 +713,15 @@ def retire_task(con,cfg,kind,task):
                 con,task["task_id"],"retired")
         clear_retirement(
             con,task["task_id"])
+    if shared_binding is not None:
+        aggregate_shared_runtime.release_dependency(
+            con,durable["task_id"])
     import stateful_physical_registry
     stateful_physical_registry.retire(
         con,kind,durable)
     return dict(
-        kind=kind,task=durable,mapping=mapping)
+        kind=kind,task=durable,mapping=mapping,
+        promoted_shared=promoted_shared)
 
 
 def retire_absent(con,cfg,compiled):
