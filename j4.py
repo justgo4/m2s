@@ -10046,6 +10046,24 @@ def stateful_rebuild_guarded_step(
         return result
 
 
+def stateful_rebuild_test_gate(item,stop):
+    gate=str(
+        os.environ.get(
+            "M2S_TEST_STATEFUL_REBUILD_GATE","")
+        or "").strip()
+    if not gate or not item.get("rebuild"):
+        return
+    announced=False
+    while not stop.is_set() and not os.path.exists(gate):
+        if not announced:
+            log(
+                "STATEFUL REBUILD TEST HOLD task=%s gate=%s"
+                % (
+                    item["task"]["task_id"],gate))
+            announced=True
+        stop.wait(0.05)
+
+
 def stateful_task_worker(item, cfg, runtime):
     con=open_state(cfg["state"])
     stop=runtime["stop"]
@@ -10064,6 +10082,10 @@ def stateful_task_worker(item, cfg, runtime):
     )
     try:
         while not stop.is_set():
+            stateful_rebuild_test_gate(
+                item,stop)
+            if stop.is_set():
+                break
             with runtime["plan_lock"]:
                 active_ids=runtime.get("stateful_active_task_ids")
                 if (
