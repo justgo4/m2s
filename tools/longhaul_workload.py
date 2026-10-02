@@ -29,6 +29,7 @@ sys.path.insert(0,str(ROOT))
 import cdc_catalog
 import j4
 from starrocks_contract import configuration,execute,wait_ready
+import process_resource_probe
 
 
 DATABASE="m2s_longhaul"
@@ -744,10 +745,30 @@ def run(args):
                 args.snapshot_rows,args.memory_mb,
                 args.share_mode)
             state_path=directory/"state.sqlite3"
+            resource_tracker=process_resource_probe.new_tracker()
+            next_resource_sample=0.0
+
+            def sample_daemon_resources(force=False):
+                nonlocal next_resource_sample
+                now=time.monotonic()
+                if (
+                    not force
+                    and now<next_resource_sample
+                ):
+                    return
+                if proc is not None:
+                    process_resource_probe.observe(
+                        resource_tracker,
+                        process_resource_probe.process_tree_sample(
+                            proc.pid))
+                next_resource_sample=now+1.0
+
             proc,handle,log=start_daemon(
                 directory,env,1)
             wait_started(
-                proc,log,state_path)
+                proc,log,state_path,
+                progress=sample_daemon_resources)
+            sample_daemon_resources(force=True)
 
             started=time.monotonic()
             deadline=started+float(
@@ -820,6 +841,7 @@ def run(args):
             while time.monotonic()<deadline:
                 now=time.monotonic()
                 assert_live(proc,log)
+                sample_daemon_resources()
                 current=read_state(
                     state_path)
                 if (
@@ -864,22 +886,30 @@ def run(args):
                 ):
                     before=sequence
                     fault_started=time.monotonic()
+                    sample_daemon_resources(force=True)
                     stop_daemon(
                         proc,handle,kill=True)
                     proc=handle=log=None
                     daemon_index+=1
                     proc,handle,log=start_daemon(
                         directory,env,daemon_index)
+
+                    def fault_progress():
+                        pump_source()
+                        sample_daemon_resources()
+
                     wait_started(
                         proc,log,state_path,
-                        progress=pump_source)
+                        progress=fault_progress)
+                    sample_daemon_resources(force=True)
                     restart_seconds=(
                         time.monotonic()-fault_started)
                     recovered=recover_after_fault(
                         proc,log,state_path,cfg,
                         commit_times,
                         args.fault_recovery_timeout_seconds,
-                        progress=pump_source)
+                        progress=fault_progress)
+                    sample_daemon_resources(force=True)
                     recovery_latency.extend(
                         recovered["latencies"])
                     faults.append(dict(
@@ -988,6 +1018,7 @@ def run(args):
                     "longhaul aggregate targets differ from source "
                     +repr(aggregate_checks))
 
+            sample_daemon_resources(force=True)
             stop_daemon(
                 proc,handle,kill=False)
             proc=handle=log=None
@@ -1008,6 +1039,8 @@ def run(args):
                 duration_seconds=elapsed,
                 memory_mb=int(args.memory_mb),
                 resource_fingerprint=machine_resource_fingerprint(),
+                daemon_resources=process_resource_probe.report(
+                    resource_tracker),
                 snapshot_rows=int(args.snapshot_rows),
                 sample_seconds=float(args.sample_seconds),
                 fault_every_seconds=float(
