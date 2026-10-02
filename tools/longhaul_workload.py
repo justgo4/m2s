@@ -421,9 +421,14 @@ def add_aggregate_task(
     return "starrocks."+sink
 
 
-def wait_started(proc,log,state_path,timeout=180):
+def wait_started(
+        proc,log,state_path,timeout=180,
+        progress=None
+):
     deadline=time.monotonic()+timeout
     while time.monotonic()<deadline:
+        if progress is not None:
+            progress()
         assert_live(proc,log)
         current=read_state(state_path)
         if current is not None:
@@ -455,7 +460,7 @@ def visible_markers(cfg,marker_ids):
 
 def recover_after_fault(
         proc,log,state_path,cfg,commit_times,
-        timeout_seconds
+        timeout_seconds,progress=None
 ):
     pending=set(
         int(value) for value in commit_times)
@@ -463,6 +468,10 @@ def recover_after_fault(
     deadline=started+float(timeout_seconds)
     recorded=[]
     while time.monotonic()<deadline:
+        if progress is not None:
+            progress()
+        pending.update(
+            int(value) for value in commit_times)
         assert_live(proc,log)
         visible=visible_markers(
             cfg,pending)
@@ -721,6 +730,42 @@ def run(args):
             faults=[]
             source_ready_at=None
 
+            def pump_source(now=None):
+                nonlocal sequence,next_tick
+                now=(
+                    time.monotonic()
+                    if now is None else float(now))
+                produced=0
+                while (
+                    now>=next_tick
+                    and next_tick<deadline
+                ):
+                    count=max(
+                        1,int(args.rows_per_second))
+                    rows=[]
+                    for _ in range(count):
+                        marker=marker_start+sequence
+                        rows.append((
+                            marker,
+                            marker%1024,
+                            marker,
+                            "live-%d" % sequence,
+                        ))
+                        sequence+=1
+                    with source.cursor() as cur:
+                        cur.executemany(
+                            "INSERT INTO "
+                            +DATABASE+".events "
+                            "VALUES(%s,%s,%s,%s)",
+                            rows)
+                    source.commit()
+                    committed=time.monotonic()
+                    sentinel=int(rows[-1][0])
+                    commit_times[sentinel]=committed
+                    next_tick+=1.0
+                    produced+=len(rows)
+                return produced
+
             while time.monotonic()<deadline:
                 now=time.monotonic()
                 assert_live(proc,log)
@@ -775,13 +820,15 @@ def run(args):
                     proc,handle,log=start_daemon(
                         directory,env,daemon_index)
                     wait_started(
-                        proc,log,state_path)
+                        proc,log,state_path,
+                        progress=pump_source)
                     restart_seconds=(
                         time.monotonic()-fault_started)
                     recovered=recover_after_fault(
                         proc,log,state_path,cfg,
                         commit_times,
-                        args.fault_recovery_timeout_seconds)
+                        args.fault_recovery_timeout_seconds,
+                        progress=pump_source)
                     recovery_latency.extend(
                         recovered["latencies"])
                     faults.append(dict(
@@ -799,35 +846,7 @@ def run(args):
                         time.monotonic()
                         +args.fault_every_seconds)
 
-                if now>=next_tick:
-                    count=max(
-                        1,int(args.rows_per_second))
-                    rows=[]
-                    for _ in range(count):
-                        marker=marker_start+sequence
-                        rows.append((
-                            marker,
-                            marker%1024,
-                            marker,
-                            "live-%d" % sequence,
-                        ))
-                        sequence+=1
-                    with source.cursor() as cur:
-                        cur.executemany(
-                            "INSERT INTO "
-                            +DATABASE+".events "
-                            "VALUES(%s,%s,%s,%s)",
-                            rows)
-                    source.commit()
-                    committed=time.monotonic()
-                    # One sentinel per source transaction measures the intended
-                    # MySQL commit -> StarRocks queryable latency without using
-                    # MAX(id), which could hide a slower hash lane.
-                    sentinel=int(rows[-1][0])
-                    commit_times[sentinel]=committed
-                    next_tick+=1.0
-                    if next_tick<now-1.0:
-                        next_tick=now+1.0
+                pump_source(now)
 
                 if now>=next_sample:
                     visible=visible_markers(
