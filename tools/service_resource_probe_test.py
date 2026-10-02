@@ -25,12 +25,12 @@ def stat_line(pid,ppid,utime,stime,starttime):
     )
 
 
-def write_process(proc,pid=100):
+def write_process(proc,pid=100,ppid=1):
     directory=proc/str(pid)
     directory.mkdir(
         parents=True,exist_ok=True)
     (directory/"stat").write_text(
-        stat_line(pid,1,100,50,1000),
+        stat_line(pid,ppid,100,50,1000),
         encoding="utf-8")
     (directory/"status").write_text(
         "Name:\tmysqld\nVmRSS:\t2048 kB\n",
@@ -230,16 +230,31 @@ def main():
             "read_bytes: 6000\n"
             "write_bytes: 10000\n",
             encoding="utf-8")
+        write_process(
+            proc,pid=102,ppid=100)
+        (proc/"102"/"status").write_text(
+            "Name:\tchild\nVmRSS:\t0 kB\n",
+            encoding="utf-8")
+        (proc/"102"/"io").write_text(
+            "read_bytes: 0\n"
+            "write_bytes: 0\n",
+            encoding="utf-8")
+        (proc/"102"/"fd"/"5").unlink()
         with patch.object(
             service_resource_probe
                 .process_resource_probe.os,
             "sysconf",return_value=100
         ):
-            service_resource_probe.observe(
-                fallback_tracker,
+            second_fallback=(
                 service_resource_probe.service_sample(
                     100,proc_root=proc,
                     cgroup_root=cgroup))
+            assert (
+                second_fallback["identity"]
+                ==fallback["identity"])
+            service_resource_probe.observe(
+                fallback_tracker,
+                second_fallback)
         fallback_report=(
             service_resource_probe.report(
                 fallback_tracker))
@@ -250,6 +265,7 @@ def main():
         assert (
             fallback_report["peak_memory_bytes"]
             ==3072*1024)
+        assert fallback_report["scope_stable"]
 
         missing=(
             service_resource_probe
