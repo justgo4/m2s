@@ -132,7 +132,7 @@ jobs:
       - name: Catalog stateful aggregate/JOIN daemon contract
         if: matrix.gtid == 'ON' && matrix.shared == 'ON'
         run: python tools/stateful_catalog_e2e.py --isolated --load-mode "$TEST_PROTOCOL"
-      - name: Live P11 fault and sustained-source smoke
+      - name: Live P11 mixed aggregate/JOIN fault smoke
         if: matrix.protocol == 'merge_async' && matrix.gtid == 'ON' && matrix.shared == 'ON'
         run: |
           MYSQL_RESOURCE_PID="$(docker inspect --format '{{.State.Pid}}' m2s-e2e-mysql)"
