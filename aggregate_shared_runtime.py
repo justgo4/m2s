@@ -429,15 +429,28 @@ def promote_followers(con,leader_task):
     return promoted
 
 
-def release_binding(con,task_id):
+def release_dependency(con,task_id):
     binding=maybe_binding(
         con,task_id)
     if binding is None:
         return None
-    physical_state_catalog.release_state(
-        con,aggregate_physical_state.instance_id(
-            binding["shared_state_id"]),
-        binding["follower_task_id"],"dependency")
+    try:
+        physical_state_catalog.release_state(
+            con,aggregate_physical_state.instance_id(
+                binding["shared_state_id"]),
+            binding["follower_task_id"],"dependency")
+    except KeyError:
+        # The backing physical row may already have been reclaimed only after
+        # the dependency ref was absent, so retry cleanup is idempotent.
+        pass
+    return binding
+
+
+def release_binding(con,task_id):
+    binding=release_dependency(
+        con,task_id)
+    if binding is None:
+        return None
     con.execute("""
         DELETE FROM aggregate_shared_followers
         WHERE follower_task_id=?
