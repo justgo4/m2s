@@ -6319,6 +6319,13 @@ def activate_stateful_rebuild_candidate(
     new=spec["new"]
     task=new["task"]
     sink=str(spec["sink"])
+    admission_con=open_state(cfg["state"])
+    try:
+        admission=stateful_admission.admit_or_raise(
+            admission_con,[new],cfg)
+    finally:
+        admission_con.close()
+    candidate["stateful_admission"]=admission
     if mapping_key(new["mapping"])!=sink:
         raise RuntimeError(
             "stateful rebuild writer sink identity changed")
