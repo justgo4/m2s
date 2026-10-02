@@ -57,6 +57,7 @@ import relational_ir
 import source_state
 import stateful_catalog_runtime
 import stateful_physical_registry
+import stateful_share_policy
 import stateful_task_plan
 import task_generation
 
@@ -1231,6 +1232,14 @@ def read_config():
         idle_status_seconds=env_int("CDC_IDLE_STATUS_SECONDS", 300, maximum=86400),
         detail_logs=env_bool("CDC_DETAIL_LOGS", False),
         shared_source_state=env_bool("CDC_SHARED_SOURCE_STATE", False),
+        stateful_share_mode=env(
+            "CDC_STATEFUL_SHARE_MODE","compatible").strip().lower(),
+        stateful_share_max_lag=env_int(
+            "CDC_STATEFUL_SHARE_MAX_LAG",10000,minimum=0,maximum=1000000000),
+        stateful_share_max_followers=env_int(
+            "CDC_STATEFUL_SHARE_MAX_FOLLOWERS",1000,minimum=1,maximum=1000000),
+        stateful_share_max_surplus=env_int(
+            "CDC_STATEFUL_SHARE_MAX_SURPLUS",64,minimum=0,maximum=1000000),
         plan_retain=env_int("CDC_PLAN_RETAIN",32,minimum=4,maximum=10000),
         metrics_max_bytes=env_int(
             "CDC_METRICS_MAX_BYTES",64*1024**2,
@@ -1248,6 +1257,10 @@ def read_config():
     )
     if cfg["load_mode"] not in ("merge_async","transaction"):
         raise ValueError("CDC_LOAD_MODE must be merge_async or transaction")
+    if cfg["stateful_share_mode"] not in stateful_share_policy.MODES:
+        raise ValueError(
+            "CDC_STATEFUL_SHARE_MODE must be one of "
+            +",".join(sorted(stateful_share_policy.MODES)))
     if not (1 <= cfg["writer_min"] <= cfg["writer_initial"] <= cfg["writer_max"] <= cfg["key_partitions"]):
         raise ValueError("writer concurrency must satisfy 1 <= MIN <= INITIAL <= MAX <= CDC_KEY_PARTITIONS")
     if cfg["rowset_yellow"] >= cfg["rowset_red"]:
@@ -1643,6 +1656,7 @@ def init_state(path):
     stateful_catalog_runtime.install(con)
     aggregate_shared_runtime.install(con)
     join_shared_runtime.install(con)
+    stateful_share_policy.install(con)
     physical_state_catalog.install(con)
     task_generation.install(con)
     existing_format = meta_get(con,"state_format")
