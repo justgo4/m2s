@@ -272,31 +272,30 @@ def main():
     ]
     with patch.object(
         longhaul_workload,
-        "_event_rows_source",
-        return_value=event_expected
+        "_event_rows_source_stream",
+        return_value=iter(event_expected)
     ), patch.object(
         longhaul_workload,
-        "_event_rows_target",
+        "_event_rows_target_stream",
         side_effect=[
-            list(event_expected),
-            [
+            iter(event_expected),
+            iter([
                 (1,0,20,"a"),
                 (2,0,10,"b"),
-            ],
+            ]),
         ]
-    ), patch.object(
-        longhaul_workload,
-        "_event_source_total_rows",
-        return_value=2
-    ), patch.object(
-        longhaul_workload,
-        "_target_total_rows",
-        side_effect=[2,2]
     ):
         event_checks=longhaul_workload.event_exactness(
-            object(),{},["events","events_bad"],
-            partitions=[0])
-    assert event_checks["comparison"]=="partitioned_full_rows_v2"
+            object(),{},["events","events_bad"])
+    assert (
+        event_checks["comparison"]
+        =="streamed_full_rows_v3"
+    )
+    assert (
+        event_checks["scan_mode"]
+        =="full_table_unbuffered"
+    )
+    assert event_checks["scan_passes"]==3
     assert event_checks["expected_rows"]==2
     assert event_checks["source_total_rows"]==2
     assert event_checks["source_uncovered_rows"]==0
@@ -304,103 +303,81 @@ def main():
     assert not event_checks["tables"]["events_bad"]["match"]
     assert not event_checks["all_match"]
 
-    # Preserve source-pair identity in the JOIN oracle. Swapping v between two
-    # rows keeps COUNT/SUM/MIN/MAX unchanged but must fail full-row exactness.
+    # Preserve complete JOIN row identity. Swapping v keeps old COUNT/SUM
+    # summaries unchanged but must fail the full-row multiset fingerprint.
     join_expected=[
         (1,0,"dim-0000",10),
         (2,0,"dim-0000",20),
     ]
     with patch.object(
         longhaul_workload,
-        "_join_rows_source",
-        return_value=join_expected
+        "_join_rows_source_stream",
+        return_value=iter(join_expected)
     ), patch.object(
         longhaul_workload,
-        "_join_rows_target",
+        "_join_rows_target_stream",
         side_effect=[
-            list(join_expected),
-            [
+            iter(join_expected),
+            iter([
                 (1,0,"dim-0000",20),
                 (2,0,"dim-0000",10),
-            ],
+            ]),
         ]
-    ), patch.object(
-        longhaul_workload,
-        "_join_source_total_rows",
-        return_value=2
-    ), patch.object(
-        longhaul_workload,
-        "_target_total_rows",
-        side_effect=[2,2]
     ):
         join_checks=longhaul_workload.join_exactness(
-            object(),{},["join_000","join_002"],
-            partitions=[0])
+            object(),{},["join_000","join_002"])
     assert join_checks["expected_rows"]==2
     assert join_checks["tables"]["join_000"]["match"]
     assert not join_checks["tables"]["join_002"]["match"]
-    assert join_checks["tables"]["join_002"]["mismatches"][0][
-        "expected_digest"
-    ]!=join_checks["tables"]["join_002"]["mismatches"][0][
-        "actual_digest"
-    ]
+    assert (
+        join_checks["tables"]["join_002"][
+            "mismatches"][0]["expected_digest"]
+        !=join_checks["tables"]["join_002"][
+            "mismatches"][0]["actual_digest"]
+    )
     assert not join_checks["all_match"]
 
-    # Rows outside the scanned partition set must fail coverage even when every
-    # compared row is exact. The cases model bucket=1024, bucket=-1 and NULL.
-    for invalid_case in (
-        "bucket_above_domain",
-        "bucket_below_domain",
-        "bucket_null",
-    ):
+    # Full-table streaming has no bucket filter, so rows at 1024, -1 and NULL
+    # are hashed and cannot hide outside the oracle domain.
+    invalid_rows=(
+        (3,1024,"unexpected",99),
+        (3,-1,"unexpected",99),
+        (3,None,"unexpected",99),
+    )
+    for invalid in invalid_rows:
         with patch.object(
             longhaul_workload,
-            "_join_rows_source",
-            return_value=join_expected
+            "_join_rows_source_stream",
+            return_value=iter(join_expected)
         ), patch.object(
             longhaul_workload,
-            "_join_rows_target",
-            return_value=list(join_expected)
-        ), patch.object(
-            longhaul_workload,
-            "_join_source_total_rows",
-            return_value=2
-        ), patch.object(
-            longhaul_workload,
-            "_target_total_rows",
-            return_value=3
+            "_join_rows_target_stream",
+            return_value=iter(
+                join_expected+[invalid])
         ):
             extra=longhaul_workload.join_exactness(
-                object(),{},["join_extra"],
-                partitions=[0])
-        assert not extra["all_match"],invalid_case
-        assert not extra["coverage_complete"],invalid_case
+                object(),{},["join_extra"])
+        assert not extra["all_match"],invalid
+        assert extra["coverage_complete"]
+        assert extra["tables"]["join_extra"]["rows"]==3
         assert extra["tables"]["join_extra"]["total_rows"]==3
-        assert extra["tables"]["join_extra"]["uncovered_rows"]==1
+        assert extra["tables"]["join_extra"]["uncovered_rows"]==0
         assert not extra["tables"]["join_extra"]["match"]
 
     with patch.object(
         longhaul_workload,
-        "_event_rows_source",
-        return_value=event_expected
+        "_event_rows_source_stream",
+        return_value=iter(event_expected)
     ), patch.object(
         longhaul_workload,
-        "_event_rows_target",
-        return_value=list(event_expected)
-    ), patch.object(
-        longhaul_workload,
-        "_event_source_total_rows",
-        return_value=2
-    ), patch.object(
-        longhaul_workload,
-        "_target_total_rows",
-        return_value=3
+        "_event_rows_target_stream",
+        return_value=iter(
+            event_expected+[(3,1024,99,"unexpected")])
     ):
         event_extra=longhaul_workload.event_exactness(
-            object(),{},["events"],
-            partitions=[0])
+            object(),{},["events"])
     assert not event_extra["all_match"]
-    assert event_extra["tables"]["events"]["uncovered_rows"]==1
+    assert event_extra["tables"]["events"]["rows"]==3
 
     with tempfile.TemporaryDirectory(
         prefix="m2s-longhaul-workdir-test-"
