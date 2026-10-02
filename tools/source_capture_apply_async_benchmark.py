@@ -18,6 +18,16 @@ import j4
 import source_state
 
 
+def percentile(values,p):
+    values=sorted(float(value) for value in values)
+    if not values:
+        return None
+    index=min(
+        len(values)-1,
+        max(0,int((len(values)-1)*float(p))))
+    return values[index]
+
+
 def rss_bytes():
     try:
         for line in Path("/proc/self/status").read_text().splitlines():
@@ -139,11 +149,14 @@ def run(
 
         peak_pending=0
         backpressure_events=0
+        backpressure_wait_seconds=0.0
+        commit_latencies=[]
         total_rows=commits*rows_per_commit
         capture_started=time.monotonic()
         try:
             for commit_index in range(commits):
                 start=commit_index*rows_per_commit
+                commit_started=time.monotonic()
                 seq=source_state.log_commit(
                     capture,"async-benchmark",
                     (
@@ -155,6 +168,8 @@ def run(
                         "db.events",start,
                         rows_per_commit,part_rows,
                         key_space))
+                commit_latencies.append(
+                    time.monotonic()-commit_started)
                 if seq!=commit_index+1:
                     raise AssertionError(
                         "unexpected durable source sequence")
@@ -165,14 +180,21 @@ def run(
                     peak_pending,int(pending))
                 if pending>=max_pending_bytes:
                     backpressure_events+=1
-                while (
+                if (
                     pending>=max_pending_bytes
                     and not stop.is_set()
                 ):
-                    wake.set()
-                    time.sleep(.002)
-                    pending=source_state.apply_pending_bytes(
-                        capture)
+                    wait_started=time.monotonic()
+                    while (
+                        pending>=max_pending_bytes
+                        and not stop.is_set()
+                    ):
+                        wake.set()
+                        time.sleep(.002)
+                        pending=source_state.apply_pending_bytes(
+                            capture)
+                    backpressure_wait_seconds+=(
+                        time.monotonic()-wait_started)
             capture_seconds=(
                 time.monotonic()-capture_started)
             drain_started=time.monotonic()
@@ -229,6 +251,14 @@ def run(
             capture_wall_seconds=capture_seconds,
             drain_tail_seconds=drain_tail_seconds,
             total_wall_seconds=total_seconds,
+            commit_latency_seconds=dict(
+                samples=len(commit_latencies),
+                p50=percentile(commit_latencies,.50),
+                p95=percentile(commit_latencies,.95),
+                p99=percentile(commit_latencies,.99),
+                maximum=max(commit_latencies or [0.0]),
+            ),
+            backpressure_wait_seconds=backpressure_wait_seconds,
             capture_rows_per_second=(
                 total_rows/capture_seconds
                 if capture_seconds else None),
