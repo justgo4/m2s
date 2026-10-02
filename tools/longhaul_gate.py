@@ -275,6 +275,17 @@ def evaluate_workload(
         failures.append(
             "workload_profile_mismatch")
 
+    work_directory_persistent=bool(
+        report.get("work_directory_persistent",False))
+    evidence["work_directory_persistent"]=(
+        work_directory_persistent)
+    if (
+        require_profile is not None
+        and not work_directory_persistent
+    ):
+        failures.append(
+            "persistent_work_directory_missing")
+
     elapsed=_number(
         report.get("duration_seconds"),
         "duration_seconds")
