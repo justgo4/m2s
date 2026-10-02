@@ -693,6 +693,38 @@ def wait_hot_join_subview_exact(
         % (state(directory/"state.sqlite3"),last))
 
 
+def wait_rebuild_hold(
+        proc,log,directory,sink,timeout=90
+):
+    deadline=time.monotonic()+timeout
+    while time.monotonic()<deadline:
+        live(proc,log)
+        current=state(directory/"state.sqlite3")
+        text=log.read_text(
+            errors="replace") if log.exists() else ""
+        rebuild=[
+            row for row in (
+                [] if current is None
+                else current.get("rebuilds",()))
+            if row[0]==sink
+        ]
+        if (
+            rebuild
+            and rebuild[0][4]=="building_shadow"
+            and "STATEFUL REBUILD TEST HOLD" in text
+        ):
+            return current,rebuild[0]
+        time.sleep(.05)
+    raise AssertionError(
+        "stateful rebuild did not reach deterministic crash hold "
+        "sink=%s state=%r diagnostics=%s"
+        % (
+            sink,state(directory/"state.sqlite3"),
+            log.read_text(errors="replace")[-6000:]
+            if log.exists() else "",
+        ))
+
+
 def wait_aggregate_rebuild_exact(
         proc,log,directory,source,cfg,
         sink="starrocks.agg_subview",table="agg_subview",
