@@ -207,6 +207,109 @@ def visible_reconcile_contract():
             con.close()
 
 
+def accepted_identity_restart_contract():
+    with tempfile.TemporaryDirectory(
+            prefix="m2s-merge-reconcile-identity-") as directory:
+        path=str(Path(directory)/"state.sqlite3")
+        item=mapping()
+        con=j4.init_state(path)
+        seeded=seed(con,item)
+        state=runtime(seeded["table"])
+        with patch.object(
+                j4,"runtime_mapping",return_value=item):
+            candidate,reason=j4.merge_uncertain_replay_candidate(
+                con,seeded["table"],cfg(),state)
+        assert reason is None,reason
+        response=dict(
+            Status="Success",
+            TxnId=881,
+            Label="merge_commit_server_label",
+            LeftMergeTimeMs=0,
+        )
+        with (
+            patch.object(
+                j4,"curl_request",
+                return_value=(200,response)),
+            patch.object(
+                j4,"metric_add_merge",
+                return_value=None),
+        ):
+            txn,result=j4.submit_merge_uncertain_replay(
+                object(),con,candidate,cfg(),state)
+        assert txn==881,result
+        assert con.execute(
+            "SELECT COUNT(*) FROM merge_uncertain"
+        ).fetchone()[0]==0
+        assert con.execute(
+            "SELECT visible,txn_id FROM load_parts"
+        ).fetchone()==(0,881)
+        con.close()
+
+        con=j4.open_state(path)
+        try:
+            restored=runtime(seeded["table"])
+            restored["quarantined_tables"]={}
+            assert j4.quarantine_pending_merges(
+                con,restored)==0
+            assert not j4.merge_table_quarantined(
+                restored,seeded["table"])
+            with patch.object(
+                    j4,"curl_request",
+                    side_effect=AssertionError(
+                        "known replay TxnId was sent again")):
+                txn,result=j4.submit_merge_async(
+                    object(),con,item,
+                    seeded["delivery"],0,cfg(),
+                    threading.Event(),restored)
+            assert txn==881
+            assert result==dict(
+                Status="LOCAL_PENDING",TxnId=881)
+        finally:
+            con.close()
+
+
+def visible_before_ack_restart_contract():
+    with tempfile.TemporaryDirectory(
+            prefix="m2s-merge-reconcile-visible-restart-") as directory:
+        path=str(Path(directory)/"state.sqlite3")
+        item=mapping()
+        con=j4.init_state(path)
+        seeded=seed(con,item)
+        with j4.state_transaction(con):
+            con.execute(
+                "UPDATE load_parts SET txn_id=991,visible=1 "
+                "WHERE delivery_id=? AND part=0",
+                (seeded["delivery"],))
+            con.execute(
+                "DELETE FROM merge_uncertain "
+                "WHERE delivery_id=? AND part=0",
+                (seeded["delivery"],))
+        con.close()
+
+        con=j4.open_state(path)
+        try:
+            restored=runtime(seeded["table"])
+            restored["quarantined_tables"]={}
+            assert j4.quarantine_pending_merges(
+                con,restored)==0
+            with patch.object(
+                    j4,"curl_request",
+                    side_effect=AssertionError(
+                        "visible replay payload was sent again")):
+                result=j4.merge_async_delivery(
+                    object(),con,item,
+                    seeded["delivery"],cfg(),restored)
+            assert result==[]
+            assert con.execute(
+                "SELECT visible,txn_id FROM load_parts"
+            ).fetchone()==(1,991)
+            assert con.execute(
+                "SELECT COUNT(*) FROM active_jobs"
+            ).fetchone()[0]==1
+        finally:
+            con.close()
+
+
 def pre_send_failure_contract():
     with tempfile.TemporaryDirectory(
             prefix="m2s-merge-reconcile-presend-") as directory:
@@ -250,10 +353,13 @@ def pre_send_failure_contract():
 def main():
     candidate_contract()
     visible_reconcile_contract()
+    accepted_identity_restart_contract()
+    visible_before_ack_restart_contract()
     pre_send_failure_contract()
     print(
         "MERGE RECONCILE PASS closure sha fifo budget "
-        "visible_release pre_send_budget_restore",
+        "visible_release accepted_identity_restart "
+        "visible_before_ack_restart pre_send_budget_restore",
         flush=True,
     )
 
