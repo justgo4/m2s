@@ -5531,6 +5531,17 @@ def validate_hot_catalog_plan(cfg, runtime, publish_result):
             new_item=stateful_catalog_runtime.compile_rebuild_task(
                 cfg,version,manifest,
                 scope["source_metadata"],shadow)
+            if list(new_item["task"]["target_schema"])!=list(
+                old_task["target_schema"]
+            ):
+                return dict(
+                    status="rebuild_required",
+                    version=version,
+                    reason=(
+                        "online stateful semantic rebuild currently requires "
+                        "an unchanged target schema; publish a new sink or "
+                        "restart for schema migration: "+sink),
+                    stateful_changed_sinks=stateful_changed)
             if mapping_key(new_item["mapping"]) in set(
                 candidate["by_table"]
             ):
