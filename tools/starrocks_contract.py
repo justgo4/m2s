@@ -46,6 +46,7 @@ def execute(cfg, sql):
 def wait_ready(cfg):
     deadline = time.monotonic() + 240
     last_error = None
+    probe_database = 'm2s_ready_probe'
     while time.monotonic() < deadline:
         try:
             rows, _ = execute(cfg, 'SELECT current_version()')
@@ -54,10 +55,31 @@ def wait_ready(cfg):
                 raise ValueError('protocol contract requires exactly StarRocks 4.1.1')
             rows, names = execute(cfg, 'SHOW BACKENDS')
             alive = next(i for i, name in enumerate(names) if name.lower() == 'alive')
-            if any(str(row[alive]).lower() in ('true', '1') for row in rows):
-                return version
+            if not any(str(row[alive]).lower() in ('true', '1') for row in rows):
+                last_error = 'no alive backend'
+                time.sleep(1)
+                continue
+
+            # FE connectivity and Alive=true can precede usable backend storage.
+            # The protocol contracts need a backend that can actually allocate a
+            # replication=1 tablet, so readiness is proven with the same physical
+            # operation the tests require instead of guessing from SHOW BACKENDS.
+            execute(cfg, 'CREATE DATABASE IF NOT EXISTS '+probe_database)
+            execute(cfg, 'DROP TABLE IF EXISTS '+probe_database+'.ready')
+            execute(cfg, '''CREATE TABLE '''+probe_database+'''.ready(
+                    id BIGINT NOT NULL)
+                    PRIMARY KEY(id)
+                    DISTRIBUTED BY HASH(id) BUCKETS 1
+                    PROPERTIES("replication_num"="1")''')
+            execute(cfg, 'DROP TABLE '+probe_database+'.ready')
+            execute(cfg, 'DROP DATABASE '+probe_database)
+            return version
         except j4.pymysql.MySQLError as exc:
-            last_error = type(exc).__name__
+            last_error = type(exc).__name__+': '+str(exc)[:500]
+            try:
+                execute(cfg, 'DROP TABLE IF EXISTS '+probe_database+'.ready')
+            except j4.pymysql.MySQLError:
+                pass
         time.sleep(1)
     raise RuntimeError('isolated StarRocks did not become ready: ' + str(last_error))
 
