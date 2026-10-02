@@ -6180,12 +6180,19 @@ def activate_stateful_rebuild_candidate(
         existing=stateful_rebuild.maybe_info(
             con,sink)
         if existing is None:
+            original_comment=stateful_rebuild_remote_marker(
+                cfg,spec["logical_target"])
+            if original_comment is None:
+                raise RuntimeError(
+                    "stateful rebuild logical target disappeared before "
+                    "durable intent: "+str(spec["logical_target"]))
             intent=stateful_rebuild.begin(
                 con,new["kind"],sink,
                 old["task"]["task_id"],
                 task["task_id"],
                 spec["logical_target"],
-                shadow=spec["shadow_target"])
+                shadow=spec["shadow_target"],
+                original_comment=original_comment)
             existing_intent=False
         else:
             intent=stateful_rebuild.begin(
@@ -6193,7 +6200,8 @@ def activate_stateful_rebuild_candidate(
                 old["task"]["task_id"],
                 task["task_id"],
                 spec["logical_target"],
-                shadow=spec["shadow_target"])
+                shadow=spec["shadow_target"],
+                original_comment=existing["original_comment"])
             existing_intent=True
         if intent["phase"] not in {
             "building_shadow","fencing",
@@ -9609,7 +9617,9 @@ def stateful_rebuild_cleanup_remote(cfg,rebuild):
                     "ALTER TABLE "
                     +sql_name(
                         rebuild["logical_target"],True)
-                    +" COMMENT %s",("",))
+                    +" COMMENT %s",
+                    (str(rebuild.get(
+                        "original_comment","")),))
 
 
 def stateful_rebuild_freeze_if_ready(
