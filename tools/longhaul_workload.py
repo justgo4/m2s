@@ -463,6 +463,18 @@ def read_state(path):
                 FROM aggregate_task_descriptors
                 ORDER BY sink_key
             """).fetchall()
+            generations=con.execute("""
+                SELECT g.sink_key,g.status
+                FROM task_generations g
+                JOIN (
+                    SELECT sink_key,MAX(plan_version) AS plan_version
+                    FROM task_generations
+                    GROUP BY sink_key
+                ) latest
+                  ON latest.sink_key=g.sink_key
+                 AND latest.plan_version=g.plan_version
+                ORDER BY g.sink_key
+            """).fetchall()
             shared=int(con.execute(
                 "SELECT COUNT(*) "
                 "FROM aggregate_shared_followers"
@@ -488,6 +500,10 @@ def read_state(path):
                     (str(row[0]),str(row[1]))
                     for row in tasks
                 ],
+                generations=[
+                    (str(row[0]),str(row[1]))
+                    for row in generations
+                ],
                 shared_followers=shared,
                 log_durable_seq=int(
                     meta.get("log_durable_seq",0)),
@@ -506,6 +522,21 @@ def source_ready(value):
     return all(
         complete is not None
         for _,complete in value["source"])
+
+
+def baseline_ready(value):
+    """Initial source and both published baseline sinks are complete/queryable."""
+    if not source_ready(value):
+        return False
+    generations=dict(
+        value.get("generations") or ())
+    tasks=dict(
+        value.get("aggregate_tasks") or ())
+    return (
+        generations.get("starrocks.events")=="ready"
+        and generations.get("starrocks.agg_000")=="ready"
+        and tasks.get("starrocks.agg_000")=="active"
+    )
 
 
 def run_sql(directory,env,name,sql):
@@ -599,13 +630,18 @@ def visible_markers(cfg,marker_ids):
 
 def recover_after_fault(
         proc,log,state_path,cfg,commit_times,
-        timeout_seconds,progress=None
+        timeout_seconds,progress=None,
+        healthy_markers=None
 ):
+    healthy_markers=(
+        set() if healthy_markers is None
+        else healthy_markers)
     pending=set(
         int(value) for value in commit_times)
     started=time.monotonic()
     deadline=started+float(timeout_seconds)
     recorded=[]
+    healthy_recorded=[]
     while time.monotonic()<deadline:
         if progress is not None:
             progress()
@@ -621,8 +657,11 @@ def recover_after_fault(
                     marker,None)
                 pending.discard(marker)
                 if committed is not None:
-                    recorded.append(
-                        observed-committed)
+                    value=observed-committed
+                    recorded.append(value)
+                    if marker in healthy_markers:
+                        healthy_recorded.append(value)
+                healthy_markers.discard(marker)
         current=read_state(state_path)
         if (
             not pending
@@ -633,6 +672,7 @@ def recover_after_fault(
             return dict(
                 seconds=time.monotonic()-started,
                 latencies=recorded,
+                healthy_latencies=healthy_recorded,
                 state=current,
             )
         time.sleep(.2)
@@ -980,11 +1020,14 @@ def run(args):
             marker_start=int(args.rows)
             sequence=0
             commit_times={}
+            healthy_markers=set()
             latency=[]
+            pre_ready_latency=[]
             recovery_latency=[]
             daemon_index=1
             faults=[]
             source_ready_at=None
+            healthy_ready_at=None
             next_checkpoint=started
 
             def persist_checkpoint(now=None,force=False):
@@ -1022,6 +1065,9 @@ def run(args):
                         software.get(
                             "code_revision") or ""),
                     live_rows=int(sequence),
+                    source_ready_seconds=source_ready_at,
+                    healthy_ready_seconds=healthy_ready_at,
+                    latency_scope="steady_state_ready_non_recovery",
                     latency_samples=len(latency),
                     latency_p95_seconds=percentile(
                         latency,.95),
@@ -1091,6 +1137,8 @@ def run(args):
                     committed=time.monotonic()
                     sentinel=int(rows[-1][0])
                     commit_times[sentinel]=committed
+                    if healthy_ready_at is not None:
+                        healthy_markers.add(sentinel)
                     next_tick+=1.0
                     produced+=len(rows)
                 return produced
@@ -1107,6 +1155,11 @@ def run(args):
                     and source_ready(current)
                 ):
                     source_ready_at=now-started
+                if (
+                    healthy_ready_at is None
+                    and baseline_ready(current)
+                ):
+                    healthy_ready_at=now-started
 
                 while (
                     task_due
@@ -1166,7 +1219,8 @@ def run(args):
                         proc,log,state_path,cfg,
                         commit_times,
                         args.fault_recovery_timeout_seconds,
-                        progress=fault_progress)
+                        progress=fault_progress,
+                        healthy_markers=healthy_markers)
                     sample_daemon_resources(force=True)
                     recovery_latency.extend(
                         recovered["latencies"])
@@ -1200,8 +1254,12 @@ def run(args):
                             committed=commit_times.pop(
                                 marker,None)
                             if committed is not None:
-                                latency.append(
-                                    observed-committed)
+                                value=observed-committed
+                                if marker in healthy_markers:
+                                    latency.append(value)
+                                else:
+                                    pre_ready_latency.append(value)
+                            healthy_markers.discard(marker)
                     next_sample=now+float(
                         args.sample_seconds)
 
@@ -1236,8 +1294,12 @@ def run(args):
                         committed=commit_times.pop(
                             marker,None)
                         if committed is not None:
-                            latency.append(
-                                observed-committed)
+                            value=observed-committed
+                            if marker in healthy_markers:
+                                latency.append(value)
+                            else:
+                                pre_ready_latency.append(value)
+                        healthy_markers.discard(marker)
                 statuses=dict(
                     [] if current is None
                     else current[
@@ -1322,7 +1384,15 @@ def run(args):
                     args.fault_every_seconds),
                 seed_seconds=seed_seconds,
                 source_ready_seconds=source_ready_at,
+                healthy_ready_seconds=healthy_ready_at,
+                healthy_duration_seconds=(
+                    None
+                    if healthy_ready_at is None
+                    else max(
+                        0.0,
+                        elapsed-float(healthy_ready_at))),
                 live_rows=int(sequence),
+                latency_scope="steady_state_ready_non_recovery",
                 latency_samples=len(latency),
                 latency_p50_seconds=percentile(
                     latency,.50),
@@ -1339,6 +1409,15 @@ def run(args):
                 latency_over_10_seconds=sum(
                     1 for value in latency
                     if float(value)>10.0),
+                pre_ready_latency_samples=len(
+                    pre_ready_latency),
+                pre_ready_latency_p95_seconds=percentile(
+                    pre_ready_latency,.95),
+                pre_ready_latency_p99_seconds=percentile(
+                    pre_ready_latency,.99),
+                pre_ready_latency_max_seconds=(
+                    max(pre_ready_latency)
+                    if pre_ready_latency else None),
                 recovery_latency_samples=len(
                     recovery_latency),
                 recovery_latency_p95_seconds=percentile(
