@@ -163,3 +163,4 @@ jobs:
         run: |
           python tools/partition_benchmark.py --rows 10000 --repeats 3 --commit '${{ github.sha }}'
           python tools/stateful_sharing_ab_benchmark.py --tasks 1,10,100 --output benchmark-results/stateful-sharing-ab.json
+          python tools/source_apply_staging_benchmark.py --rows 5000 --part-rows 500 --key-space 2500 --output benchmark-results/source-apply-staging.json
