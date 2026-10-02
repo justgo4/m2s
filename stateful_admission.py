@@ -383,6 +383,14 @@ def admit_or_defer(
     """Admit now or durably queue the exact published plan for retry."""
     result=admit(con,additions,cfg)
     if result["ok"]:
+        # A wait row represents only resource-admission pressure. Once the
+        # exact published plan is admitted, consume that durable wait even if
+        # later installation remains hot_pending/rebuild_pending. A crash
+        # between admit() and this delete is harmless: the next retry sees the
+        # durable reservation, admits with requested_tasks=0, and clears it.
+        clear_wait(
+            con,additions=additions,
+            plan_version=plan_version)
         return result
     queue_wait(
         con,additions,plan_version,
