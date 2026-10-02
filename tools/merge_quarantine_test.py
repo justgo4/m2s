@@ -18,6 +18,76 @@ import j4
 
 
 def main():
+    cfg=dict(
+        load_timeout=30,
+        merge_commit_interval_ms=100,
+        merge_commit_parallel=1,
+        compression="")
+    sequence_mapping=dict(
+        src_table="safe",sr_table="safe",
+        _target_sequence=True,
+        _output_columns=["id"])
+    upsert=(
+        b'{"id":1,"_cdc_seq":7,"__op":0}\n'
+        b'{"id":2,"_cdc_seq":8,"__op":"upsert"}\n')
+    profile=j4.merge_payload_profile(
+        sequence_mapping,upsert)
+    assert profile==dict(
+        known=True,rows=2,has_delete=False,
+        target_sequence=True,
+        sequence_min=7,sequence_max=8,
+        replay_safe=True)
+    headers=j4.merge_commit_headers(
+        sequence_mapping,cfg,profile)
+    assert headers["merge_condition"]=="_cdc_seq"
+    compressed=j4.merge_payload_profile(
+        sequence_mapping,
+        j4.gzip.compress(upsert,mtime=0))
+    assert compressed["replay_safe"]
+    delete_profile=j4.merge_payload_profile(
+        sequence_mapping,
+        b'{"id":1,"_cdc_seq":9,"__op":1}\n')
+    assert delete_profile["has_delete"]
+    assert not delete_profile["replay_safe"]
+    assert "merge_condition" not in j4.merge_commit_headers(
+        sequence_mapping,cfg,delete_profile)
+    no_sequence=j4.merge_payload_profile(
+        dict(
+            src_table="plain",sr_table="plain",
+            _target_sequence=False,
+            _output_columns=["id"]),
+        b'{"id":1,"__op":0}\n')
+    assert not no_sequence["replay_safe"]
+
+    with tempfile.TemporaryDirectory(prefix='m2s-safe-replay-') as directory:
+        safe_path=str(Path(directory)/'state.sqlite3')
+        con=j4.init_state(safe_path)
+        con.execute(
+            "INSERT INTO deliveries(id,table_name,lane) "
+            "VALUES('safe-delivery','safe',0)")
+        con.execute(
+            "INSERT INTO load_parts("
+            "delivery_id,part,label,payload,nrows) "
+            "VALUES('safe-delivery',0,'safe-label',?,2)",
+            (upsert,))
+        j4.begin_merge_request(
+            con,sequence_mapping,
+            'safe-delivery',0,'safe-label',
+            upsert,profile)
+        assert con.execute(
+            "SELECT replay_safe FROM merge_uncertain"
+        ).fetchone()==(1,)
+        restored=dict(
+            stop=threading.Event(),
+            control_lock=threading.Lock(),
+            quarantined_tables={})
+        with redirect_stdout(io.StringIO()):
+            assert j4.quarantine_pending_merges(
+                con,restored)==1
+        assert not j4.merge_table_quarantined(
+            restored,'safe')
+        con.close()
+
     with tempfile.TemporaryDirectory(prefix='m2s-quarantine-') as directory:
         path = str(Path(directory)/'state.sqlite3')
         con = j4.init_state(path)
@@ -75,7 +145,10 @@ def main():
             assert not j4.quarantine_merge_table(con,'healthy',restored,'ordinary error')
         finally:
             con.close()
-    print('MERGE QUARANTINE PASS durable marker retained, no replay, unrelated worker progresses',flush=True)
+    print(
+        'MERGE QUARANTINE PASS guarded upsert replay survives restart; '
+        'unsafe marker retained, no replay, unrelated worker progresses',
+        flush=True)
 
 
 if __name__=='__main__':
