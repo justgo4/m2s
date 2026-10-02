@@ -10369,19 +10369,35 @@ def run_cdc(
                 active_version = int(cfg.get("catalog_version",0))
                 meta_set(con,"active_plan_version",active_version)
             if int(active_version) != int(cfg.get("catalog_version",0)):
-                if not cfg.get("catalog_restart_promote",False):
+                if (
+                    cfg.get("catalog_rebuild_recover",False)
+                    and startup_rebuild_specs
+                ):
+                    log(
+                        "STATEFUL REBUILD RESTART RESUME active=%d "
+                        "published=%d sinks=%s"
+                        % (
+                            int(active_version),
+                            int(cfg.get("catalog_version",0)),
+                            ",".join(
+                                sorted(
+                                    spec["sink"]
+                                    for spec in startup_rebuild_specs)),
+                        ))
+                elif not cfg.get("catalog_restart_promote",False):
                     raise RuntimeError(
                         f"durable active plan {active_version} differs from loaded catalog "
                         f"plan {cfg.get('catalog_version',0)}")
-                old_version=int(active_version)
-                active_version=int(cfg.get("catalog_version",0))
-                meta_set(con,"active_plan_version",active_version)
-                meta_set(con,"fingerprint",fingerprint)
-                meta_set(con,"stateful_restart_from_plan",old_version)
-                meta_set(con,"stateful_restart_to_plan",active_version)
-                log(
-                    f"STATEFUL PLAN RESTART CUTOVER old={old_version} "
-                    f"new={active_version}")
+                else:
+                    old_version=int(active_version)
+                    active_version=int(cfg.get("catalog_version",0))
+                    meta_set(con,"active_plan_version",active_version)
+                    meta_set(con,"fingerprint",fingerprint)
+                    meta_set(con,"stateful_restart_from_plan",old_version)
+                    meta_set(con,"stateful_restart_to_plan",active_version)
+                    log(
+                        f"STATEFUL PLAN RESTART CUTOVER old={old_version} "
+                        f"new={active_version}")
             con.execute(
                 "UPDATE jobs SET plan_version=? WHERE plan_version=0",
                 (int(active_version),))
@@ -10413,9 +10429,24 @@ def run_cdc(
             raise RuntimeError("key partition count changed; use a fresh state and rebuild explicitly")
 
         active_plan = runtime_plan_entry(
-            int(cfg.get("catalog_version",0)),prepared,
+            int(active_version),prepared,
             cfg.get("catalog_macros",()),cfg.get("catalog_udfs",()),fingerprint)
         recovered_plans = {int(active_plan["version"]):active_plan}
+        startup_rebuild_plans={}
+        if startup_rebuild_specs:
+            rebuild_plan=runtime_plan_entry(
+                int(cfg.get("catalog_version",0)),prepared,
+                cfg.get("catalog_macros",()),
+                cfg.get("catalog_udfs",()),fingerprint)
+            rebuild_plan["stateful_candidate_tasks"]=list(
+                compiled_stateful)
+            rebuild_plan["stateful_rebuilds"]=list(
+                startup_rebuild_specs)
+            recovered_plans[int(rebuild_plan["version"])]=rebuild_plan
+            startup_rebuild_plans={
+                str(spec["sink"]):rebuild_plan
+                for spec in startup_rebuild_specs
+            }
         stateful_mappings=dict(durable_stateful_mappings)
         current_stateful_keys={
             mapping_key(item["mapping"])
