@@ -154,6 +154,15 @@ def snapshot(con,additions=()):
 def _reasons(metrics,limits):
     reasons=[]
     requested=int(metrics["requested_tasks"])
+    projected_state=(
+        int(metrics["state_bytes"])
+        +requested*int(limits["reserve_state_bytes"])
+    )
+    # Admission controls creation of new durable work. Existing generations
+    # must always be allowed to recover after a crash, even when the current
+    # machine is already above a configured soft capacity boundary.
+    if requested==0:
+        return reasons,projected_state
     if (
         limits["max_tasks"]>0
         and metrics["current_tasks"]+requested
@@ -166,10 +175,6 @@ def _reasons(metrics,limits):
             >limits["max_building"]
     ):
         reasons.append("max_building")
-    projected_state=(
-        int(metrics["state_bytes"])
-        +requested*int(limits["reserve_state_bytes"])
-    )
     if (
         limits["max_state_bytes"]>0
         and projected_state>limits["max_state_bytes"]
