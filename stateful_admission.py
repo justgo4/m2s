@@ -329,7 +329,7 @@ def _record(
     ))
 
 
-def admit(con,additions,cfg=None):
+def admit(con,additions,cfg=None,consume_wait=True):
     install(con)
     additions=list(additions or ())
     limits=_limits(cfg)
@@ -359,8 +359,10 @@ def admit(con,additions,cfg=None):
                 reserved_state_bytes=(
                     limits["reserve_state_bytes"]
                     if ok else 0))
-        if ok and requested and _table_exists(
-            con,"stateful_admission_waiting"
+        if (
+            ok and requested and consume_wait
+            and _table_exists(
+                con,"stateful_admission_waiting")
         ):
             marks=",".join("?" for _ in requested)
             con.execute(
@@ -381,7 +383,9 @@ def admit_or_defer(
         retry_seconds=5.0
 ):
     """Admit now or durably queue the exact published plan for retry."""
-    result=admit(con,additions,cfg)
+    result=admit(
+        con,additions,cfg,
+        consume_wait=False)
     if result["ok"]:
         # Keep an existing wait row as the crash-recovery link until the
         # caller durably registers the admitted task/rebuild intent. Deleting
