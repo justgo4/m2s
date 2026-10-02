@@ -1120,8 +1120,12 @@ def evaluate_workload(
         event_checks.get("expected_digest") or "")
     event_comparison=str(
         event_checks.get("comparison") or "")
-    event_partitions=int(
-        event_checks.get("partitions",0) or 0)
+    event_scan_passes=int(
+        event_checks.get("scan_passes",0) or 0)
+    event_scan_mode=str(
+        event_checks.get("scan_mode") or "")
+    event_digest_algorithm=str(
+        event_checks.get("digest_algorithm") or "")
     event_source_total=int(
         event_checks.get("source_total_rows",0) or 0)
     event_source_uncovered=int(
@@ -1152,13 +1156,17 @@ def evaluate_workload(
     event_contract_ok=True
     if require_profile is not None:
         expected_event_targets={"events"}
-        if event_comparison!="partitioned_full_rows_v2":
+        if (
+            event_comparison!="streamed_full_rows_v3"
+            or event_scan_mode!="full_table_unbuffered"
+            or event_digest_algorithm!="sha256_multiset_v1"
+        ):
             failures.append(
                 "event_exactness_schema")
             event_contract_ok=False
-        if event_partitions!=1024:
+        if event_scan_passes!=1+len(event_tables):
             failures.append(
-                "event_exactness_partition_coverage")
+                "event_exactness_scan_coverage")
             event_contract_ok=False
         if (
             event_expected_rows<=0
@@ -1203,7 +1211,9 @@ def evaluate_workload(
     evidence["source_target_exact"]=event_exact
     evidence["event_exactness"]=dict(
         comparison=event_comparison,
-        partitions=event_partitions,
+        scan_mode=event_scan_mode,
+        digest_algorithm=event_digest_algorithm,
+        scan_passes=event_scan_passes,
         expected_rows=event_expected_rows,
         source_total_rows=event_source_total,
         source_uncovered_rows=event_source_uncovered,
@@ -1272,8 +1282,12 @@ def evaluate_workload(
         join_checks.get("expected_digest") or "")
     join_comparison=str(
         join_checks.get("comparison") or "")
-    join_partitions=int(
-        join_checks.get("partitions",0) or 0)
+    join_scan_passes=int(
+        join_checks.get("scan_passes",0) or 0)
+    join_scan_mode=str(
+        join_checks.get("scan_mode") or "")
+    join_digest_algorithm=str(
+        join_checks.get("digest_algorithm") or "")
     join_source_total=int(
         join_checks.get("source_total_rows",0) or 0)
     join_source_uncovered=int(
@@ -1318,13 +1332,17 @@ def evaluate_workload(
         require_profile is not None
         and expected_join_targets
     ):
-        if join_comparison!="partitioned_full_rows_v2":
+        if (
+            join_comparison!="streamed_full_rows_v3"
+            or join_scan_mode!="full_table_unbuffered"
+            or join_digest_algorithm!="sha256_multiset_v1"
+        ):
             failures.append(
                 "join_exactness_schema")
             join_contract_ok=False
-        if join_partitions!=1024:
+        if join_scan_passes!=1+len(join_tables):
             failures.append(
-                "join_exactness_partition_coverage")
+                "join_exactness_scan_coverage")
             join_contract_ok=False
         if (
             join_expected_rows<=0
@@ -1372,7 +1390,9 @@ def evaluate_workload(
         expected_targets=expected_join_targets,
         checked_targets=len(join_matches),
         comparison=join_comparison,
-        partitions=join_partitions,
+        scan_mode=join_scan_mode,
+        digest_algorithm=join_digest_algorithm,
+        scan_passes=join_scan_passes,
         expected_rows=join_expected_rows,
         source_total_rows=join_source_total,
         source_uncovered_rows=join_source_uncovered,
