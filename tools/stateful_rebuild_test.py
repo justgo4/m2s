@@ -17,15 +17,28 @@ def main():
         con,"aggregate","starrocks.orders_agg",
         "catalog:starrocks.orders_agg:plan:3",
         "catalog:starrocks.orders_agg:plan:9",
-        "orders_agg")
+        "orders_agg",original_comment="keep-me")
     assert first["phase"]=="building_shadow"
     assert first["frontier"] is None
+    assert first["original_comment"]=="keep-me"
     assert first["shadow_target"].startswith(
         "__j4_rebuild_orders_agg_")
     assert first==stateful_rebuild.begin(
         con,"aggregate","starrocks.orders_agg",
         first["old_task_id"],first["new_task_id"],
-        "orders_agg",shadow=first["shadow_target"])
+        "orders_agg",shadow=first["shadow_target"],
+        original_comment="keep-me")
+
+    try:
+        stateful_rebuild.begin(
+            con,"aggregate","starrocks.marker_collision",
+            "old-marker","new-marker","marker_target",
+            original_comment=stateful_rebuild.remote_marker(
+                "new-marker"))
+        raise AssertionError(
+            "rebuild accepted a colliding original target comment")
+    except ValueError as exc:
+        assert "collides" in str(exc)
 
     fenced=stateful_rebuild.freeze_frontier(
         con,"starrocks.orders_agg",41)
@@ -88,7 +101,8 @@ def main():
     con.close()
     print(
         "stateful_rebuild_test ok deterministic_shadow "
-        "durable_frontier phase_machine readiness terminal_clear",
+        "durable_frontier original_comment marker_ownership "
+        "phase_machine readiness terminal_clear",
         flush=True)
 
 
