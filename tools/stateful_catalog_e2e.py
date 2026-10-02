@@ -7,11 +7,13 @@ source capture, creates durable descriptors/generations, maintains aggregate
 and INNER JOIN results, survives a hard restart, and drains a dropped task.
 """
 import argparse
+import contextlib
 from decimal import Decimal
 import json
 import os
 from pathlib import Path
 import signal
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -227,6 +229,64 @@ def live(proc,log):
     raise RuntimeError(
         "stateful daemon exited rc=%d diagnostics=%s"
         % (proc.returncode,(text[:2500]+"\\n...\\n"+text[-5000:])))
+
+
+def preserve_failure_evidence(directory,output):
+    """Copy synthetic failure evidence before TemporaryDirectory cleanup."""
+    directory=Path(directory)
+    output=Path(output)
+    output.parent.mkdir(
+        parents=True,exist_ok=True)
+    prefix=output.parent/(
+        output.stem+"-failure")
+    copied=[]
+    for candidate in sorted(
+        directory.glob("daemon-*.log")
+    ):
+        target=Path(
+            str(prefix)+"-"+candidate.name)
+        shutil.copyfile(candidate,target)
+        copied.append(str(target))
+    state_path=directory/"state.sqlite3"
+    for suffix,label in (
+        (".metrics.jsonl","metrics.jsonl"),
+        (".summary.json","summary.json"),
+    ):
+        candidate=Path(str(state_path)+suffix)
+        if not candidate.exists():
+            continue
+        target=Path(
+            str(prefix)+"-"+label)
+        shutil.copyfile(candidate,target)
+        copied.append(str(target))
+    snapshot=state(state_path)
+    diagnostic=Path(
+        str(prefix)+"-durable-state.json")
+    diagnostic.write_text(
+        json.dumps(
+            dict(
+                format_version=1,
+                state=snapshot,
+                copied=copied,
+            ),
+            indent=2,sort_keys=True
+        )+"\n",
+        encoding="utf-8")
+    return copied+[str(diagnostic)]
+
+
+@contextlib.contextmanager
+def evidence_directory(output):
+    with tempfile.TemporaryDirectory(
+        prefix="m2s-stateful-catalog-e2e-"
+    ) as td:
+        directory=Path(td)
+        try:
+            yield directory
+        except BaseException:
+            preserve_failure_evidence(
+                directory,output)
+            raise
 
 
 def state(path):
@@ -1065,10 +1125,9 @@ def main():
                     (4,"b",None,Decimal("2.00")),
                 ])
 
-        with tempfile.TemporaryDirectory(
-            prefix="m2s-stateful-catalog-e2e-"
-        ) as td:
-            directory=Path(td)
+        with evidence_directory(
+            args.output
+        ) as directory:
             catalog,env=setup_catalog(
                 directory,cfg,opts,args.load_mode)
             rebuild_gate=directory/"release-stateful-rebuild"
