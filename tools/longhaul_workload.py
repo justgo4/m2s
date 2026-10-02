@@ -30,6 +30,7 @@ import cdc_catalog
 import j4
 from starrocks_contract import configuration,execute,wait_ready
 import process_resource_probe
+import service_resource_probe
 
 
 DATABASE="m2s_longhaul"
@@ -800,6 +801,29 @@ def run(args):
     try:
         seed_seconds=setup_databases(
             source,cfg,args.rows,args.seed_chunk)
+
+        mysql_selection=service_resource_probe.resolve_service_pid(
+            explicit_pid=getattr(args,"mysql_resource_pid",None),
+            port=opts["port"])
+        starrocks_fe_selection=service_resource_probe.resolve_service_pid(
+            explicit_pid=getattr(args,"starrocks_fe_resource_pid",None),
+            port=cfg["sr"]["port"])
+        starrocks_be_selection=service_resource_probe.resolve_service_pid(
+            explicit_pid=getattr(args,"starrocks_be_resource_pid",None),
+            port=int(getattr(
+                args,"starrocks_be_resource_port",
+                os.environ.get(
+                    "M2S_TEST_STARROCKS_BE_HTTP_PORT","8040"))))
+        service_selections=dict(
+            mysql=mysql_selection,
+            starrocks_fe=starrocks_fe_selection,
+            starrocks_be=starrocks_be_selection,
+        )
+        service_trackers={
+            name:service_resource_probe.new_tracker(selection)
+            for name,selection in service_selections.items()
+        }
+
         with tempfile.TemporaryDirectory(
             prefix="m2s-longhaul-"
         ) as td:
@@ -825,6 +849,16 @@ def run(args):
                         resource_tracker,
                         process_resource_probe.process_tree_sample(
                             proc.pid))
+                for name,selection in service_selections.items():
+                    pid=selection.get("pid")
+                    service_resource_probe.observe(
+                        service_trackers[name],
+                        (
+                            None
+                            if pid is None
+                            else service_resource_probe.service_sample(
+                                int(pid))
+                        ))
                 next_resource_sample=now+1.0
 
             proc,handle,log=start_daemon(
@@ -1107,6 +1141,11 @@ def run(args):
                 software_fingerprint=software,
                 daemon_resources=process_resource_probe.report(
                     resource_tracker),
+                service_resources={
+                    name:service_resource_probe.report(tracker)
+                    for name,tracker in sorted(
+                        service_trackers.items())
+                },
                 snapshot_rows=int(args.snapshot_rows),
                 sample_seconds=float(args.sample_seconds),
                 fault_every_seconds=float(
@@ -1220,6 +1259,16 @@ def main():
         choices=("compatible","adaptive","off"),
         default="adaptive")
     parser.add_argument(
+        "--mysql-resource-pid",type=int)
+    parser.add_argument(
+        "--starrocks-fe-resource-pid",type=int)
+    parser.add_argument(
+        "--starrocks-be-resource-pid",type=int)
+    parser.add_argument(
+        "--starrocks-be-resource-port",type=int,
+        default=int(os.environ.get(
+            "M2S_TEST_STARROCKS_BE_HTTP_PORT","8040")))
+    parser.add_argument(
         "--drain-timeout-seconds",
         type=float,default=1800)
     parser.add_argument(
@@ -1253,6 +1302,16 @@ def main():
             "--fault-recovery-timeout-seconds must be positive")
     if args.seed_chunk<1:
         parser.error("--seed-chunk must be positive")
+    for name,value in (
+        ("--mysql-resource-pid",args.mysql_resource_pid),
+        ("--starrocks-fe-resource-pid",args.starrocks_fe_resource_pid),
+        ("--starrocks-be-resource-pid",args.starrocks_be_resource_pid),
+    ):
+        if value is not None and int(value)<=0:
+            parser.error(name+" must be positive")
+    if not 1<=int(args.starrocks_be_resource_port)<=65535:
+        parser.error(
+            "--starrocks-be-resource-port must be 1..65535")
     run(args)
 
 
