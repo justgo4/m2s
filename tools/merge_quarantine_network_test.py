@@ -133,7 +133,7 @@ def latest_status(directory):
     return {}
 
 
-def wait_healthy(proc,directory,source,cfg):
+def wait_quarantined(proc,directory,source,cfg):
     deadline = time.monotonic()+120
     while time.monotonic()<deadline:
         e2e.live_process(proc)
@@ -153,11 +153,61 @@ def wait_healthy(proc,directory,source,cfg):
     raise AssertionError('unrelated target did not remain exact and operational after unknown response')
 
 
+def wait_recovered(proc,directory,source,cfg):
+    deadline = time.monotonic()+180
+    last = None
+    while time.monotonic()<deadline:
+        e2e.live_process(proc)
+        expected,actual = e2e.final_result(source,cfg)
+        extra_expected,extra_actual = e2e.final_result(
+            source,cfg,extra=True)
+        con = sqlite3.connect(
+            'file:'+str(directory/'state.sqlite3')+'?mode=ro',
+            uri=True)
+        try:
+            uncertain = int(con.execute(
+                'SELECT COUNT(*) FROM merge_uncertain'
+            ).fetchone()[0])
+            outstanding = int(con.execute('''SELECT
+                (SELECT COUNT(*) FROM active_jobs)+
+                (SELECT COUNT(*) FROM deliveries)''').fetchone()[0])
+        finally:
+            con.close()
+        status = latest_status(directory)
+        quarantined = status.get('quarantined_tables',{})
+        if (
+            actual==expected
+            and extra_actual==extra_expected
+            and uncertain==0
+            and outstanding==0
+            and not quarantined
+        ):
+            return len(extra_actual),status
+        last = dict(
+            base=(len(expected),len(actual)),
+            extra=(len(extra_expected),len(extra_actual)),
+            uncertain=uncertain,
+            outstanding=outstanding,
+            quarantined=len(quarantined),
+        )
+        time.sleep(.2)
+    raise AssertionError(
+        'automatic uncertainty reconciliation did not converge: '
+        +json.dumps(last,sort_keys=True))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--isolated',action='store_true',required=True)
-    parser.add_argument('--output',type=Path,default=Path('benchmark-results/merge-quarantine.json'))
+    parser.add_argument(
+        '--recovery',choices=('off','idempotent'),default='off')
+    parser.add_argument('--output',type=Path)
     args = parser.parse_args()
+    if args.output is None:
+        args.output = Path(
+            'benchmark-results/merge-reconcile.json'
+            if args.recovery=='idempotent'
+            else 'benchmark-results/merge-quarantine.json')
     cfg,options = configuration(),e2e.source_options()
     version = wait_ready(cfg)
     cfg['sr']['database'] = e2e.DATABASE
@@ -180,6 +230,9 @@ def main():
         with tempfile.TemporaryDirectory(prefix='m2s-unknown-network-') as temp:
             directory = Path(temp)
             env = e2e.setup_catalog(directory,cfg,options,'merge_async',128)
+            env['CDC_MERGE_UNCERTAIN_RECOVERY'] = args.recovery
+            env['CDC_MERGE_UNCERTAIN_REPLAY_MAX'] = '3'
+            env['CDC_MERGE_UNCERTAIN_REPLAY_BACKOFF_SECONDS'] = '1'
             proc,handle = e2e.start(directory,env,1)
             e2e.wait_started(proc,directory)
             try:
@@ -204,7 +257,12 @@ def main():
             for sequence in range(20):
                 e2e.change(source,sequence)
                 time.sleep(.08)
-            before_rows,status = wait_healthy(proc,directory,source,cfg)
+            if args.recovery=='idempotent':
+                before_rows,status = wait_recovered(
+                    proc,directory,source,cfg)
+            else:
+                before_rows,status = wait_quarantined(
+                    proc,directory,source,cfg)
             with lock:
                 assert outcome['dropped'] and outcome['txn_id'] is not None, outcome
                 txn = outcome['txn_id']
@@ -218,7 +276,12 @@ def main():
                 e2e.change(source,sequence)
             proc,handle = e2e.start(directory,env,2)
             e2e.wait_started(proc,directory)
-            after_rows,status = wait_healthy(proc,directory,source,cfg)
+            if args.recovery=='idempotent':
+                after_rows,status = wait_recovered(
+                    proc,directory,source,cfg)
+            else:
+                after_rows,status = wait_quarantined(
+                    proc,directory,source,cfg)
             e2e.stop(proc,handle)
             proc,handle = None,None
             con = sqlite3.connect('file:'+str(directory/'state.sqlite3')+'?mode=ro',uri=True)
@@ -227,19 +290,60 @@ def main():
                     ON u.delivery_id=p.delivery_id AND u.part=p.part WHERE p.txn_id IS NULL AND p.visible=0''').fetchone()[0]
             finally:
                 con.close()
-            assert retained==1 and len(status.get('quarantined_tables',{}))==1
             with lock:
                 assert not outcome['errors'], outcome['errors']
                 attempts = outcome['request_counts'][outcome['dropped_payload']]
-                assert attempts == 1, 'unknown payload was replayed through the actual BE proxy'
-            report = dict(format_version=1,kind='actual_accepted_merge_response_loss_quarantine',
-                          protocol='merge_async',gtid_mode=gtid_mode,starrocks_version=version,
-                          dropped_accepted_requests=1,independently_confirmed_visible=True,
-                          unrelated_target_exact_before_restart=True,unrelated_target_exact_after_restart=True,
-                          before_rows=before_rows,after_rows=after_rows,
-                          durable_unknown_parts=retained,unknown_payload_not_replayed=True,
-                          unknown_payload_forward_attempts=attempts,
-                          health='degraded',scope='target_isolation_not_automatic_remote_reconciliation')
+            if args.recovery=='idempotent':
+                assert retained==0,retained
+                assert not status.get('quarantined_tables',{}),status
+                assert attempts==2,(
+                    'uncertain immutable payload should be forwarded exactly '
+                    'once more through the actual BE proxy')
+                report = dict(
+                    format_version=2,
+                    kind='actual_accepted_merge_response_loss_reconciled',
+                    protocol='merge_async',
+                    recovery='idempotent_exact_payload',
+                    gtid_mode=gtid_mode,
+                    starrocks_version=version,
+                    dropped_accepted_requests=1,
+                    independently_confirmed_original_visible=True,
+                    recovered_target_exact_before_restart=True,
+                    recovered_target_exact_after_restart=True,
+                    before_rows=before_rows,
+                    after_rows=after_rows,
+                    durable_unknown_parts=retained,
+                    exact_payload_replayed=True,
+                    unknown_payload_forward_attempts=attempts,
+                    quarantine_cleared=True,
+                    scope=(
+                        'bounded_replay_only_when_fifo_and_closed_target_'
+                        'schema_prove_idempotence'),
+                )
+            else:
+                assert retained==1 and len(
+                    status.get('quarantined_tables',{}))==1
+                assert attempts == 1,(
+                    'unknown payload was replayed through the actual BE proxy')
+                report = dict(
+                    format_version=2,
+                    kind='actual_accepted_merge_response_loss_quarantine',
+                    protocol='merge_async',
+                    recovery='off',
+                    gtid_mode=gtid_mode,
+                    starrocks_version=version,
+                    dropped_accepted_requests=1,
+                    independently_confirmed_original_visible=True,
+                    unrelated_target_exact_before_restart=True,
+                    unrelated_target_exact_after_restart=True,
+                    before_rows=before_rows,
+                    after_rows=after_rows,
+                    durable_unknown_parts=retained,
+                    unknown_payload_not_replayed=True,
+                    unknown_payload_forward_attempts=attempts,
+                    health='degraded',
+                    scope='target_isolation_without_automatic_reconciliation',
+                )
             args.output.parent.mkdir(parents=True,exist_ok=True)
             args.output.write_text(json.dumps(report,indent=2)+'\n')
             print(json.dumps(report),flush=True)
