@@ -11902,22 +11902,49 @@ def main():
         return 0
 
     if args.command == "explain":
-        if args.sql_file:
-            parser.error(
-                "python j4.py explain does not accept a file argument")
         bootstrap=cdc_catalog.catalog_paths(__file__)
         variables=cdc_catalog.variables_get(
             bootstrap["catalog"])
         paths=cdc_catalog.catalog_paths(
             __file__,variables=variables)
-        plan=cdc_catalog.load_plan(
-            paths["catalog"],paths["seed"])
-        status=durable_status_snapshot(
-            paths["state"])
+        if args.sql_file:
+            sql_text=open(
+                args.sql_file,"r",
+                encoding="utf-8").read()
+            plan=cdc_catalog.preview_batch(
+                paths["catalog"],
+                cdc_catalog.split_commands(
+                    sql_text))
+            value=catalog_explain.explain(
+                plan,None)
+            value["preview"]=dict(
+                dry_run=True,
+                statements=int(
+                    plan.get("statements",0)),
+                would_change=bool(
+                    plan.get("changed",False)),
+                plan_changed=bool(
+                    plan.get("plan_changed",False)),
+                publish_requested=bool(
+                    plan.get(
+                        "publish_requested",False)),
+                candidate_new=bool(
+                    plan.get("is_new",False)),
+                configuration_variables=list(
+                    plan.get(
+                        "configuration_variables",
+                        ())),
+            )
+        else:
+            plan=cdc_catalog.load_plan(
+                paths["catalog"],paths["seed"])
+            status=durable_status_snapshot(
+                paths["state"])
+            value=catalog_explain.explain(
+                plan,status)
         print(
             orjson.dumps(
-                catalog_explain.explain(
-                    plan,status),
+                value,
                 option=orjson.OPT_SORT_KEYS
             ).decode("utf-8"),
             flush=True)
@@ -11939,7 +11966,10 @@ def main():
             publish_callback=validate_local_catalog_publish)
 
     if args.sql_file:
-        parser.error("a SQL file is valid only with 'python j4.py sql <file.sql>'")
+        parser.error(
+            "a SQL file is valid only with "
+            "'python j4.py sql <file.sql>' or "
+            "'python j4.py explain <file.sql>'")
 
     if args.command == "selftest":
         if cdc_catalog.selftest():
