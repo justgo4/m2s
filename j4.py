@@ -10298,7 +10298,7 @@ def stateful_rebuild_frontier_for_task(
 
 
 def stateful_rebuild_switch_runtime(
-        runtime,rebuild,candidate
+        runtime,rebuild,candidate,plan_complete
 ):
     sink=str(rebuild["sink_key"])
     new_item=next(
@@ -10330,12 +10330,26 @@ def stateful_rebuild_switch_runtime(
                 (version,sink)]=live_mapping
         runtime["stateful_mappings"].pop(
             (old_version,sink),None)
-        runtime["active_plan_version"]=int(
-            candidate["version"])
-        runtime["pending_plan"]=None
-        runtime["deferred_plan"]=None
-        runtime["stateful_tasks"]=list(
-            candidate["stateful_candidate_tasks"])
+        current=[]
+        replaced=False
+        for item in runtime.get(
+            "stateful_tasks",()
+        ):
+            task_id=item["task"]["task_id"]
+            if task_id==rebuild["old_task_id"]:
+                if not replaced:
+                    current.append(new_item)
+                    replaced=True
+                continue
+            if task_id==rebuild["new_task_id"]:
+                if not replaced:
+                    current.append(new_item)
+                    replaced=True
+                continue
+            current.append(item)
+        if not replaced:
+            current.append(new_item)
+        runtime["stateful_tasks"]=current
         active_ids=runtime.setdefault(
             "stateful_active_task_ids",set())
         active_ids.discard(
@@ -10345,6 +10359,13 @@ def stateful_rebuild_switch_runtime(
         runtime.setdefault(
             "stateful_rebuild_plans",{}).pop(
                 sink,None)
+        if plan_complete:
+            runtime["active_plan_version"]=int(
+                candidate["version"])
+            runtime["pending_plan"]=None
+            runtime["deferred_plan"]=None
+            runtime["stateful_tasks"]=list(
+                candidate["stateful_candidate_tasks"])
     return old_item,new_item
 
 
@@ -10411,27 +10432,44 @@ def stateful_rebuild_try_cutover(
     if candidate is None:
         raise RuntimeError(
             "stateful rebuild candidate plan disappeared before cutover")
+    siblings=[
+        spec for spec in candidate.get(
+            "stateful_rebuilds",())
+        if str(spec["sink"])!=str(
+            rebuild["sink_key"])
+    ]
+    plan_complete=True
+    for spec in siblings:
+        sibling=stateful_rebuild.maybe_info(
+            con,spec["sink"])
+        if (
+            sibling is not None
+            and sibling["phase"]!="complete"
+        ):
+            plan_complete=False
+            break
     with state_transaction(con):
-        meta_set(
-            con,"active_plan_version",
-            int(candidate["version"]))
-        meta_set(
-            con,"fingerprint",
-            candidate["fingerprint"])
-        meta_set(
-            con,"plan_cutover_position",
-            meta_get(con,"read_position"))
-        meta_set(
-            con,"plan_cutover_time",
-            time.time())
-        meta_set(
-            con,"plan_history_mode",
-            "stateful_shadow_rebuild")
+        if plan_complete:
+            meta_set(
+                con,"active_plan_version",
+                int(candidate["version"]))
+            meta_set(
+                con,"fingerprint",
+                candidate["fingerprint"])
+            meta_set(
+                con,"plan_cutover_position",
+                meta_get(con,"read_position"))
+            meta_set(
+                con,"plan_cutover_time",
+                time.time())
+            meta_set(
+                con,"plan_history_mode",
+                "stateful_shadow_rebuild")
         stateful_rebuild.mark_cleanup(
             con,rebuild["sink_key"])
 
     old_item,new_item=stateful_rebuild_switch_runtime(
-        runtime,rebuild,candidate)
+        runtime,rebuild,candidate,plan_complete)
     retired=stateful_catalog_runtime.retire_task(
         con,cfg,kind,old)
     stateful_physical_registry.gc_retired(
@@ -10440,13 +10478,31 @@ def stateful_rebuild_try_cutover(
         cfg,rebuild)
     stateful_rebuild.mark_complete(
         con,rebuild["sink_key"])
+    remaining=[
+        str(spec["sink"])
+        for spec in candidate.get(
+            "stateful_rebuilds",())
+        if str(spec["sink"])!=str(
+            rebuild["sink_key"])
+        and (
+            stateful_rebuild.maybe_info(
+                con,spec["sink"]) is not None
+            and stateful_rebuild.info(
+                con,spec["sink"])["phase"]!="complete"
+        )
+    ]
     catalog_activation_record(
         runtime,dict(
-            status="active",
+            status=(
+                "active"
+                if plan_complete
+                else "rebuild_pending"),
             version=int(candidate["version"]),
             history_mode="stateful_shadow_rebuild",
-            stateful_changed_sinks=[
-                rebuild["sink_key"]]))
+            stateful_changed_sinks=(
+                sorted(remaining)
+                if remaining
+                else [rebuild["sink_key"]])))
     log(
         "STATEFUL REBUILD ACTIVE sink=%s frontier=%d old=%s new=%s "
         "remote_swap=%d old_status=%s"
