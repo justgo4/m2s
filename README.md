@@ -179,4 +179,19 @@ python j4.py sql setup.sql    # 另一终端部署
 python j4.py cli              # 或交互部署
 ```
 
+正式 P11 认证使用代码内唯一 profile，避免把自定义 smoke 当成 50M/72h 结果。认证前工作树必须 clean；MySQL/StarRocks 必须是一次性测试实例，且运行目录必须为空或不存在。以下命令会固定为 **50,000,000 初始行、50 rows/s、72h、10 个动态任务、每 6h 强退一次、8 GiB m2s 内存预算、adaptive sharing**，并保留中途 checkpoint：
+
+```bash
+git status --porcelain
+python tools/longhaul_workload.py --isolated --certification-profile \
+  --work-directory /data/m2s-p11-run/work \
+  --output /data/m2s-p11-run/longhaul-workload.json
+
+python tools/longhaul_gate.py /data/m2s-p11-run/longhaul-workload.json \
+  --require-profile \
+  --output /data/m2s-p11-run/longhaul-gate.json
+```
+
+`--certification-profile` 对任一 workload 参数偏离 canonical profile 都直接拒绝；正式 gate 还要求相同 profile 身份、clean worktree 证据、稳定的服务资源 scope/配额、完整 source/sink 资源计量、故障恢复、最终 drain、空间/rowset/version debt 与结果精确性。自定义短测不使用该开关。
+
 公开仓库只提交通用代码、合成配置/数据和公开测量；真实凭据、地址、业务数据、生产日志、SQLite/WAL 和 metrics 不得提交。
