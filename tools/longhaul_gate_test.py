@@ -305,7 +305,7 @@ def main():
     assert full["evidence"]["daemon_resources"]["peak_rss_bytes"]==768*1024**2
     assert abs(
         full["evidence"]["daemon_resources"]["cpu_core_equivalent"]
-        -(36*3600)/elapsed
+        -(36*3600)/workload()["duration_seconds"]
     )<1e-12
 
     bad=workload()
