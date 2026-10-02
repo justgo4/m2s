@@ -716,6 +716,7 @@ def run(args):
             sequence=0
             commit_times={}
             latency=[]
+            recovery_latency=[]
             daemon_index=1
             faults=[]
             source_ready_at=None
@@ -781,7 +782,7 @@ def run(args):
                         proc,log,state_path,cfg,
                         commit_times,
                         args.fault_recovery_timeout_seconds)
-                    latency.extend(
+                    recovery_latency.extend(
                         recovered["latencies"])
                     faults.append(dict(
                         sequence=before,
@@ -950,6 +951,21 @@ def run(args):
                 latency_max_seconds=(
                     max(latency)
                     if latency else None),
+                latency_over_5_seconds=sum(
+                    1 for value in latency
+                    if float(value)>5.0),
+                latency_over_10_seconds=sum(
+                    1 for value in latency
+                    if float(value)>10.0),
+                recovery_latency_samples=len(
+                    recovery_latency),
+                recovery_latency_p95_seconds=percentile(
+                    recovery_latency,.95),
+                recovery_latency_p99_seconds=percentile(
+                    recovery_latency,.99),
+                recovery_latency_max_seconds=(
+                    max(recovery_latency)
+                    if recovery_latency else None),
                 dynamic_tasks=int(
                     args.dynamic_tasks),
                 dynamic_task_ready_seconds=dict(
