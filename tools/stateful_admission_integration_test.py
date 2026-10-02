@@ -107,9 +107,78 @@ def main():
         finally:
             con.close()
 
+        # A successful reservation must be released if hot-add preparation
+        # fails before a durable task descriptor is registered.
+        release_candidate=dict(
+            version=4,
+            stateful_additions=[
+                task("release-hot","starrocks.release_hot"),
+            ],
+            stateful_added_manifests=[],
+            stateful_source_metadata={},
+        )
+        release_cfg=dict(
+            state=state,
+            stateful_admission_max_state_bytes=100,
+            stateful_admission_reserve_state_bytes=60,
+        )
+        with patch.object(
+            j4,"ensure_stateful_hot_add_targets_empty",
+            side_effect=RuntimeError(
+                "synthetic hot-add failure")
+        ):
+            try:
+                j4.prepare_hot_stateful_additions(
+                    release_cfg,{},release_candidate)
+                raise AssertionError(
+                    "synthetic hot-add failure was ignored")
+            except RuntimeError as exc:
+                assert "synthetic hot-add failure" in str(exc)
+        con=j4.open_state(state)
+        try:
+            released=stateful_admission.decision_info(
+                con,"release-hot")
+            assert released["admitted"]
+            assert released["reserved_state_bytes"]==0
+            assert released["reason"].startswith("released:")
+        finally:
+            con.close()
+
+        # Rebuild admission is released if activation fails before a durable
+        # stateful_rebuild intent owns the new generation.
+        release_rebuild=dict(
+            version=5,
+            stateful_rebuilds=[dict(
+                sink="starrocks.release_rebuild",
+                old=task(
+                    "release-old",
+                    "starrocks.release_rebuild"),
+                new=task(
+                    "release-new",
+                    "starrocks.release_rebuild"),
+            )],
+        )
+        try:
+            j4.activate_stateful_rebuild_candidate(
+                release_cfg,{},release_rebuild)
+            raise AssertionError(
+                "invalid rebuild was unexpectedly activated")
+        except KeyError:
+            pass
+        con=j4.open_state(state)
+        try:
+            released=stateful_admission.decision_info(
+                con,"release-new")
+            assert released["admitted"]
+            assert released["reserved_state_bytes"]==0
+            assert released["reason"].startswith("released:")
+        finally:
+            con.close()
+
     print(
         "stateful_admission_integration_test ok "
-        "hot_add_pre_side_effect rebuild_pre_side_effect",
+        "hot_add_pre_side_effect rebuild_pre_side_effect "
+        "failed_reservation_release",
         flush=True,
     )
 
