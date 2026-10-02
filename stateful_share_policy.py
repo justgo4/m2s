@@ -87,6 +87,12 @@ def _limits(cfg=None):
         max_observed_visible_lag=max(
             0,int(cfg.get(
                 "stateful_share_max_observed_visible_lag",10000))),
+        max_state_rows=max(
+            0,int(cfg.get(
+                "stateful_share_max_state_rows",0))),
+        max_state_bytes=max(
+            0,int(cfg.get(
+                "stateful_share_max_state_bytes",0))),
     )
 
 
@@ -621,6 +627,16 @@ def choose(con,kind,task,candidates,cfg=None):
             >limits["max_observed_visible_lag"]
         ):
             reasons.append("observed_visible_lag")
+        if (
+            limits["max_state_rows"]>0
+            and metrics["state_rows"]>limits["max_state_rows"]
+        ):
+            reasons.append("state_rows")
+        if (
+            limits["max_state_bytes"]>0
+            and metrics["state_payload_bytes"]>limits["max_state_bytes"]
+        ):
+            reasons.append("state_bytes")
         if reasons:
             rejected.append(dict(
                 leader_task_id=metrics["leader_task_id"],
