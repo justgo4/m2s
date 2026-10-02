@@ -10579,17 +10579,29 @@ def run_cdc(
                            mapping_key(m):int(cfg["batch_bytes"])
                            for m in worker_mappings},
                        lane_locks={},plan_lock=threading.RLock(),
-                       active_plan_version=int(cfg.get("catalog_version",0)),
-                       catalog_activation=dict(status="active",version=int(cfg.get("catalog_version",0))),
+                       active_plan_version=int(active_version),
+                       catalog_activation=dict(
+                           status=(
+                               "rebuild_pending"
+                               if startup_rebuild_specs else "active"),
+                           version=(
+                               int(cfg.get("catalog_version",0))
+                               if startup_rebuild_specs
+                               else int(active_version))),
                        plans=recovered_plans,
                        stateful_mappings=stateful_mappings,
-                       stateful_tasks=list(compiled_stateful),
+                       stateful_tasks=list(startup_stateful_workers),
                        stateful_active_task_ids={
                            item["task"]["task_id"]
                            for item in (
-                               list(compiled_stateful)
+                               list(startup_stateful_workers)
                                +list(retiring_stateful))},
                        stateful_worker_threads={},
+                       stateful_rebuild_plans=dict(
+                           startup_rebuild_plans),
+                       stateful_rebuild_locks={
+                           str(spec["sink"]):threading.Lock()
+                           for spec in startup_rebuild_specs},
                        stateful_retire_frontiers={
                            item["task"]["task_id"]:int(item["frontier"])
                            for item in retiring_stateful},
@@ -10625,7 +10637,11 @@ def run_cdc(
         log(f"REPORT metrics={metrics_path} summary={summary_path} "
             f"detail_logs={int(cfg['detail_logs'])}")
         published_version = int(cfg.get("catalog_published_version",0))
-        if published_version and published_version != runtime_active_version(runtime):
+        if (
+            published_version
+            and published_version != runtime_active_version(runtime)
+            and not startup_rebuild_specs
+        ):
             queue_hot_catalog_plan(
                 cfg,runtime,dict(version=published_version))
         for mapping in worker_mappings:
@@ -10702,7 +10718,7 @@ def run_cdc(
                     for mapping in prepared)
             stateful_worker_items=[]
             seen_stateful_workers=set()
-            for item in list(compiled_stateful)+list(retiring_stateful):
+            for item in list(startup_stateful_workers)+list(retiring_stateful):
                 task_id=item["task"]["task_id"]
                 if task_id in seen_stateful_workers:
                     continue
