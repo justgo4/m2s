@@ -141,6 +141,49 @@ def main():
     assert checks["expected_digest"]==longhaul_workload._rows_digest(
         expected)
 
+
+    with tempfile.TemporaryDirectory(
+        prefix="m2s-longhaul-workdir-test-"
+    ) as td:
+        root=Path(td)
+        explicit=root/"persistent"
+        with longhaul_workload.work_directory(
+            explicit
+        ) as directory:
+            assert directory==explicit.resolve()
+            assert (
+                directory/".m2s-longhaul-workdir"
+            ).read_text(
+                encoding="utf-8"
+            )=="format_version=1\n"
+            (directory/"daemon.log").write_text(
+                "retained\n",encoding="utf-8")
+        assert (
+            explicit/"daemon.log"
+        ).read_text(
+            encoding="utf-8"
+        )=="retained\n"
+
+        occupied=root/"occupied"
+        occupied.mkdir()
+        (occupied/"stale").write_text(
+            "x",encoding="utf-8")
+        try:
+            with longhaul_workload.work_directory(
+                occupied
+            ):
+                raise AssertionError(
+                    "non-empty work directory was accepted")
+        except RuntimeError as exc:
+            assert "must be empty" in str(exc)
+
+        disposable=None
+        with longhaul_workload.work_directory() as directory:
+            disposable=directory
+            assert directory.exists()
+        assert disposable is not None
+        assert not disposable.exists()
+
     with tempfile.TemporaryDirectory(
         prefix="m2s-longhaul-helper-"
     ) as td:
@@ -197,7 +240,7 @@ def main():
     print(
         "longhaul_workload_test ok percentile source_ready "
         "per_transaction_sentinel continuous_source_during_fault crash_catchup aggregate_exactness "
-        "evidence_copy",
+        "work_directory_retention evidence_copy",
         flush=True,
     )
 
