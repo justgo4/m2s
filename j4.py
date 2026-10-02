@@ -1358,6 +1358,10 @@ def read_config():
         txn_spool_max_bytes=env_int(
             "CDC_TXN_SPOOL_MAX_BYTES",transaction_spool_default,
             minimum=64*1024**2,maximum=64*1024**3),
+        source_apply_max_pending_bytes=env_int(
+            "CDC_SOURCE_APPLY_MAX_PENDING_BYTES",
+            512*1024**2,minimum=16*1024**2,
+            maximum=64*1024**3),
         commit_interval_ms=env_int("CDC_COMMIT_INTERVAL_MS", 2000, maximum=10000),
         pressure_max_seconds=env_int("CDC_PRESSURE_MAX_SECONDS", 60, maximum=600),
         load_mode=env("CDC_LOAD_MODE", "merge_async").strip().lower(),
@@ -9601,7 +9605,7 @@ def capture_binlog_native(cfg, prepared, runtime):
                                     else None),
                                 source_epoch=runtime.get("source_uuid"))
                             if shared_source_state:
-                                source_state.apply_pending(con)
+                                runtime["source_apply_event"].set()
                             if changed_tables:
                                 runtime["cdc_transactions"] += 1
                                 for table in changed_tables:
@@ -9630,6 +9634,14 @@ def capture_binlog_native(cfg, prepared, runtime):
                                         runtime,activated)
                                     by_sink = activated["by_table"]
                                     by_source = activated["by_source"]
+                            while (
+                                shared_source_state
+                                and source_state.apply_pending_bytes(con)
+                                >=cfg["source_apply_max_pending_bytes"]
+                                and not stop.is_set()
+                            ):
+                                runtime["source_apply_event"].set()
+                                stop.wait(0.02)
                             while meta_get(con,"pending_bytes",0) >= cfg["max_backlog_bytes"] and not stop.is_set():
                                 stop.wait(0.05)
                         elif not in_transaction:
@@ -9703,6 +9715,23 @@ def capture_binlog(cfg, prepared, runtime):
     return capture_binlog_native(cfg,prepared,runtime)
 
 
+def source_state_apply_worker(cfg, runtime):
+    con=open_state(cfg["state"])
+    stop=runtime["stop"]
+    wake=runtime["source_apply_event"]
+    try:
+        while not stop.is_set():
+            applied=source_state.apply_pending(
+                con,max_commits=16)
+            if applied:
+                sync_source_base_catalog(con)
+                continue
+            wake.wait(0.2)
+            wake.clear()
+    finally:
+        con.close()
+
+
 def source_state_snapshot_worker(mapping, cfg, runtime):
     con = open_state(cfg["state"])
     source = None
@@ -9752,7 +9781,7 @@ def source_state_snapshot_worker(mapping, cfg, runtime):
                 if not position_ge(meta_get(con,"read_position"),high):
                     stop.wait(0.02)
                     continue
-                source_state.apply_pending(con)
+                runtime["source_apply_event"].set()
                 try:
                     source_state.stage_snapshot_batch(
                         con,relation,
@@ -11666,6 +11695,7 @@ def run_cdc(
             -current_stateful_keys
         )
         runtime = dict(stop=control["stop"],reader_ready=threading.Event(),errors=[],
+                       source_apply_event=threading.Event(),
                        error_lock=threading.Lock(),stream=None,source_uuid=str(source_uuid),source_seen=now,
                        source_data_seen=now,heartbeat_count=0,cdc_transactions=0,
                        load_events=load_events,pressure_until={mapping_key(m):0 for m in worker_mappings},
@@ -11791,6 +11821,14 @@ def run_cdc(
                 name="stateful-admission-retry")
             admission_retry_thread.start()
             threads.append(admission_retry_thread)
+            if cfg.get("shared_source_state",False):
+                source_apply_thread=threading.Thread(
+                    target=guarded_worker,
+                    args=(source_state_apply_worker,runtime,cfg),
+                    name="source-state-apply")
+                source_apply_thread.start()
+                threads.append(source_apply_thread)
+                runtime["source_apply_event"].set()
             if cfg["load_mode"] == "merge_async":
                 for mapping in list(worker_mappings):
                     for worker_id in range(cfg["writer_max"]):
