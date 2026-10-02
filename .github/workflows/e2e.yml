@@ -55,12 +55,17 @@ on:
       - '.github/workflows/e2e.yml'
   workflow_dispatch:
   workflow_call:
+    inputs:
+      milestone:
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: e2e-${{ github.event_name }}-${{ github.event_name == 'workflow_call' && github.sha || github.ref }}
+  group: e2e-${{ inputs.milestone && github.sha || github.ref }}
   cancel-in-progress: true
 
 jobs:
