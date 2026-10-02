@@ -709,8 +709,38 @@ def main():
                     "identical hot aggregate did not use shared physical "
                     "state; diagnostics="+daemon_text[-6000:])
 
+            # Hot-add an identical JOIN too. It must attach to the existing
+            # two-source compute state rather than build and maintain a second
+            # pair index.
+            result,response,activation=run_catalog_sql(
+                directory,env,"add-join-hot",
+                "CREATE TABLE starrocks.joined_hot AS "
+                "SELECT o.id AS order_id,c.name AS customer_name,"
+                "o.amount AS amount "
+                "FROM mysql.orders o INNER JOIN mysql.customers c "
+                "ON o.customer_id=c.id;")
+            if (
+                result.returncode!=0
+                or activation.get("status") not in {
+                    "hot_pending",
+                    "deferred_until_snapshot_done",
+                    "deferred_until_previous_plan_drained",
+                }
+            ):
+                raise AssertionError(
+                    "stateful hot JOIN add was not accepted online: "
+                    +json.dumps(response,sort_keys=True))
+            join_hot_state,join_hot_before=wait_hot_join_exact(
+                proc,log,directory,source,cfg)
+            if len(join_hot_state.get("join_shared",()))!=1:
+                raise AssertionError(
+                    "identical hot JOIN did not attach to shared "
+                    "compute state: "+repr(join_hot_state))
+
             mutate_after_hot_add(source)
             hot_live_state,hot_after=wait_hot_aggregate_exact(
+                proc,log,directory,source,cfg)
+            join_hot_live_state,join_hot_after=wait_hot_join_exact(
                 proc,log,directory,source,cfg)
 
             # Drop the hot-added task without restarting. The target table is
@@ -739,6 +769,31 @@ def main():
             if aggregate_actual(cfg,"agg_hot")!=aggregate_expected(source):
                 raise AssertionError(
                     "retired hot aggregate target was not preserved exactly")
+
+            result,response,activation=run_catalog_sql(
+                directory,env,"drop-join-hot",
+                "DROP TABLE starrocks.joined_hot;")
+            if (
+                result.returncode!=0
+                or activation.get("status") not in {
+                    "hot_pending",
+                    "deferred_until_snapshot_done",
+                    "deferred_until_previous_plan_drained",
+                }
+            ):
+                raise AssertionError(
+                    "stateful hot JOIN drop was not accepted online: "
+                    +json.dumps(response,sort_keys=True))
+            join_hot_retired=wait_stateful_retired(
+                proc,log,directory,"starrocks.joined_hot",
+                kind="inner_join")
+            if join_hot_retired.get("join_shared"):
+                raise AssertionError(
+                    "retired shared JOIN follower binding leaked: "
+                    +repr(join_hot_retired))
+            if join_actual(cfg,"joined_hot")!=join_expected(source):
+                raise AssertionError(
+                    "retired hot JOIN target was not preserved exactly")
 
             # Retire the original long-running aggregate online as well. JOIN
             # remains active and exact, proving drop is not only safe for a
