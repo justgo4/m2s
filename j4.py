@@ -2693,16 +2693,28 @@ def commit_spool(
     spool.seek(0)
     now = time.time()
     with state_transaction(con):
-        old = meta_get(con, "read_position")
-        if position_ge(old, position):
-            return set()
-        total, changed_tables = 0, set()
-        source_seq = None
         if source_parts is not None and source_spool is not None:
             raise RuntimeError(
                 "source-state commit received both in-memory and spooled parts")
         if source_spool is not None:
             source_parts=source_part_records(source_spool)
+        old = meta_get(con, "read_position")
+        if position_ge(old, position):
+            # A reconnect can redeliver the transaction at the durable cursor.
+            # Shared source state must prove that this is the exact same
+            # transaction before the normal cursor-idempotence fast path skips
+            # it.  Older stale positions are also rejected if their durable
+            # identity has already been GCed instead of silently accepting an
+            # unverifiable replay.
+            if source_parts is not None:
+                if not source_epoch:
+                    raise RuntimeError(
+                        "source-state replay validation requires a source epoch")
+                source_state.validate_commit_replay(
+                    con,source_epoch,position,gtid,source_parts)
+            return set()
+        total, changed_tables = 0, set()
+        source_seq = None
         if source_parts is not None:
             if not source_epoch:
                 raise RuntimeError("source-state logging requires a source epoch")
