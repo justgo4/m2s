@@ -7182,6 +7182,292 @@ def quarantine_pending_merges(con, runtime):
     return len(tables)
 
 
+def merge_replay_mapping_reason(mapping):
+    """Return None only when replay bytes fully determine target row state."""
+    target_schema = mapping.get("_target_schema") or {}
+    if not target_schema:
+        return "target schema is unavailable"
+    controlled = set(mapping.get("_output_columns") or ())
+    controlled.update(
+        str(value)
+        for value in (mapping.get("_size_columns") or {}).values())
+    if mapping.get("_target_sequence"):
+        controlled.add("_cdc_seq")
+    target_columns = set(str(name) for name in target_schema)
+    missing = sorted(controlled-target_columns)
+    if missing:
+        return "replay columns missing from target schema: "+",".join(missing)
+    extra = sorted(target_columns-controlled)
+    if extra:
+        return (
+            "target has columns outside the immutable replay payload: "
+            +",".join(extra))
+    return None
+
+
+def merge_quarantine_note(runtime, table, **values):
+    with runtime["control_lock"]:
+        quarantined = runtime.setdefault("quarantined_tables",{})
+        detail = dict(quarantined.get(table) or {})
+        changed = any(detail.get(key) != value for key,value in values.items())
+        detail.update(values)
+        quarantined[table] = detail
+    return changed
+
+
+def release_merge_quarantine(con, table, runtime, reason):
+    if con.execute(
+            "SELECT 1 FROM merge_uncertain WHERE table_name=? LIMIT 1",
+            (table,)).fetchone():
+        return False
+    with runtime["control_lock"]:
+        detail = runtime.setdefault("quarantined_tables",{}).pop(table,None)
+    if detail is not None:
+        log(
+            f"MERGE QUARANTINE CLEARED table={table} "
+            f"reason={str(reason)[:1000]} journal_retained=1")
+        wake_loaders(runtime,table)
+    return detail is not None
+
+
+def merge_uncertain_replay_candidate(con, table, cfg, runtime):
+    if cfg.get("merge_uncertain_recovery","off") != "idempotent":
+        return None,"automatic idempotent replay is disabled"
+    maximum = max(0,int(cfg.get("merge_uncertain_replay_max",0)))
+    if maximum <= 0:
+        return None,"automatic idempotent replay attempt budget is zero"
+    row = con.execute("""
+        SELECT u.delivery_id,u.part,u.lane,u.label,u.payload_sha256,
+               u.replay_attempts,u.last_replay,
+               p.payload,p.nrows,p.visible,p.txn_id,
+               d.table_name,d.lane,d.plan_version
+        FROM merge_uncertain u
+        LEFT JOIN load_parts p
+          ON p.delivery_id=u.delivery_id AND p.part=u.part
+        LEFT JOIN deliveries d ON d.id=u.delivery_id
+        WHERE u.table_name=?
+        ORDER BY u.created,u.delivery_id,u.part
+        LIMIT 1
+    """,(table,)).fetchone()
+    if row is None:
+        return None,"no unresolved Merge Commit request"
+    (
+        delivery,part,marker_lane,label,payload_sha256,
+        attempts,last_replay,payload,nrows,visible,txn_id,
+        delivery_table,owner_lane,plan_version,
+    ) = row
+    attempts = int(attempts or 0)
+    if attempts >= maximum:
+        return None,(
+            f"automatic replay budget exhausted attempts={attempts} "
+            f"maximum={maximum}")
+    if last_replay is not None:
+        base = max(1,int(cfg.get(
+            "merge_uncertain_replay_backoff_seconds",2)))
+        delay = min(300,base*(2**min(attempts,8)))
+        retry_at = float(last_replay)+delay
+        if time.time() < retry_at:
+            return None,f"automatic replay backoff until={retry_at:.6f}"
+    if payload is None or delivery_table is None:
+        return None,"uncertain marker lost its durable delivery/load part"
+    if str(delivery_table) != str(table):
+        return None,"uncertain marker delivery table changed"
+    if int(owner_lane) != int(marker_lane):
+        return None,"uncertain marker owner lane changed"
+    if int(visible or 0) or txn_id is not None:
+        return None,"uncertain marker conflicts with known load-part state"
+    digest = hashlib.sha256(payload).hexdigest()
+    if not hmac.compare_digest(str(payload_sha256),digest):
+        return None,"uncertain replay payload SHA-256 mismatch"
+
+    lanes = delivery_lanes(con,delivery)
+    if not lanes or int(marker_lane) not in lanes:
+        return None,"uncertain delivery no longer owns its durable lane set"
+    for lane in lanes:
+        if lane_blocking_delivery(con,table,lane) != delivery:
+            return None,(
+                "uncertain delivery is not the FIFO blocker for lane="
+                +str(lane))
+    try:
+        mapping = runtime_mapping(
+            runtime,int(plan_version),str(table))
+    except Exception as exc:
+        return None,(
+            "runtime mapping unavailable for uncertainty replay: "
+            +type(exc).__name__+": "+str(exc)[:500])
+    unsafe = merge_replay_mapping_reason(mapping)
+    if unsafe is not None:
+        return None,unsafe
+    return dict(
+        delivery=str(delivery),
+        part=int(part),
+        lane=int(marker_lane),
+        label=str(label),
+        payload=payload,
+        nrows=int(nrows or 0),
+        attempts=attempts,
+        last_replay=(
+            None if last_replay is None else float(last_replay)),
+        mapping=mapping,
+        lanes=[int(lane) for lane in lanes],
+    ),None
+
+
+def submit_merge_uncertain_replay(handle, con, candidate, cfg, runtime):
+    """Replay immutable bytes once without discarding the original marker on rejection."""
+    delivery = candidate["delivery"]
+    part = int(candidate["part"])
+    mapping = candidate["mapping"]
+    label = candidate["label"]
+    payload = candidate["payload"]
+    now = time.time()
+    with state_transaction(con):
+        row = con.execute("""
+            SELECT replay_attempts,last_replay
+            FROM merge_uncertain
+            WHERE delivery_id=? AND part=?
+        """,(delivery,part)).fetchone()
+        if row is None:
+            raise RuntimeError(
+                "uncertain replay marker disappeared before request")
+        previous_attempts = int(row[0] or 0)
+        previous_last_replay = row[1]
+        con.execute("""
+            UPDATE merge_uncertain
+            SET replay_attempts=replay_attempts+1,
+                last_replay=?,updated=?,
+                reason='automatic_idempotent_replay_inflight'
+            WHERE delivery_id=? AND part=?
+        """,(now,now,delivery,part))
+    attempt = previous_attempts+1
+    merge_quarantine_note(
+        runtime,mapping_key(mapping),
+        replay_disabled=False,replay_eligible=True,
+        replay_attempts=attempt,
+        replay_mode="idempotent_exact_payload")
+    log(
+        f"MERGE RECONCILE REPLAY table={mapping_key(mapping)} "
+        f"delivery={delivery} part={part} attempt={attempt} "
+        f"rows={candidate['nrows']} lanes={candidate['lanes']}")
+
+    url = merge_stream_load_url(cfg,mapping)
+    headers = merge_commit_headers(mapping,cfg,label)
+    try:
+        status,result = curl_request(
+            handle,cfg,url,payload,headers,None)
+    except pycurl.error as exc:
+        if curl_error_before_request(exc):
+            with state_transaction(con):
+                con.execute("""
+                    UPDATE merge_uncertain
+                    SET replay_attempts=?,last_replay=?,updated=?,
+                        reason='automatic_replay_pre_send_failure'
+                    WHERE delivery_id=? AND part=?
+                """,(
+                    previous_attempts,previous_last_replay,time.time(),
+                    delivery,part))
+        else:
+            mark_merge_uncertain(
+                con,mapping,delivery,part,
+                "automatic replay outcome uncertain: "+str(exc))
+        raise
+
+    state = str(result.get("Status","")).lower()
+    if 200 <= status < 300 and state == "success":
+        remote_txn = result.get("TxnId")
+        remote_label = str(result.get("Label","") or "")
+        if remote_txn is None or int(remote_txn) < 0 or not remote_label:
+            mark_merge_uncertain(
+                con,mapping,delivery,part,
+                "automatic replay success response lacks TxnId/Label: "
+                +load_result_text(result))
+            raise RuntimeError(
+                "automatic uncertainty replay returned success without "
+                "durable remote transaction identity")
+        remote_txn = int(remote_txn)
+        with state_transaction(con):
+            con.execute("""
+                UPDATE load_parts SET txn_id=?
+                WHERE delivery_id=? AND part=? AND visible=0
+            """,(remote_txn,delivery,part))
+            con.execute("""
+                DELETE FROM merge_uncertain
+                WHERE delivery_id=? AND part=?
+            """,(delivery,part))
+        metric_add_merge(
+            runtime,mapping_key(mapping),remote_txn,
+            candidate["nrows"],
+            int(result.get("LeftMergeTimeMs",0) or 0))
+        log(
+            f"MERGE RECONCILE ACCEPTED table={mapping_key(mapping)} "
+            f"delivery={delivery} part={part} txn={remote_txn} "
+            f"server_label={remote_label} duplicate_safe=1")
+        return remote_txn,result
+
+    reason = (
+        f"automatic replay rejected HTTP={status} "
+        f"response={load_result_text(result)}")
+    mark_merge_uncertain(
+        con,mapping,delivery,part,reason)
+    return None,result
+
+
+def reconcile_merge_quarantine(con, handle, table, cfg, runtime):
+    candidate,reason = merge_uncertain_replay_candidate(
+        con,table,cfg,runtime)
+    if candidate is None:
+        if reason == "no unresolved Merge Commit request":
+            return release_merge_quarantine(
+                con,table,runtime,"no uncertainty markers remain")
+        changed = merge_quarantine_note(
+            runtime,table,replay_eligible=False,
+            replay_blocked_reason=str(reason)[:1000])
+        if changed and "backoff until=" not in str(reason):
+            log(
+                f"MERGE RECONCILE BLOCKED table={table} "
+                f"reason={str(reason)[:1000]} journal_retained=1")
+        return False
+
+    try:
+        txn_id,result = submit_merge_uncertain_replay(
+            handle,con,candidate,cfg,runtime)
+        if txn_id is None:
+            merge_quarantine_note(
+                runtime,table,
+                replay_blocked_reason=load_result_text(result))
+            return False
+        state,detail = wait_visible(
+            cfg,txn_id,runtime["stop"])
+        if state == "visible":
+            with state_transaction(con):
+                con.execute("""
+                    UPDATE load_parts SET visible=1
+                    WHERE delivery_id=? AND part=? AND txn_id=?
+                """,(
+                    candidate["delivery"],candidate["part"],txn_id))
+            log(
+                f"MERGE RECONCILE VISIBLE table={table} "
+                f"delivery={candidate['delivery']} "
+                f"part={candidate['part']} txn={txn_id}")
+        else:
+            log(
+                f"MERGE RECONCILE KNOWN_ABORT table={table} "
+                f"delivery={candidate['delivery']} "
+                f"part={candidate['part']} txn={txn_id} "
+                f"detail={load_result_text(detail)}")
+        release_merge_quarantine(
+            con,table,runtime,
+            "uncertain request replaced by known replay transaction")
+        return True
+    except (RuntimeError,ValueError,pycurl.error,
+            pymysql.err.OperationalError,pymysql.err.InterfaceError) as exc:
+        merge_quarantine_note(
+            runtime,table,
+            replay_blocked_reason=(
+                type(exc).__name__+": "+str(exc)[:1000]))
+        return False
+
+
 def curl_error_before_request(exc):
     code = int(exc.args[0]) if getattr(exc,"args",None) else -1
     return code in {
