@@ -8,6 +8,9 @@ sharing for controlled A/B tests.  "adaptive" adds bounded lag/fanout/surplus
 admission and records the measured decision without changing semantics.
 """
 import json
+
+import aggregate_ir
+import join_ir
 import time
 
 import source_state
@@ -40,6 +43,18 @@ def install(con):
             copied_sequences INTEGER NOT NULL,
             created REAL NOT NULL,
             updated REAL NOT NULL);
+
+        CREATE TABLE IF NOT EXISTS stateful_share_preferences(
+            task_id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL,
+            preferred_leader_task_id TEXT NOT NULL,
+            reuse_mode TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            created REAL NOT NULL,
+            updated REAL NOT NULL);
+        CREATE INDEX IF NOT EXISTS stateful_share_preferences_leader
+            ON stateful_share_preferences(
+                preferred_leader_task_id,task_id);
     """)
 
 
@@ -210,10 +225,288 @@ def decision_info(con,task_id):
     )
 
 
+def preference_info(con,task_id):
+    row=con.execute("""
+        SELECT kind,preferred_leader_task_id,reuse_mode,
+               reason,created,updated
+        FROM stateful_share_preferences
+        WHERE task_id=?
+    """,(_text(task_id,"task_id"),)).fetchone()
+    if row is None:
+        raise KeyError(
+            "stateful share preference does not exist")
+    return dict(
+        task_id=str(task_id),
+        kind=str(row[0]),
+        preferred_leader_task_id=str(row[1]),
+        reuse_mode=str(row[2]),
+        reason=str(row[3]),
+        created=float(row[4]),
+        updated=float(row[5]),
+    )
+
+
+def maybe_preference(con,task_id):
+    try:
+        return preference_info(
+            con,task_id)
+    except KeyError:
+        return None
+
+
+def _durable_status(con,kind,task_id):
+    table=(
+        "aggregate_task_descriptors"
+        if kind=="aggregate"
+        else "join_task_descriptors"
+        if kind=="inner_join"
+        else None
+    )
+    if table is None:
+        raise ValueError(
+            "unsupported stateful sharing kind: "+str(kind))
+    row=con.execute(
+        "SELECT status,sink_key,plan_version FROM "
+        +table+" WHERE task_id=?",
+        (str(task_id),)
+    ).fetchone()
+    if row is None:
+        return None
+    return dict(
+        status=str(row[0]),
+        sink_key=str(row[1]),
+        plan_version=int(row[2]),
+    )
+
+
+def _task_with_status(con,item):
+    kind=str(item["kind"])
+    task=dict(item["task"])
+    durable=_durable_status(
+        con,kind,task["task_id"])
+    if durable is None:
+        return None
+    task["status"]=durable["status"]
+    return dict(kind=kind,task=task)
+
+
+def _reuse(kind,leader,follower):
+    if kind=="aggregate":
+        return aggregate_ir.reuse_plan(
+            leader["ir"],follower["ir"])
+    if kind=="inner_join":
+        return join_ir.reuse_plan(
+            leader["ir"],follower["ir"])
+    raise ValueError(
+        "unsupported stateful sharing kind: "+str(kind))
+
+
+def _width(kind,task):
+    if kind=="aggregate":
+        return len(task["ir"]["aggregates"])
+    if kind=="inner_join":
+        return len(task["ir"]["projections"])
+    raise ValueError(
+        "unsupported stateful sharing kind: "+str(kind))
+
+
+def _surplus(reuse):
+    return int(
+        reuse.get(
+            "surplus_aggregates",
+            reuse.get("surplus_projections",0)))
+
+
+def plan_graph(con,compiled,cfg=None):
+    """Persist deterministic leader preferences for a task set.
+
+    This removes startup-order dependence without creating follower chains.
+    Existing active compute owners outrank candidates; otherwise wider tasks
+    that cover more peers become roots, with task_id as the final stable tie
+    breaker.  Preferences are hints only: correctness is revalidated by the
+    aggregate/JOIN shared runtime before binding.
+    """
+    mode=policy_mode(cfg)
+    refreshed=[
+        value for value in (
+            _task_with_status(con,item)
+            for item in (compiled or ())
+        )
+        if value is not None
+    ]
+    candidate_ids=[
+        item["task"]["task_id"]
+        for item in refreshed
+        if item["task"]["status"]=="candidate"
+    ]
+    if candidate_ids:
+        marks=",".join("?" for _ in candidate_ids)
+        con.execute(
+            "DELETE FROM stateful_share_preferences "
+            "WHERE task_id IN ("+marks+")",
+            candidate_ids)
+    if mode=="off" or not refreshed:
+        return []
+
+    coverage={}
+    widths={}
+    for leader_item in refreshed:
+        kind=leader_item["kind"]
+        leader=leader_item["task"]
+        if leader["status"] not in {"candidate","active"}:
+            continue
+        count=0
+        for follower_item in refreshed:
+            follower=follower_item["task"]
+            if (
+                follower_item["kind"]!=kind
+                or follower["task_id"]==leader["task_id"]
+                or follower["status"]!="candidate"
+            ):
+                continue
+            if _reuse(kind,leader,follower) is not None:
+                count+=1
+        coverage[leader["task_id"]]=count
+        widths[leader["task_id"]]=_width(kind,leader)
+
+    def rank(item):
+        task=item["task"]
+        return (
+            0 if task["status"]=="active" else 1,
+            -int(coverage.get(task["task_id"],0)),
+            -int(widths.get(task["task_id"],0)),
+            str(task["task_id"]),
+        )
+
+    ranks={
+        item["task"]["task_id"]:rank(item)
+        for item in refreshed
+        if item["task"]["status"] in {"candidate","active"}
+    }
+    now=time.time()
+    planned=[]
+    for follower_item in refreshed:
+        kind=follower_item["kind"]
+        follower=follower_item["task"]
+        if follower["status"]!="candidate":
+            continue
+        follower_rank=ranks.get(
+            follower["task_id"])
+        choices=[]
+        for leader_item in refreshed:
+            if leader_item["kind"]!=kind:
+                continue
+            leader=leader_item["task"]
+            if (
+                leader["task_id"]==follower["task_id"]
+                or leader["status"] not in {"candidate","active"}
+            ):
+                continue
+            leader_rank=ranks.get(
+                leader["task_id"])
+            if leader_rank is None or not (
+                leader_rank<follower_rank
+            ):
+                continue
+            reuse=_reuse(
+                kind,leader,follower)
+            if reuse is None:
+                continue
+            score=(
+                leader_rank,
+                0 if reuse["mode"]=="exact" else 1,
+                _surplus(reuse),
+                str(leader["task_id"]),
+            )
+            choices.append(
+                (score,leader,reuse))
+        if not choices:
+            continue
+        choices.sort(key=lambda item:item[0])
+        _,leader,reuse=choices[0]
+        reason=(
+            "graph_active_owner"
+            if leader["status"]=="active"
+            else "graph_candidate_owner")
+        con.execute("""
+            INSERT INTO stateful_share_preferences(
+                task_id,kind,preferred_leader_task_id,
+                reuse_mode,reason,created,updated)
+            VALUES(?,?,?,?,?,?,?)
+            ON CONFLICT(task_id) DO UPDATE SET
+                kind=excluded.kind,
+                preferred_leader_task_id=excluded.preferred_leader_task_id,
+                reuse_mode=excluded.reuse_mode,
+                reason=excluded.reason,
+                updated=excluded.updated
+        """,(
+            follower["task_id"],kind,
+            leader["task_id"],reuse["mode"],
+            reason,now,now))
+        planned.append(
+            preference_info(
+                con,follower["task_id"]))
+    return planned
+
+
+def preference_pending(con,kind,task_id,cfg=None):
+    if policy_mode(cfg)=="off":
+        return False
+    preference=maybe_preference(
+        con,task_id)
+    if preference is None:
+        return False
+    if preference["kind"]!=str(kind):
+        raise RuntimeError(
+            "stateful share preference kind changed")
+    leader=_durable_status(
+        con,kind,
+        preference["preferred_leader_task_id"])
+    if leader is None or leader["status"] in {
+        "retired","failed"
+    }:
+        con.execute(
+            "DELETE FROM stateful_share_preferences "
+            "WHERE task_id=?",
+            (str(task_id),))
+        return False
+    if leader["status"]=="candidate":
+        return True
+    generation=con.execute("""
+        SELECT status FROM task_generations
+        WHERE sink_key=? AND plan_version=?
+    """,(
+        leader["sink_key"],leader["plan_version"],
+    )).fetchone()
+    return (
+        generation is None
+        or str(generation[0])!="ready"
+    )
+
+
 def choose(con,kind,task,candidates,cfg=None):
     """Return one correctness-approved candidate or None."""
     mode=policy_mode(cfg)
     candidates=list(candidates or ())
+    preference=maybe_preference(
+        con,task["task_id"])
+    if preference is not None and mode!="off":
+        if preference["kind"]!=str(kind):
+            raise RuntimeError(
+                "stateful share preference kind changed")
+        candidates=[
+            candidate for candidate in candidates
+            if str(candidate[0]["task_id"])
+            ==preference["preferred_leader_task_id"]
+        ]
+        if not candidates:
+            _record(
+                con,task["task_id"],kind,mode,
+                "preferred_leader_not_ready",
+                dict(
+                    preferred_leader_task_id=
+                    preference["preferred_leader_task_id"]))
+            return None
     if mode=="off":
         _record(
             con,task["task_id"],kind,mode,
@@ -371,9 +664,13 @@ def status(con):
                COALESCE(SUM(copied_sequences),0)
         FROM stateful_share_observations
     """).fetchone()
+    preferences=int(con.execute(
+        "SELECT COUNT(*) FROM stateful_share_preferences"
+    ).fetchone()[0])
     return dict(
         decisions=decisions,
         selected=selected,
+        preferences=preferences,
         samples=int(observed[0]),
         max_leader_lag=int(observed[1]),
         max_source_lag=int(observed[2]),
