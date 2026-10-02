@@ -260,6 +260,20 @@ def fail(con,sink_key,error):
     return info(con,sink_key)
 
 
+def for_task(con,task_id):
+    task_id=_text(task_id,"task_id")
+    row=con.execute("""
+        SELECT sink_key FROM stateful_rebuilds
+        WHERE (old_task_id=? OR new_task_id=?)
+          AND phase NOT IN ('complete','failed')
+        ORDER BY created DESC
+        LIMIT 1
+    """,(task_id,task_id)).fetchone()
+    if row is None:
+        return None
+    return info(con,row[0])
+
+
 def active(con):
     rows=con.execute("""
         SELECT sink_key FROM stateful_rebuilds
