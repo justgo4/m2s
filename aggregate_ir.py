@@ -228,6 +228,42 @@ def validate_ir(ir):
     return ir
 
 
+def reuse_plan(leader_ir,follower_ir):
+    """Return a safe exact/subview reuse plan for two aggregate IRs.
+
+    v1 partial reuse is intentionally narrow: both tasks must have the same
+    source/schema, filters, GROUP BY keys and SQL semantics, and every follower
+    aggregate must exist byte-for-byte in the leader by output/function/input.
+    The leader may maintain additional aggregate outputs.
+    """
+    validate_ir(leader_ir)
+    validate_ir(follower_ir)
+    for name in (
+        "source","source_filter","query_filter","group_keys","semantics"
+    ):
+        if leader_ir[name]!=follower_ir[name]:
+            return None
+    leader_outputs={
+        item["output"]:dict(item)
+        for item in leader_ir["aggregates"]
+    }
+    for item in follower_ir["aggregates"]:
+        if leader_outputs.get(item["output"])!=dict(item):
+            return None
+    exact=semantic_id(leader_ir)==semantic_id(follower_ir)
+    return dict(
+        mode="exact" if exact else "subview",
+        group_keys=list(follower_ir["group_keys"]),
+        aggregate_outputs=[
+            item["output"] for item in follower_ir["aggregates"]
+        ],
+        surplus_aggregates=(
+            len(leader_ir["aggregates"])
+            -len(follower_ir["aggregates"])
+        ),
+    )
+
+
 def state_spec(ir):
     validate_ir(ir)
     return aggregate_state.aggregate_spec(
