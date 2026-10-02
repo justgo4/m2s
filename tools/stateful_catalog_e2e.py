@@ -355,6 +355,36 @@ def aggregate_actual(cfg,table="agg"):
     ]
 
 
+def aggregate_subview_expected(source):
+    with source.cursor() as cur:
+        cur.execute(
+            "SELECT category,COUNT(*),SUM(amount) "
+            "FROM "+DATABASE+".orders "
+            "GROUP BY category ORDER BY category")
+        rows=cur.fetchall()
+    return [
+        (
+            str(row[0]),int(row[1]),
+            normalize_decimal(row[2]),
+        )
+        for row in rows
+    ]
+
+
+def aggregate_subview_actual(cfg,table="agg_subview"):
+    rows,_=execute(
+        cfg,
+        "SELECT category,n,total FROM "
+        +DATABASE+"."+str(table)+" ORDER BY category")
+    return [
+        (
+            str(row[0]),int(row[1]),
+            normalize_decimal(row[2]),
+        )
+        for row in rows
+    ]
+
+
 def join_expected(source):
     with source.cursor() as cur:
         cur.execute(
@@ -474,6 +504,43 @@ def wait_hot_aggregate_exact(
         % (state(directory/"state.sqlite3"),last))
 
 
+def wait_hot_aggregate_subview_exact(
+        proc,log,directory,source,cfg,
+        sink="starrocks.agg_subview",table="agg_subview",
+        timeout=240,check_base=True
+):
+    deadline=time.monotonic()+timeout
+    last=None
+    while time.monotonic()<deadline:
+        live(proc,log)
+        current=state(directory/"state.sqlite3")
+        if current is not None:
+            tasks=dict(current.get("aggregate_tasks",()))
+            if (
+                tasks.get(sink)=="active"
+                and current["pending"]==0
+                and current["deliveries"]==0
+            ):
+                expected=aggregate_subview_expected(source)
+                actual=aggregate_subview_actual(cfg,table)
+                base_ok=True
+                base_detail=None
+                if check_base:
+                    base_ok,base_detail=equal_results(
+                        source,cfg)
+                if expected==actual and base_ok:
+                    return current,dict(
+                        expected=expected,actual=actual,
+                        base=base_detail)
+                last=dict(
+                    expected=expected,actual=actual,
+                    base=base_detail)
+        time.sleep(.2)
+    raise AssertionError(
+        "hot aggregate subview did not become exact state=%r result=%r"
+        % (state(directory/"state.sqlite3"),last))
+
+
 def wait_hot_join_exact(
         proc,log,directory,source,cfg,
         sink="starrocks.joined_hot",table="joined_hot",timeout=240
@@ -584,6 +651,22 @@ def mutate_after_hot_add(source):
             cur.execute(
                 "INSERT INTO "+DATABASE+".orders "
                 "VALUES(7,'c',11,4.25)")
+        source.commit()
+    except BaseException:
+        source.rollback()
+        raise
+
+
+def mutate_after_shared_promotion(source):
+    source.begin()
+    try:
+        with source.cursor() as cur:
+            cur.execute(
+                "UPDATE "+DATABASE+".orders "
+                "SET amount=amount+1.50 WHERE id=7")
+            cur.execute(
+                "INSERT INTO "+DATABASE+".orders "
+                "VALUES(8,'d',11,6.75)")
         source.commit()
     except BaseException:
         source.rollback()
@@ -737,10 +820,47 @@ def main():
                     "identical hot JOIN did not attach to shared "
                     "compute state: "+repr(join_hot_state))
 
+            # A strict aggregate subview reuses the existing superset state
+            # (COUNT/SUM/AVG -> COUNT/SUM) and projects its durable output
+            # journal instead of scanning or maintaining another accumulator.
+            result,response,activation=run_catalog_sql(
+                directory,env,"add-agg-subview",
+                "CREATE TABLE starrocks.agg_subview AS "
+                "SELECT category, COUNT(*) AS n, "
+                "SUM(amount) AS total "
+                "FROM mysql.orders GROUP BY category;")
+            if (
+                result.returncode!=0
+                or activation.get("status") not in {
+                    "hot_pending",
+                    "deferred_until_snapshot_done",
+                    "deferred_until_previous_plan_drained",
+                }
+            ):
+                raise AssertionError(
+                    "aggregate subview hot add was not accepted online: "
+                    +json.dumps(response,sort_keys=True))
+            subview_state,subview_before=wait_hot_aggregate_subview_exact(
+                proc,log,directory,source,cfg)
+            if len(subview_state.get("aggregate_shared",()))!=2:
+                raise AssertionError(
+                    "aggregate subview did not attach to shared superset "
+                    "state: "+repr(subview_state))
+            daemon_text=log.read_text(errors="replace")
+            if (
+                "sink=starrocks.agg_subview" not in daemon_text
+                or "mode=shared_subview" not in daemon_text
+            ):
+                raise AssertionError(
+                    "aggregate subview sharing mode was not observed in "
+                    "daemon diagnostics="+daemon_text[-8000:])
+
             mutate_after_hot_add(source)
             hot_live_state,hot_after=wait_hot_aggregate_exact(
                 proc,log,directory,source,cfg)
             join_hot_live_state,join_hot_after=wait_hot_join_exact(
+                proc,log,directory,source,cfg)
+            subview_live_state,subview_after=wait_hot_aggregate_subview_exact(
                 proc,log,directory,source,cfg)
 
             # Drop the hot-added task without restarting. The target table is
@@ -825,11 +945,16 @@ def main():
                         "starrocks.agg")=="retired"
                     and dict(current["aggregate_tasks"]).get(
                         "starrocks.agg_hot")=="retired"
+                    and dict(current["aggregate_tasks"]).get(
+                        "starrocks.agg_subview")=="active"
                     and dict(current["join_tasks"]).get(
                         "starrocks.joined")=="active"
-                    and current["consumers"]==1
+                    and current["consumers"]==2
                     and current["pending"]==0
                     and current["deliveries"]==0
+                    and not current.get("aggregate_shared")
+                    and aggregate_subview_expected(source)
+                        ==aggregate_subview_actual(cfg)
                     and join_expected(source)==join_actual(cfg)
                 ):
                     retired=True
@@ -840,6 +965,45 @@ def main():
                 raise AssertionError(
                     "online stateful retire did not drain cleanly: "
                     +repr(state(directory/"state.sqlite3")))
+
+            # The promoted subview now owns a private projected state. Prove
+            # it continues normal incremental maintenance after the superset
+            # compute owner has disappeared.
+            mutate_after_shared_promotion(source)
+            promoted_state,promoted_after=wait_hot_aggregate_subview_exact(
+                proc,log,directory,source,cfg,check_base=False)
+            if join_expected(source)!=join_actual(cfg):
+                raise AssertionError(
+                    "JOIN diverged while promoted aggregate subview advanced")
+            if promoted_state.get("aggregate_shared"):
+                raise AssertionError(
+                    "promoted aggregate subview retained shared binding: "
+                    +repr(promoted_state))
+
+            result,response,activation=run_catalog_sql(
+                directory,env,"drop-agg-subview",
+                "DROP TABLE starrocks.agg_subview;")
+            if (
+                result.returncode!=0
+                or activation.get("status") not in {
+                    "hot_pending",
+                    "deferred_until_snapshot_done",
+                    "deferred_until_previous_plan_drained",
+                }
+            ):
+                raise AssertionError(
+                    "promoted aggregate subview drop was not accepted: "
+                    +json.dumps(response,sort_keys=True))
+            subview_retired=wait_stateful_retired(
+                proc,log,directory,"starrocks.agg_subview")
+            if (
+                subview_retired["consumers"]!=1
+                or dict(subview_retired["join_tasks"]).get(
+                    "starrocks.joined")!="active"
+            ):
+                raise AssertionError(
+                    "promoted aggregate subview retirement leaked state: "
+                    +repr(subview_retired))
 
             # JOIN uses the same retirement journal/frontier protocol but a
             # different pair-identity outbox. Retire it online too and preserve
@@ -889,6 +1053,8 @@ def main():
                 hard_restart_exact=True,
                 online_stateful_add=True,
                 physical_state_reuse=True,
+                aggregate_subview_reuse=True,
+                aggregate_subview_owner_promotion=True,
                 online_stateful_add_live_updates=True,
                 online_stateful_drop=True,
                 online_join_drop=True,
@@ -904,6 +1070,9 @@ def main():
                 third=third,
                 hot_before=hot_before,
                 hot_after=hot_after,
+                subview_before=subview_before,
+                subview_after=subview_after,
+                promoted_after=promoted_after,
                 retired_state=retired_state,
                 join_retired=join_retired,
             )
@@ -916,7 +1085,8 @@ def main():
                     key:value for key,value in report.items()
                     if key not in {
                         "first","second","third",
-                        "hot_before","hot_after","retired_state",
+                        "hot_before","hot_after","subview_before",
+                        "subview_after","promoted_after","retired_state",
                         "join_retired"
                     }
                 },sort_keys=True),
