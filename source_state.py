@@ -82,6 +82,17 @@ def install(con):
         CREATE INDEX IF NOT EXISTS source_commit_parts_table
             ON source_commit_parts(table_name,seq,part);
 
+        CREATE TABLE IF NOT EXISTS source_apply_actions(
+            seq INTEGER NOT NULL
+                REFERENCES source_commits(seq) ON DELETE CASCADE,
+            table_name TEXT NOT NULL,
+            pk BLOB NOT NULL,
+            deleted INTEGER NOT NULL,
+            row_payload BLOB,
+            schema_epoch INTEGER NOT NULL,
+            PRIMARY KEY(seq,table_name,pk)
+        ) WITHOUT ROWID;
+
         CREATE TABLE IF NOT EXISTS source_versions(
             table_name TEXT NOT NULL,
             pk BLOB NOT NULL,
@@ -486,103 +497,183 @@ def _row_key(batch, row_index, pk_columns):
     )
 
 
-def _commit_actions(con, seq):
-    actions = {}
-    parts = con.execute("""
+def _stage_commit_actions(con, seq):
+    """Net one source transaction into SQLite without materializing a Python dict."""
+    seq=int(seq)
+    con.execute(
+        "DELETE FROM source_apply_actions WHERE seq=?",
+        (seq,))
+    parts=con.execute("""
         SELECT part,table_name,schema_epoch,payload
-        FROM source_commit_parts WHERE seq=? ORDER BY part
-    """, (int(seq),)).fetchall()
-    for _, table_name, schema_epoch, payload in parts:
-        info = relation_info(con, table_name)
-        if int(schema_epoch) != info["schema_epoch"]:
-            raise RuntimeError("source commit schema epoch changed before apply")
-        batch = decode_batch(payload)
-        expected = info["columns"] + ["_sync_op", "_sync_order"]
-        if batch.column_names != expected:
+        FROM source_commit_parts
+        WHERE seq=?
+        ORDER BY part
+    """,(seq,))
+    for _,table_name,schema_epoch,payload in parts:
+        info=relation_info(con,table_name)
+        if int(schema_epoch)!=info["schema_epoch"]:
             raise RuntimeError(
-                table_name + ": source log Arrow schema differs from relation"
+                "source commit schema epoch changed before apply")
+        batch=decode_batch(payload)
+        expected=(
+            info["columns"]
+            +["_sync_op","_sync_order"]
+        )
+        if batch.column_names!=expected:
+            raise RuntimeError(
+                table_name
+                +": source log Arrow schema differs from relation"
             )
-        order = batch.column("_sync_order").to_pylist()
-        if any(int(order[i]) > int(order[i + 1]) for i in range(len(order) - 1)):
-            raise RuntimeError("source batch order is not monotonic")
+        op_column=batch.column("_sync_op")
+        order_column=batch.column("_sync_order")
+        previous_order=None
         for row_index in range(batch.num_rows):
-            op = int(batch.column("_sync_op")[row_index].as_py())
-            if op not in (0, 1):
-                raise RuntimeError("unsupported source mutation op")
-            pk = _row_key(batch, row_index, info["pk_columns"])
-            key = (table_name, pk)
-            if op == 1:
-                actions[key] = (True, None, info["schema_epoch"])
+            row_order=int(
+                order_column[row_index].as_py())
+            if (
+                previous_order is not None
+                and previous_order>row_order
+            ):
+                raise RuntimeError(
+                    "source batch order is not monotonic")
+            previous_order=row_order
+            op=int(
+                op_column[row_index].as_py())
+            if op not in (0,1):
+                raise RuntimeError(
+                    "unsupported source mutation op")
+            pk=_row_key(
+                batch,row_index,
+                info["pk_columns"])
+            if op==1:
+                deleted=1
+                row_payload=None
             else:
-                row = _row_tuple(batch, row_index, info["columns"])
-                actions[key] = (
-                    False, pickle.dumps(row, protocol=5), info["schema_epoch"]
-                )
-    return actions
+                deleted=0
+                row=_row_tuple(
+                    batch,row_index,
+                    info["columns"])
+                row_payload=pickle.dumps(
+                    row,protocol=5)
+            con.execute("""
+                INSERT INTO source_apply_actions(
+                    seq,table_name,pk,deleted,
+                    row_payload,schema_epoch)
+                VALUES(?,?,?,?,?,?)
+                ON CONFLICT(seq,table_name,pk)
+                DO UPDATE SET
+                    deleted=excluded.deleted,
+                    row_payload=excluded.row_payload,
+                    schema_epoch=excluded.schema_epoch
+            """,(
+                seq,str(table_name),pk,
+                int(deleted),row_payload,
+                int(info["schema_epoch"]),
+            ))
+    return int(con.execute("""
+        SELECT COUNT(*)
+        FROM source_apply_actions
+        WHERE seq=?
+    """,(seq,)).fetchone()[0])
 
 
 def apply_one(con, seq):
-    seq = int(seq)
+    seq=int(seq)
     started_ns=time.perf_counter_ns()
     input_rows=int(con.execute("""
         SELECT COALESCE(SUM(nrows),0)
         FROM source_commit_parts
         WHERE seq=?
     """,(seq,)).fetchone()[0] or 0)
-    actions = _commit_actions(con, seq)
     with transaction(con):
-        applied = base_applied_seq(con)
-        if seq <= applied:
+        applied=base_applied_seq(con)
+        if seq<=applied:
             return False
-        if seq != applied + 1:
+        if seq!=applied+1:
             raise RuntimeError(
-                "source base apply gap: expected %d got %d" % (applied + 1, seq)
+                "source base apply gap: expected %d got %d"
+                % (applied+1,seq)
             )
-        row = con.execute(
-            "SELECT base_applied FROM source_commits WHERE seq=?", (seq,)
+        row=con.execute(
+            "SELECT base_applied "
+            "FROM source_commits WHERE seq=?",
+            (seq,)
         ).fetchone()
         if not row:
-            raise RuntimeError("source commit disappeared before base apply")
+            raise RuntimeError(
+                "source commit disappeared before base apply")
         if int(row[0]):
-            raise RuntimeError("source commit marked applied ahead of base watermark")
+            raise RuntimeError(
+                "source commit marked applied ahead of base watermark")
 
-        for (table_name, pk), (deleted, row_payload, schema_epoch) in actions.items():
-            current = con.execute("""
-                SELECT valid_from FROM source_versions
-                WHERE table_name=? AND pk=? AND valid_to IS NULL
-            """, (table_name, pk)).fetchall()
-            if len(current) > 1:
-                raise RuntimeError("multiple current source versions for one key")
+        action_count=_stage_commit_actions(
+            con,seq)
+        actions=con.execute("""
+            SELECT table_name,pk,deleted,
+                   row_payload,schema_epoch
+            FROM source_apply_actions
+            WHERE seq=?
+            ORDER BY table_name,pk
+        """,(seq,))
+        for (
+            table_name,pk,deleted,
+            row_payload,schema_epoch
+        ) in actions:
+            current=con.execute("""
+                SELECT valid_from
+                FROM source_versions
+                WHERE table_name=? AND pk=?
+                  AND valid_to IS NULL
+                LIMIT 2
+            """,(table_name,pk)).fetchall()
+            if len(current)>1:
+                raise RuntimeError(
+                    "multiple current source versions for one key")
             if current:
                 con.execute("""
-                    UPDATE source_versions SET valid_to=?
-                    WHERE table_name=? AND pk=? AND valid_to IS NULL
-                """, (seq, table_name, pk))
+                    UPDATE source_versions
+                    SET valid_to=?
+                    WHERE table_name=? AND pk=?
+                      AND valid_to IS NULL
+                """,(seq,table_name,pk))
             con.execute("""
                 INSERT INTO source_versions(
-                    table_name,pk,valid_from,valid_to,deleted,row_payload,
+                    table_name,pk,valid_from,
+                    valid_to,deleted,row_payload,
                     schema_epoch)
                 VALUES(?,?,?,NULL,?,?,?)
-            """, (
-                table_name, pk, seq, int(bool(deleted)), row_payload,
+            """,(
+                table_name,pk,seq,
+                int(bool(deleted)),row_payload,
                 int(schema_epoch),
             ))
-            relation = con.execute(
-                "SELECT complete_seq FROM source_relations WHERE table_name=?",
+            relation=con.execute(
+                "SELECT complete_seq "
+                "FROM source_relations "
+                "WHERE table_name=?",
                 (table_name,),
             ).fetchone()
             if relation is None:
-                raise RuntimeError("source relation disappeared before base apply")
+                raise RuntimeError(
+                    "source relation disappeared before base apply")
             if relation[0] is None:
                 con.execute("""
-                    INSERT OR IGNORE INTO source_touched(table_name,pk)
+                    INSERT OR IGNORE INTO source_touched(
+                        table_name,pk)
                     VALUES(?,?)
-                """, (table_name, pk))
+                """,(table_name,pk))
 
         con.execute(
-            "UPDATE source_commits SET base_applied=1 WHERE seq=?", (seq,)
-        )
-        _meta_set_int(con, "base_applied_seq", seq)
+            "DELETE FROM source_apply_actions "
+            "WHERE seq=?",
+            (seq,))
+        con.execute(
+            "UPDATE source_commits "
+            "SET base_applied=1 "
+            "WHERE seq=?",
+            (seq,))
+        _meta_set_int(
+            con,"base_applied_seq",seq)
         elapsed_ns=max(
             0,time.perf_counter_ns()-started_ns)
         con.execute("""
@@ -593,7 +684,8 @@ def apply_one(con, seq):
                 apply_work_ns=apply_work_ns+?
             WHERE id=1
         """,(
-            int(input_rows),int(len(actions)),
+            int(input_rows),
+            int(action_count),
             int(elapsed_ns),
         ))
     return True
@@ -962,6 +1054,9 @@ def status(con):
     )
     if pipeline_row is None:
         pipeline_row=(0,0,0,0,0,0,0,0,0)
+    apply_staging_rows=int(con.execute(
+        "SELECT COUNT(*) FROM source_apply_actions"
+    ).fetchone()[0])
     pipeline=dict(
         log_commits=int(pipeline_row[0]),
         log_parts=int(pipeline_row[1]),
@@ -978,6 +1073,7 @@ def status(con):
         apply_rows_per_second=(
             float(pipeline_row[6])*1e9/float(pipeline_row[8])
             if int(pipeline_row[8])>0 else None),
+        apply_staging_rows=apply_staging_rows,
     )
     incomplete = [
         row[0] for row in con.execute(
