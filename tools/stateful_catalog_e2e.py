@@ -1227,7 +1227,7 @@ def main():
             original_comment="stateful-e2e-original-comment"
             execute(
                 cfg,
-                "ALTER TABLE "+DATABASE+".agg_subview COMMENT "
+                "ALTER TABLE "+DATABASE+".agg_subview COMMENT = "
                 +literal(original_comment))
             result,response,activation=run_catalog_sql(
                 directory,env,"rebuild-agg-subview",
