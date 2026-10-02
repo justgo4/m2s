@@ -386,12 +386,18 @@ def plan_graph(con,compiled,cfg=None):
     limits=_limits(cfg)
     planned_counts={}
     assigned_followers=set()
+    planned_leaders=set()
     now=time.time()
     planned=[]
     for follower_item in refreshed:
         kind=follower_item["kind"]
         follower=follower_item["task"]
         if follower["status"]!="candidate":
+            continue
+        if follower["task_id"] in planned_leaders:
+            # Once a candidate has been selected as a root for another task,
+            # keep it a root for this planning pass. This makes no-chain
+            # placement independent of catalog task iteration order.
             continue
         follower_rank=ranks.get(
             follower["task_id"])
@@ -456,6 +462,8 @@ def plan_graph(con,compiled,cfg=None):
             else "graph_candidate_owner")
         planned_counts[leader["task_id"]]=(
             int(planned_counts.get(leader["task_id"],0))+1)
+        planned_leaders.add(
+            leader["task_id"])
         assigned_followers.add(
             follower["task_id"])
         con.execute("""
