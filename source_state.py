@@ -164,6 +164,16 @@ def install(con):
             apply_work_ns)
         VALUES(1,0,0,0,0,0,0,0,0,0);
     """)
+    indexes={
+        str(row[1]):str(row[3])
+        for row in con.execute(
+            "PRAGMA index_list(source_versions)")
+    }
+    if indexes.get(
+        "sqlite_autoindex_source_versions_1"
+    )!="pk":
+        raise RuntimeError(
+            "source_versions primary-key index contract changed")
     if _meta_int(con, "log_durable_seq", None) is None:
         with transaction(con):
             _meta_set_int(con, "log_durable_seq", 0)
@@ -659,7 +669,7 @@ def apply_one(con, seq):
 
         duplicate_current=con.execute("""
             SELECT v.table_name,v.pk
-            FROM source_versions v
+            FROM source_versions v INDEXED BY sqlite_autoindex_source_versions_1
             JOIN source_apply_actions a
               ON a.seq=?
              AND a.table_name=v.table_name
@@ -679,7 +689,7 @@ def apply_one(con, seq):
             WHERE rowid IN (
                 SELECT v.rowid
                 FROM source_apply_actions a
-                JOIN source_versions v
+                JOIN source_versions v INDEXED BY sqlite_autoindex_source_versions_1
                   ON v.table_name=a.table_name
                  AND v.pk=a.pk
                  AND v.valid_to IS NULL
@@ -816,7 +826,7 @@ def _baseline_rows(con, table_name, batch):
           )
           AND NOT EXISTS(
               SELECT 1
-              FROM source_versions v
+              FROM source_versions v INDEXED BY sqlite_autoindex_source_versions_1
               WHERE v.table_name=s.table_name
                 AND v.pk=s.pk
                 AND v.valid_to IS NULL
@@ -932,7 +942,8 @@ def read_snapshot_batch(con, pin_id, table_name, after_key=None, limit=1000):
         params.append(bytes(after_key))
     params.append(limit)
     rows = con.execute("""
-        SELECT pk,row_payload FROM source_versions
+        SELECT pk,row_payload
+        FROM source_versions INDEXED BY sqlite_autoindex_source_versions_1
         WHERE table_name=?
           AND valid_from<=?
           AND (valid_to IS NULL OR valid_to>?)
