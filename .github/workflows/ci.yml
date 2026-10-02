@@ -72,6 +72,7 @@ jobs:
           python tools/stateful_catalog_runtime_test.py
           python tools/stateful_hot_add_test.py
           python tools/stateful_physical_registry_test.py
+          python tools/longhaul_gate_test.py
           python tools/stateful_rebuild_test.py
           python tools/stateful_rebuild_scale_test.py
           python tools/stateful_share_policy_test.py
@@ -137,4 +138,4 @@ jobs:
       - name: Synthetic benchmark smoke
         run: |
           python tools/partition_benchmark.py --rows 10000 --repeats 3 --commit '${{ github.sha }}'
-          python tools/stateful_sharing_ab_benchmark.py --tasks 1,10,100 --output benchmark-results/stateful-sharing-ab.json
+          python tools/stateful_sharing_ab_benchmark.py tools/longhaul_gate.py --tasks 1,10,100 --output benchmark-results/stateful-sharing-ab.json
