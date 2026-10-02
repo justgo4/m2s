@@ -526,11 +526,31 @@ def preference_pending(con,kind,task_id,cfg=None):
             "WHERE task_id=?",
             (str(task_id),))
         return False
-    # A durable graph preference is a placement fence, not a hint that
-    # disappears as soon as the owner generation reaches ready. The shared
-    # runtime revalidates physical compatibility on every bind attempt. Keep
-    # the follower out of private bootstrap while the preferred owner remains
-    # non-terminal; this closes the small race between task activation and
+    # Adaptive admission is allowed to override an earlier graph preference.
+    # A follower that was correctness-compatible at planning time must not
+    # wait forever if current lag/fanout/surplus/observed-lag budgets reject
+    # that placement at bind time. choose() records this outcome immediately
+    # before the runner asks whether the preference still fences bootstrap.
+    decision=con.execute("""
+        SELECT mode,reason
+        FROM stateful_share_decisions
+        WHERE task_id=?
+    """,(str(task_id),)).fetchone()
+    if (
+        decision is not None
+        and str(decision[0])=="adaptive"
+        and str(decision[1])=="adaptive_rejected_all"
+    ):
+        con.execute(
+            "DELETE FROM stateful_share_preferences "
+            "WHERE task_id=?",
+            (str(task_id),))
+        return False
+    # A durable graph preference is otherwise a placement fence, not a hint
+    # that disappears as soon as the owner generation reaches ready. The
+    # shared runtime revalidates physical compatibility on every bind attempt.
+    # Keep the follower out of private bootstrap while the preferred owner
+    # remains non-terminal; this closes the race between task activation and
     # publishing its physical-state catalog row.
     return leader["status"] in {"candidate","active"}
 
