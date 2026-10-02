@@ -353,6 +353,65 @@ def enqueue_incremental(
         con,consumer_id,source_seq)
 
 
+def copy_commit(
+        con,source_consumer_id,target_consumer_id,source_seq
+):
+    """Copy one durable JOIN output commit and pair identities exactly."""
+    source_consumer_id=_text(
+        source_consumer_id,"source_consumer_id")
+    target_consumer_id=_text(
+        target_consumer_id,"target_consumer_id")
+    source_seq=int(source_seq)
+    if source_consumer_id==target_consumer_id:
+        raise ValueError(
+            "JOIN output copy source and target consumers must differ")
+    source=commit_info(
+        con,source_consumer_id,source_seq)
+    source_stream=stream_info(
+        con,source_consumer_id)
+    target_stream=stream_info(
+        con,target_consumer_id)
+    if source_stream["identity_format"]!=target_stream["identity_format"]:
+        raise RuntimeError(
+            "JOIN output identity format differs across shared consumers")
+    if source_seq<int(target_stream["fixed_w"]):
+        raise RuntimeError(
+            "JOIN copied output commit predates target fixed-W")
+    previous=con.execute("""
+        SELECT MAX(source_seq)
+        FROM join_output_commits
+        WHERE consumer_id=?
+    """,(target_consumer_id,)).fetchone()[0]
+    if previous is not None and source_seq>int(previous)+1:
+        raise RuntimeError(
+            "JOIN copied output commit would create a target gap")
+    rows=[
+        (bytes(pair_id),int(op),bytes(payload))
+        for pair_id,op,payload in con.execute("""
+            SELECT pair_id,op,row_payload
+            FROM join_output_rows
+            WHERE consumer_id=? AND source_seq=?
+            ORDER BY pair_id
+        """,(source_consumer_id,source_seq)).fetchall()
+    ]
+    if len(rows)!=int(source["nrows"]):
+        raise RuntimeError(
+            "JOIN source output commit row count is inconsistent")
+    with transaction(con):
+        for pair_id,_,_ in rows:
+            _register_pair_identity_locked(
+                con,target_consumer_id,pair_id)
+        _insert_commit(
+            con,target_consumer_id,source_seq,
+            source["kind"],rows)
+    copied=commit_info(
+        con,target_consumer_id,source_seq)
+    if copied["digest"]!=source["digest"]:
+        raise RuntimeError(
+            "JOIN copied output commit digest differs from source")
+    return copied
+
+
 def commit_info(con,consumer_id,source_seq):
     row=con.execute("""
         SELECT kind,nrows,digest,visible,created,updated
