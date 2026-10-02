@@ -224,6 +224,95 @@ def ensure_state(con, state_id, spec, watermark=0):
     return current
 
 
+def clone_projected_state(
+        con,source_state_id,target_state_id,target_spec,
+        target_input_semantic_id,watermark
+):
+    """Atomically clone a compatible aggregate subview at exact W.
+
+    The follower may request only a subset of the leader's aggregate outputs.
+    GROUP BY keys and each retained aggregate definition must be identical.
+    """
+    source_state_id=_text(source_state_id,"source_state_id")
+    target_state_id=_text(target_state_id,"target_state_id")
+    if source_state_id==target_state_id:
+        raise ValueError(
+            "aggregate projected clone source and target ids must differ")
+    target_spec=validate_spec(target_spec)
+    target_input_semantic_id=_text(
+        target_input_semantic_id,"target_input_semantic_id")
+    watermark=int(watermark)
+    if watermark<0:
+        raise ValueError(
+            "aggregate projected clone watermark cannot be negative")
+
+    with transaction(con):
+        if con.execute(
+            "SELECT 1 FROM aggregate_states WHERE state_id=?",
+            (target_state_id,)
+        ).fetchone():
+            raise RuntimeError(
+                "aggregate projected clone target state already exists")
+        source=state_info(con,source_state_id)
+        if not source["bootstrap_complete"]:
+            raise RuntimeError(
+                "aggregate projected clone source bootstrap is incomplete")
+        if int(source["watermark"])!=watermark:
+            raise RuntimeError(
+                "aggregate projected clone source watermark changed")
+        source_spec=source["spec"]
+        if source_spec["group_keys"]!=target_spec["group_keys"]:
+            raise RuntimeError(
+                "aggregate projected clone GROUP BY keys differ")
+        source_outputs={
+            item["output"]:item
+            for item in source_spec["aggregates"]
+        }
+        for item in target_spec["aggregates"]:
+            if source_outputs.get(item["output"])!=item:
+                raise RuntimeError(
+                    "aggregate projected clone output is not a leader subview: "
+                    +item["output"])
+
+        now=time.time()
+        con.execute("""
+            INSERT INTO aggregate_states(
+                state_id,spec_hash,spec_json,watermark,last_digest,
+                created,updated,bootstrap_complete,bootstrap_cursor,
+                input_semantic_id)
+            VALUES(?,?,?,?,NULL,?,?,1,NULL,?)
+        """,(
+            target_state_id,semantic_id(target_spec),
+            canonical_bytes(target_spec).decode("utf-8"),
+            watermark,now,now,target_input_semantic_id,
+        ))
+        rows=con.execute("""
+            SELECT key_blob,key_payload,row_count,accum_payload
+            FROM aggregate_groups
+            WHERE state_id=?
+            ORDER BY key_blob
+        """,(source_state_id,)).fetchall()
+        outputs=[
+            item["output"] for item in target_spec["aggregates"]
+        ]
+        for key_blob,key_payload,row_count,accum_payload in rows:
+            source_accum=pickle.loads(accum_payload)
+            target_accum={
+                output:source_accum[output]
+                for output in outputs
+            }
+            con.execute("""
+                INSERT INTO aggregate_groups(
+                    state_id,key_blob,key_payload,row_count,accum_payload)
+                VALUES(?,?,?,?,?)
+            """,(
+                target_state_id,bytes(key_blob),bytes(key_payload),
+                int(row_count),
+                pickle.dumps(target_accum,protocol=5),
+            ))
+    return state_info(con,target_state_id)
+
+
 def clone_complete_state(
         con,source_state_id,target_state_id,spec,input_semantic_id,watermark
 ):
