@@ -11922,8 +11922,8 @@ def durable_status_snapshot(state_path):
 
         jobs=dict(
             active=0,deliveries=0,invisible_parts=0,
-            merge_uncertain=0,merge_replay_safe=0,
-            merge_replay_unsafe=0,merge_unsafe_tables=0)
+            merge_uncertain=0,merge_legacy_replay_safe=0,
+            merge_replay_blocked=0,merge_blocked_tables=0)
         if _status_table_exists(con,"active_jobs"):
             jobs["active"]=int(con.execute(
                 "SELECT COUNT(*) FROM active_jobs"
@@ -11969,9 +11969,14 @@ def durable_status_snapshot(state_path):
                     FROM merge_uncertain
                 """).fetchone()[0])
             jobs["merge_uncertain"]=total
-            jobs["merge_replay_safe"]=safe
-            jobs["merge_replay_unsafe"]=total-safe
-            jobs["merge_unsafe_tables"]=unsafe_tables
+            # replay_safe can only be non-zero in state written by the brief
+            # pre-delete-fence implementation. Current code never emits it.
+            jobs["merge_legacy_replay_safe"]=safe
+            jobs["merge_replay_blocked"]=total
+            jobs["merge_blocked_tables"]=int(con.execute("""
+                SELECT COUNT(DISTINCT table_name)
+                FROM merge_uncertain
+            """).fetchone()[0])
 
         physical=dict(
             states=0,refs=0,pins=0,
