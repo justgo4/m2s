@@ -19,7 +19,7 @@
 ## 2. 当前代码与证据
 
 - [j4.py](j4.py)、[cdc_catalog.py](cdc_catalog.py)：daemon、SQL catalog、动态部署。用户 catalog 已暴露确定性的单源投影/过滤/宏/模型视图，以及 v1 的 COUNT/SUM/AVG 与受限双源 INNER equi-join；窗口、JOIN+聚合、子查询等更广 stateful SQL 继续 fail-closed。`CDC_SHARED_SOURCE_STATE=1` 是 stateful catalog task 的硬前提；legacy 模式仍保留 MySQL `snapshot_worker`。
-- hot-add / drop 已有持久 generation 生命周期：`building → history_staged → ready/retired`；drop 会先 drain 旧 durable jobs，再退出 worker。同名 sink re-add 与 retained sink SQL/filter/macro/UDF 语义变化目前 fail-closed，要求显式 rebuild/new generation。
+- hot-add / drop 已有持久 generation 生命周期：`building → history_staged → ready/retired`；drop 会先 drain 旧 durable jobs，再退出 worker。同名 sink re-add 仍 fail-closed；retained sink 的 SQL/filter/macro/UDF 语义变化已走在线 new-generation/shadow rebuild，并带远端 marker/fence/swap、强退续建与多 sink 协调。
 - 当前组件包括 Python 控制/恢复、C 解码/批处理、Arrow、DuckDB 和 SQLite。native 路径仍含 Python 网络/协议与 IPC 成本，不等于完整 C replication client 或零拷贝；是否替换组件由 profile 决定。
 - [incremental_contract.py](incremental_contract.py)：state identity / retention / Pareto 合同；[physical_state_catalog.py](physical_state_catalog.py) 持久化 semantic/backend/format/generation/readable-range/health/refs/pins，fixed-W pin 已按 state+owner 做重启幂等。
 - [source_state.py](source_state.py)：P6A/P6B correctness-first SQLite authoritative source state，已接入 daemon，显式区分 log durable 与 base applied，提供 fixed-W pin/read、durable consumer 和 GC。
@@ -196,102 +196,28 @@ python tools/longhaul_gate.py /data/m2s-p11-run/longhaul-workload.json \
 
 公开仓库只提交通用代码、合成配置/数据和公开测量；真实凭据、地址、业务数据、生产日志、SQLite/WAL 和 metrics 不得提交。
 
-## 10. 2026-10-02 独立核查：架构、性能边界与 Actions
+## 10. 2026-10-02 当前主线同步
 
-<!-- independent-audit-20261002:start -->
+此前独立核查写入 README 时固定在较早 revision（`54a5925`、`fdc3089`、`65b1b188`），用于记录当时真实存在的风险；**这些文字是历史快照，不应继续被解释为当前 HEAD 仍未修复。** 截至本次同步，主线已继续收口多个当时的 P0/P1 问题，但正式 50M/72h 认证仍未完成。
 
-**结论：主线没有根本走偏，但现在应收敛验证，不能把功能数量、短测通过或 native 解码等同于生产认证和性能极限。** 单次 CDC、共享源镜像、fixed-W、新 generation、独立目标 outbox/frontier、受限 SQL fail-closed 是正确方向；当前实现仍有捕获与任务扇出耦合、JOIN 局部全量重算和 Python/SQLite 热路径。下一阶段优先修正验收 oracle，稳定生命周期，再用固定 revision 的性能证据决定下沉哪些热点，不建议此时换一套理论架构或继续扩 SQL 范围。
+### 10.1 已由后续主线闭环的旧审计项
 
-本次逐项核查以 [`54a5925`](https://github.com/justgo4/m2s/tree/54a5925efb005d47704a09f11bf33d715b7cc8f2) 的代码与 workflow 为主体，并复核到 [`fdc3089`](https://github.com/justgo4/m2s/tree/fdc308906e7565979170808a8481f2230e28cc02)：后续已新增完整计划拓扑的资源预检、持久证据目录门禁、mixed task coverage 和故障窗口 JOIN 右表更新，canonical profile 已是 `p11-50m-50rps-72h-v4`。这些改进值得保留；截至此轮读取，该 revision 的 CI 仍在排队/运行，不能提前称其通过。本文中的历史失败有对应 revision，并不意味着最新代码仍然复现，也不意味着一次绿色就已封闭全部边界。这里只更新文档，未修改另一实现者的代码、workflow 或运行任务。
+- **shared follower promotion / physical-state 竞态**：`bbf173bd` 在 promotion 后重新解析 follower 当前物理状态，`f40caa0b` / `f3b79ed3` 增加 aggregate/JOIN stale-result 回归；`0c47b39d` 保留 stateful E2E 完整失败现场。旧 README 中“physical state does not exist 尚未闭环”的表述不再代表当前实现。
+- **P11 exactness oracle**：`9a54a88f` / `e40cf5fb` 把 raw 与 JOIN 校验改为 full-row partitioned exactness；`84e5d3a5`、`71a44413`、`79ed720d` 加入 summary-collision 负例与 gate 合同。旧的 COUNT/SUM/MIN/MAX 摘要漏检问题已不再作为当前门禁。
+- **大源事务内存上限**：`15b0ca11` 实现 shared-source transaction disk spool，`2a5e7b89` 与 `420698fe` 补合同与 baseline CI。旧文档里的 “disk-spooled source parts are not implemented yet” 已过时。
+- **JOIN 热键全量重算**：`fbf4961b` 将增量路径从整组 before/after pair 重算收缩到 changed-row delta，`3e93ad33` 锁定 hot-key changed-row 工作量，`308db848` 将合同接入 baseline CI。仍需真实大负载 profile，但旧的“单行更新固定触发完整 L×R 重算”已不再描述 HEAD。
+- **多 sink retained semantic rebuild**：`9a0391fb` 在全部 rebuild cutover 前 fence 全局 plan activation，`01fb9db7` 支持多 stateful rebuild generation 安全激活，`dae5c588` 校验 multi-sink semantic rebuild plan，`2086a537` 补跨重启恢复。README 前文已同步为 online new-generation/shadow rebuild，而不是 retained semantic change 一律 fail-closed。
 
-### 10.1 必须先补齐的正确性证据
+### 10.2 仍然成立的边界
 
-1. **P0：P11 JOIN 的 `all_match` 不是逐键、逐字段 exactness。** [longhaul_workload.py](tools/longhaul_workload.py) 的 `_join_rows_source()` / `_join_rows_target()` 按 bucket 比较 `COUNT/SUM(id)/SUM(v)/MIN(label)/MAX(label)`，然后对这些摘要做 SHA-256。摘要相同仍可能有错误行，对摘要加密哈希并不能补回丢失的信息。本次从该文件抽取原函数，用 SQLite 执行其同一组 SQL 做了负例：源 JOIN 行为 `(event_id=1,v=10,label='d')`、`(2,20,'d')`，都属 bucket 0；目标交换 v，变成 `(1,20,'d')`、`(2,10,'d')`。完整行明显不同，现有 `join_exactness()` 却返回 `all_match=True`；复核到 `fdc3089`，这组函数仍相同。这证明校验漏检，不是已经发现生产错写。raw source/target 的 COUNT/SUM(v) 总量比较也只能证明总量摘要，不应单独写成完整行一致。聚合查询的完整 group 输出比较、已有小型 full-state oracle，与这个 JOIN 长测盲点要区分。
-   - 验收修改：在相同、明确的最终 cut 上，按稳定 source-PK pair/目标主键分页比较所有投影字段及类型、NULL、重复键/行数；大型表可做分区的独立完整行摘要校验，但必须保留主键身份和重复性，写明哈希校验的证据边界。加入交换字段、保持总和的字段篡改、删除加重复、保持 MIN/MAX 的 label 篡改等负例，要求 gate 必须失败。先修 oracle，再跑昂贵的 50M/72h。
-2. **P0：共享 owner 退休、promotion、引用回收与重启仍需形成稳定的联合门禁。** 历史 E2E 曾报 `retired shared aggregate follower binding leaked`、`online stateful retire did not drain cleanly` 和 `physical state does not exist`；最近一轮完整绿色说明已有修复进展，不能把旧错误直接归到新 HEAD。下一步应固定一份 revision，反复测试 owner/follower drop、pending outbox、promotion、semantic rebuild、GC 与每个持久化边界的强退；断言 active binding 的 physical state 存在、所有引用可追踪、未 VISIBLE 的输出不会失去依赖、retired state 最终可回收。失败保留 catalog/generation/consumer/ref/outbox 的一致快照，而不只打印最终异常。
-3. **P0 覆盖缺口：未知已接受响应与 stateful/shared 生命周期要组合测试。** 当前 E2E 的真实响应丢失/quarantine 网络测试只在 `merge_async + shared OFF` 执行，stateful catalog 合同在 `GTID ON + shared ON` 执行。八格 CDC 矩阵全绿不等于所有扩展机制的笛卡尔积都测过。优先补 shared/stateful 的 DELETE、同键更新、强退、drop/rebuild 与 accepted-but-response-lost 交错，证明 generation/fence 不能把未知旧输出变成晚到覆盖；依然不得对真正未知接收状态盲目重放。按风险选择组合，不必机械扩成所有组合。
+1. **正式 P11 认证尚未完成。** 仍缺固定资源上的 50,000,000 初始行 + 50 rows/s × 72h 结果；短时 hosted smoke 只能证明功能/恢复边界，不能替代 P95≤5s、P99≤10s 的长期证据。
+2. **Merge Commit async 的“已接收但客户端未拿到事务身份”仍按未知结果处理。** 当前正确行为仍是持久化 marker、隔离该目标、不盲目重放；自动远端对账/安全解隔离尚未形成可证明协议。
+3. **source ingress 与任务消费仍未完全解耦，Python/SQLite 仍是 correctness-first 状态基线。** 是否下沉 C/Rust、替换状态布局或引入更通用 shared arrangement，必须由固定资源下的 CPU、锁等待、RSS、I/O、唯一物理字节和恢复时间 profile 决定。
+4. **SQL 覆盖仍然受限。** COUNT/SUM/AVG 与受限 INNER equi-join 已闭环，但 LEFT JOIN、MIN/MAX、DISTINCT、窗口、JOIN+聚合与跨算子通用增量编译尚未完成；不支持的语义继续 fail-closed。
+5. **不能把不同 revision 的绿色 Actions 拼成一个“当前版本已认证”的结论。** baseline/native/E2E、stateful lifecycle、quarantine 与 P11 结果必须在明确固定的 milestone SHA 上分别记录。
 
-### 10.2 已确认的性能边界与改进顺序
+### 10.3 当前最短主线
 
-| 发现与定位 | 当前含义 | 建议与验收 |
-|---|---|---|
-| [join_state.py](join_state.py) 的 `apply_transaction()` 对 affected key 构建完整 before/after pair 集合；`_pairs_for_keys_locked()` 双层遍历 L×R | 是事务净差分的正确性优先实现，还不是按变更量工作的 JOIN。实测同键左右各 100 行，只更新一条左行，`_project()` 调用 **20,000** 次，实际输出 **100** 条 delta；这是调用计数，非吞吐 benchmark | profile skew/fan-out、RSS 与 SQLite 写锁时间；再实现事务级增量探测，正确处理 ΔL、ΔR、双方同事务与撤回，避免重算未变化组合；分块/溢写限制输出内存。100 条真实输出成本无法消除，但全体 L×R 重算可避免。以现有 full-state oracle 做差分验收 |
-| [j4.py](j4.py) 的 native `stage_native_result()` 仍遍历 fanout 做 `transaction_batch_add()`；`commit_spool()` 同事务保存源日志和目标 jobs，随后 reader 内调用 `source_state.apply_pending()` | 源日志共享已经实现，但捕获线程仍承担 stateless 路由/目标扇出/源 base 应用，新增任务与源状态写入会拖慢 capture；不是完全独立的 source ingress | 分别测 1/10/100 任务下 decode、源日志 fsync、base apply、transform、fanout、队列债务；再将 stateless consumer 和 base apply 从 capture 解耦。保留 whole-source-transaction、durable cursor、重放与 GC 合同，并以磁盘水位背压，不能拆成先推进 cursor 后补日志 |
-| shared source transaction 的 `source_parts_limit` 超限明确报 “disk-spooled source parts are not implemented yet” | 内存边界是保护性 fail-closed，但一个过大的已提交源事务可令全局 worker 停止；不能称任意事务规模可持续处理 | 实现 source parts 落盘与原子整事务登记，故障注入覆盖跨阈值、半写、重连与重启；完成前公开支持的事务大小上限。增大 RAM 或一律重试都不是修复 |
-| `hot_add_worker_resource_check()` 以 physical sink/writer 数计算 DuckDB per-engine budget | 曾在 2 GiB、4 sinks 时拒绝在线新增；改成 4 GiB 只解决那份 smoke 的容量。最新完整拓扑预检已能提前暴露计划不匹配，这是正确补救，但不等于任务数无限扩展 | 保留准入，不关闭保护；规划固定 engine/worker 池、全局并发额度、退休释放与清晰的 waiting/rejected 状态。在固定预算下测动态任务新增、源 SLO 和 time-to-ready，检查实际 RSS 与逻辑额度的差异 |
-| aggregate/JOIN `promote_followers()` 在 SQLite 事务内为 follower 克隆/投影 state | owner 退休可能产生按 follower 数放大的复制与长写锁；已有 `stateful_share_max_promotion_bytes` 准入指标/阈值，不能说完全无保护。100 个小状态合同不证明 50M 状态 promotion 成本 | 补大状态、阈值开关、低磁盘和复制中断测试；优先评估 physical state 独立于 query owner 的稳定生命周期/所有权转移，或可恢复的分块复制，减少退休时整份私有化 |
-| [source_state.py](source_state.py)、[aggregate_state.py](aggregate_state.py)、[join_state.py](join_state.py) 仍有逐行 Python 对象、pickle 和 SQLite 操作；JOIN/promotion 等持有 `BEGIN IMMEDIATE` | C 解码减少一个热点，并未消除全链路 Python 成本或 SQLite 单写者竞争；当前应称正确性基线。共享状态大小已有增量缓存/trigger，不能误报为每次准入全表 COUNT | 先测 CPU flamegraph、锁等待/持锁时长、IPC 字节、磁盘写放大与唯一物理状态占用；按结果选批量写、列式 payload、状态布局或 C/Rust 热点。必须同输入、同资源、同正确性门禁 A/B，不能以语言名替代性能证据 |
+先固定一个 milestone SHA，完整跑 baseline + native + 八格真实 CDC E2E + stateful lifecycle/quarantine 重点合同；随后在同一资源拓扑做 1/10/100 task、JOIN skew/fan-out、动态 add/drop/rebuild 与长事务 profile；最后再启动正式 `p11-50m-50rps-72h-v4`。只有在这些证据完成后，才决定下一轮状态布局、shared arrangement 或 native 热路径下沉。
 
-这些项目不要求同时重写。先补测试与生命周期，再按 profile 的最大瓶颈逐项做；通用 SQL 编译器、完整 native replication client、新存储后端继续作为候选，不作为当前小流量可用性的前置条件。
-
-### 10.3 反复不过的 Actions：必须按原因处理
-
-| 可核查运行/日志 | 分类与事实 | 处理意见 |
-|---|---|---|
-| [36976636398](https://github.com/justgo4/m2s/actions/runs/36976636398)、[36984333048](https://github.com/justgo4/m2s/actions/runs/36984333048)、[36992899966 / transaction job](https://github.com/justgo4/m2s/actions/runs/36992899966/job/110792979992) | 共享 follower binding 泄漏、retire drain、physical state 缺失；属于生命周期实现/合同错误 | 在修复 revision 上加确定性回归及故障边界证据，不能靠重跑、睡眠或删断言解决 |
-| [36992878725 / merge job](https://github.com/justgo4/m2s/actions/runs/36992878725/job/110793197500) | online sink add 超出 active-engine DuckDB budget：4 sinks、10 slots、当前 128 MiB/engine、允许 102 MiB/engine | 资源准入正常拒绝，测试拓扑预算不足。最新 full-topology preflight 是正确方向；不能把调大内存等同于修复生命周期或实现可无限新增任务 |
-| [36989211939 / merge job](https://github.com/justgo4/m2s/actions/runs/36989211939/job/110781307344) | P11 gate 报 aggregate_targets_missing、dynamic_tasks_not_ready、sample density、observed rate、shared followers | 分开检查任务调度、部署 receipt/ready 时点、真实生产速率和健康采样分母；最终摘要相同不能豁免动态部署与观测门禁。不要直接删除失败项 |
-| [36980897990 / baseline job](https://github.com/justgo4/m2s/actions/runs/36980897990/job/110754989590) | `stateful_admission_retry_test.py` 的 `len(waits)==1` 断言失败 | 是本地合同/测试回归，不是 StarRocks 或网络偶发；后续 baseline 已绿，保留该回归保护 |
-| [36973978030 / native StarRocks job](https://github.com/justgo4/m2s/actions/runs/36973978030/job/110733778463) | 建表时 available backends 为空、BE 磁盘空间不足 | 环境容量失败发生在导入前，不能归因于 2PC/merge 组合。记录 df/inode、Docker root 占用、BE 状态；在启动前清理 runner 不需要的工具与残留，不能修改 StarRocks 默认保护阈值来遮住错误 |
-| [36979538230 / baseline job](https://github.com/justgo4/m2s/actions/runs/36979538230/job/110750759902) | pip 下载 IncompleteRead，同轮另一 Python 版本通过 | 可以对依赖下载做有限网络重试/缓存；这一策略不能扩展为忽略应用合同失败 |
-| [37011340187](https://github.com/justgo4/m2s/actions/runs/37011340187)，revision `168fe8d` | **八格真实 CDC E2E 全部成功**；同 revision baseline/native 也成功，是应保留的功能性证据 | 该轮 P11 smoke 为 aggregate 动态任务，早于后续 mixed/JOIN 右表故障覆盖；不能代替当前 profile 的完整绿色或正式长测 |
-| [37015002415](https://github.com/justgo4/m2s/actions/runs/37015002415) 等 cancelled | 多个连续 push 相隔约一分钟，workflow `cancel-in-progress: true` 取消旧 revision；cancelled 不是测试失败，也不是通过 | 保留快速 push 检查，昂贵 E2E 在固定 milestone SHA 上完整跑完；调整重测频率/分组，避免持续提交把证据窗口截断。运行不同 revision 的绿色 job 不能拼成同一 revision 的通过矩阵 |
-
-**绿色不代表 5/10 秒 SLO 已通过。** 成功运行 `37011340187` 的 [P11 smoke job](https://github.com/justgo4/m2s/actions/runs/37011340187/job/110851550642) 使用 5,000 初始行、50 rows/s 持续约 60 秒；gate 放宽为 P95≤30s、P99≤60s。报告健康窗口只有约 20.9 秒、12 个 latency 样本，P95/P99 均约 **15.54 秒**，其中 4 个样本超过 10 秒。这只是小样本功能与恢复 smoke；既不足以估计正式 P99，也没有达到用户的健康运行 P95≤5s/P99≤10s。故障恢复延迟、动态任务 time-to-ready 要另外报告，不能混入健康延迟后换阈值宣布性能达标。CI smoke 可保留宽门槛，但产物必须标明 `smoke/non-certification`，正式门禁不能继承 30/60 秒。
-
-### 10.4 下一轮实施与验收顺序
-
-1. **立即：修 P11 JOIN/raw exactness 的证据口径与负例；收敛 P0 生命周期回归。** 新增任务和故障覆盖已在推进，先让它们在同一 revision 形成完整绿色，不再边修 gate 边扩更多 SQL/共享策略。
-2. **固定 milestone：一次完整 baseline + native + 八格 E2E + 重点 stateful/quarantine 组合。** 保存失败现场、成功 JSON、代码 SHA、profile、资源拓扑和参数；按确定性种子重复生命周期/恢复合同。将便宜离线检查和昂贵集成分开，持续 push 无法完成的 job 不作为验收记录。不要用跳过断言、扩大生产阈值或改 StarRocks 默认参数制造绿色。
-3. **先短时可重复的性能定位，再正式 `v4` 50M/72h。** 在固定机器/预算下，测 1/10/100 个任务、JOIN skew/fan-out、snapshot 并行 CDC、动态加/drop/rebuild 与长事务；记录 source commit→target VISIBLE 的健康分位数/超时计数、捕获债务、内存、磁盘/版本债务、time-to-ready 和恢复延迟。正式运行需要专用持久环境；45 分钟的 hosted smoke workflow 不能承载 72 小时认证。空间不足或资源预检失败应在 50M seed 前结束，期间持续保存 progress/checkpoint。
-4. **再选择结构优化。** 依据证据优先解耦 capture、事务级 JOIN 增量与源事务溢写；任何存储/native 改造都以完整行 oracle 与 crash replay 通过为先决条件。尚无正式 50M/72h 报告，也没有与七个引擎同负载/同语义/同资源的完整对照，暂不声明生产认证、全面超越或逼近物理极限。
-
-
-### 10.5 本轮复核补充：最新失败仍未闭环（2026-10-02）
-
-本轮独立读取的固定代码版本为 [`65b1b188`](https://github.com/justgo4/m2s/tree/65b1b188f4eddce9e68d0b8720ca36e0812167ea)。以下补充更新前文的 CI 状态，并明确哪些是日志事实、已复现边界和待确认根因；前文的历史运行不能代替此版本的验收。
-
-**方向判断：核心协议方向正确，实施节奏应从扩大功能转为封闭生命周期和验收漏洞。** 单源捕获、fixed-W、持久 outbox、可见前缀和受限 SQL 都应保留。现在最紧迫的工作是让 owner 退休、follower promotion、后台 GC 与 worker 并发在同一版本可靠成立，以及让长测 oracle 真能拒绝错误结果。继续加算子、准入策略或控制命令，并不能替代这两项。Python/SQLite 当前可以作为正确性基线，但没有证据证明 50M 状态下的构建、锁等待和资源成本达标。
-
-#### 最新 Actions 的事实与意见
-
-| 固定 revision / 运行 | 本次读取到的事实 | 判断 |
-|---|---|---|
-| `3066ef89`：[E2E 37013697722](https://github.com/justgo4/m2s/actions/runs/37013697722)、baseline 37013697876、native 37013698296 | 三项均成功，E2E 八格全部成功；[merge_async / GTID ON / shared ON job](https://github.com/justgo4/m2s/actions/runs/37013697722/job/110859600964) 已实际运行 mixed aggregate/JOIN smoke | 比前文 `168fe8d` 更新的功能证据，值得保留。但仍早于 v4 的 JOIN 右表故障覆盖 |
-| `fdc30890`：[E2E 37015118370](https://github.com/justgo4/m2s/actions/runs/37015118370) | 八格中七格成功；[失败 job 110865003659](https://github.com/justgo4/m2s/actions/runs/37015118370/job/110865003659) 在 **Catalog stateful aggregate/JOIN daemon contract** 失败，之前的基础 CDC、aggregate 和 JOIN 单项合同成功；后续 P11 smoke 被跳过 | 不能归为新增 P11 gate 太严格：实际失败在更早的共享生命周期合同，v4 smoke 尚未取得此次运行证据 |
-| `65b1b188`：[baseline 37015812985](https://github.com/justgo4/m2s/actions/runs/37015812985)、[native 37015812890](https://github.com/justgo4/m2s/actions/runs/37015812890) | 两项成功；此次 README 改动没有触发 E2E，符合 workflow 的 paths 配置 | 默认分支有绿色检查，但最新相关 E2E 仍有上述失败，不能写成“当前完整矩阵全绿” |
-
-最新失败的调用位置是 `tools/stateful_catalog_e2e.py:1361`：共享 aggregate owner 退休后，继续更新已提升的 subview，并等待结果正确；daemon 报 `pipeline stopped: ('stateful_task_worker', "'physical state does not exist'")`。日志同时显示约 98.8 GiB 空闲磁盘、没有资源压力；这份证据不支持把该报错归因于磁盘不足或 DuckDB 预算不足。transaction 同轮成功、较早同配置成功，都不能排除时序敏感的生命周期错误。应保留这个场景，定位并增加可确定触发的回归，不能忽略异常或给整个任务无限重试。
-
-**绿色 smoke 的性能口径仍需收紧。** 上述 `3066ef89` mixed smoke 使用 5,000 初始行、50 rows/s、60 秒源负载；报告健康窗口约 **21.64 秒，只有 9 个延迟样本，P95/P99 均约 11.55 秒，3 个样本超过 10 秒**。aggregate/JOIN 各新增一个任务，ready 时间约 51.38 秒和 18.26 秒；一次故障的 catch-up 约 48.65 秒。这是有限的功能/恢复证据，既没有满足 5/10 秒健康 SLO，也没有足够样本证明正式 P99。E2E 内的 gate 使用 30/60 秒和 0.2 samples/s，而独立 `longhaul.yml` 使用 5/10 秒和 0.75 samples/s；两个 workflow 的“通过”含义不同，应在产物和 README 明示。保持正式认证的 5/10 秒要求，单独报告 healthy latency、故障恢复和 time-to-ready。
-
-#### 必须修正：共享 step 结果与退休/GC 之间的时序窗口
-
-代码复核发现一个与日志一致的根因候选：
-
-1. follower 的 `runner.step()` 返回 `shared_physical=True, shared_state_id=旧leader`。
-2. 在 worker 调用 registry 之前，另一个连接执行 owner retirement：`promote_followers()` 为 follower 建立私有状态、改写 outbox stream/consumer 并释放旧 dependency；旧 owner 退休后，GC 可以删除旧 physical state。
-3. `j4.py:10709` 随后调用 `stateful_physical_registry.sync_runtime_result()`。该函数的 shared 分支仍直接用刚才结果中的旧 state ID 执行 `state_info()`，没有重新验证当前 durable binding/stream，因而可以抛出 `physical state does not exist`。这一步在 worker 对 `runner.step()` 的异常处理范围之外；follower 仍然 active 时，检查“任务是否已移除”也不能解释其已 promotion 的合法状态变化。
-
-本轮抽取**原始** `sync_runtime_result()`，配合原始 `physical_state_catalog` 在 SQLite 中强制执行“返回旧 shared 结果 → 旧状态退休/GC → registry sync”的顺序，得到同名 KeyError。这证明该接口存在过期结果读取边界；**它是强制时序模型，尚未重现完整 daemon，也未证明实际 CI 就在这个精确调用点失败**。修复前须保留完整 worker traceback 以确认。
-
-建议在一次受保护的 SQLite 事务内重新读取 task、shared binding、output stream 与当前 backing identity，再做 registry 同步；或者让 step 和结果同步共享相应的生命周期保护。合法 promotion 应解析到新的私有状态，非法的 active 引用缺失仍应 fail-closed。不能只 catch KeyError 后继续，也不能保留已经没有引用的旧状态来掩盖问题。回归应在 step 返回与 registry sync 之间放置同步屏障，同时执行 owner drop/promotion/GC，然后验证 follower 持续增量、旧状态最终回收；另加真正悬空引用必须报错的负例。相同 registry shared 分支也服务 JOIN，需要覆盖 JOIN 对应时序。
-
-#### 必须修正：失败现场正在丢失
-
-`j4.py` 的 worker wrapper 已调用 `traceback.print_exc()`，但 `tools/stateful_catalog_e2e.py` 使用 `TemporaryDirectory`，`live()` 只把 daemon 日志的前 2,500 与后 5,000 字符写入异常。大段 metrics 能挤掉中间的实际 worker 调用栈；临时目录退出后，完整日志也被清理。本次 job 可见的是主线程最终抛错，没有能确认上述候选的完整 worker 栈；失败 artifact 约 4 KB，workflow 只上传 `benchmark-results/**`，没有直接保留这个临时目录。
-
-最小改进是在异常路径、临时目录清理前复制完整 daemon 日志、metrics/summary 与经审查可公开的合成状态诊断到 artifact 目录，明确记录 task/consumer/state/binding IDs、generation、retirement frontier、refs/pins 与 outbox 可见进度。需要数据库现场时，在停止 worker 后用 SQLite backup 保存一致副本；不要直接复制运行中的 db 而遗漏 WAL，也不要把业务数据/凭据写进公开仓库。该改进属于 CI 诊断，不改变正确性断言。
-
-#### 本轮复现与其他边界
-
-- **JOIN 校验漏检已在固定版本再次复现。** 抽取 `_join_rows_source()`、`_join_rows_target()`、`_rows_digest()` 和 `join_exactness()`，执行其原始 SQL：源为 `(id=1,bucket=0,v=10,label=d)`、`(2,0,20,d)`；目标交换 v 为 `(1,0,20,d)`、`(2,0,10,d)`。完整行不同，现有 `all_match=True`。这是 oracle 漏检，不能据此断言运行时已经错写；必须先升级为保留键身份的完整行比较/独立分区行摘要，并让此负例失败。gate 的 `source_target_exact` 目前也只来自 COUNT/SUM 总量相等，字段名称不能扩大其证据范围。
-- **JOIN 热键重算成本已再次实测确认。** 使用原始 `join_state`，同键左右各 100 行，更新一条左行：`_project()` 调用 **20,000** 次，只有 **100** 条输出 delta。这是调用计数，不是吞吐 benchmark。事务净差分与 bag identity 值得保留，优化应针对未变化组合的重算，并用双方同事务更新、撤回和 full-state oracle 验收。
-- **源捕获仍承担扇出/base apply，大事务仍有显式上限。** `j4.py` 保留 fanout 路由与 reader 内 `source_state.apply_pending()`；source parts 超过内存边界时报“disk-spooled source parts are not implemented yet”。前文关于捕获解耦、事务溢写和背压的建议仍成立，但应先测 1/10/100 任务的成本，再决定优化次序，不能把 C decoder 当作全链路已 native。
-- **并行分支应先集成再宣告能力完成。** 本轮读取到 #1、#2 为 draft，#3 未合并；#3 的 GitHub mergeability 为 `dirty`，其说明也明确基于旧 merge base、未纳入 main 的较新恢复修正。control-plane 功能不能通过直接采用旧分支覆盖主线；应逐项解决冲突、保留新的 fail-closed 恢复语义，并在最终集成 SHA 重新跑合同。此轮未合并任何 PR。
-
-本轮本地验证包括 `tools/longhaul_gate_test.py` 通过，以及上述 JOIN 错写负例、旧 shared 结果/GC 时序模型和 JOIN 投影计数。代码通过 GitHub connector 按固定 SHA 读取；当前执行环境的 git clone 因 proxy 连接失败，未在本地启动真实 MySQL/StarRocks，也未运行 50M/72h。因此真实服务结论来自明确链接的 Actions 日志，不能把本地模型写成完整 E2E 通过。
-
-**下一步顺序：先保留完整失败现场 → 确定性修复 retirement/promotion/GC 的并发窗口 → 修 exactness oracle 和负例 → 固定最终 SHA 跑完 baseline/native/E2E 与重点 shared/quarantine 组合 → 再做固定预算性能定位和正式长测。** 持续提交造成的 cancelled 运行不能算失败或成功；昂贵 E2E 应给 milestone 留出完整运行窗口。此轮只更新 README，未修改实现、放宽门禁或重跑 Actions。
-
-<!-- independent-audit-20261002:end -->
+因此当前结论保持克制：**架构主线可继续，多个旧审计 P0 已被后续代码闭环；但没有正式 50M/72h 报告之前，不宣称生产认证、全面超过其他引擎或达到物理极限。**
