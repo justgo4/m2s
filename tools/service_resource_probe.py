@@ -111,7 +111,9 @@ def _io_bytes(cgroup):
             read_bytes+=max(0,int(fields.get("rbytes",0)))
             write_bytes+=max(0,int(fields.get("wbytes",0)))
     if not parsed:
-        return None
+        # An existing but empty io.stat is a valid zero-I/O baseline for
+        # a freshly created cgroup. Missing/unreadable files returned above.
+        return 0,0
     return int(read_bytes),int(write_bytes)
 
 
