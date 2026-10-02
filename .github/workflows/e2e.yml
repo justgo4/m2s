@@ -152,6 +152,14 @@ jobs:
             --min-latency-samples-per-second 0.2 \
             --min-dynamic-tasks 2 --min-faults 1 \
             --output benchmark-results/longhaul-smoke-gate.json
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: e2e-failure-${{ matrix.protocol }}-gtid-${{ matrix.gtid }}-shared-${{ matrix.shared }}
+          path: benchmark-results/**
+          if-no-files-found: warn
+          retention-days: 14
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: e2e-${{ matrix.protocol }}-gtid-${{ matrix.gtid }}-shared-${{ matrix.shared }}
@@ -162,6 +170,7 @@ jobs:
             benchmark-results/stateful-catalog-contract.json
             benchmark-results/merge-quarantine.json
             benchmark-results/longhaul-smoke.json
+            benchmark-results/longhaul-smoke-checkpoint.json
             benchmark-results/longhaul-smoke-gate.json
           if-no-files-found: error
           retention-days: 14
