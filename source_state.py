@@ -114,6 +114,10 @@ def install(con):
         CREATE INDEX IF NOT EXISTS source_versions_visible
             ON source_versions(table_name,valid_from,valid_to,deleted,pk);
 
+        CREATE INDEX IF NOT EXISTS source_versions_gc
+            ON source_versions(valid_to)
+            WHERE valid_to IS NOT NULL;
+
         CREATE TABLE IF NOT EXISTS source_pins(
             pin_id TEXT PRIMARY KEY,
             watermark INTEGER NOT NULL,
