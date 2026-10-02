@@ -1330,7 +1330,7 @@ def main():
                         "starrocks.agg_subview")=="active"
                     and dict(current["join_tasks"]).get(
                         "starrocks.joined")=="active"
-                    and current["consumers"]==2
+                    and current["consumers"]==3
                     and current["pending"]==0
                     and current["deliveries"]==0
                     and not current.get("aggregate_shared")
@@ -1460,7 +1460,7 @@ def main():
             subview_retired=wait_stateful_retired(
                 proc,log,directory,"starrocks.agg_subview")
             if (
-                subview_retired["consumers"]!=1
+                subview_retired["consumers"]!=2
                 or dict(subview_retired["join_tasks"]).get(
                     "starrocks.joined")!="active"
             ):
