@@ -5,6 +5,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+from unittest.mock import patch
 
 import pyarrow as pa
 
@@ -118,6 +119,94 @@ def assert_log_stats_migration(directory):
     con.close()
 
 
+def assert_apply_staging_atomicity(directory):
+    path=os.path.join(
+        directory,"apply-staging.sqlite3")
+    con=open_db(path)
+    source_state.register_relation(
+        con,"db.orders","source-stage",
+        source_schema(),["id"])
+    source_state.stage_snapshot_batch(
+        con,"db.orders",batch([]),
+        cursor=None,is_last=True)
+
+    parts=[
+        source_state.prepare_part(
+            "db.orders",batch([
+                (0,1,"a"),
+                (0,2,"b"),
+                (0,1,"a2"),
+            ])),
+        source_state.prepare_part(
+            "db.orders",batch([
+                (1,2,"b"),
+                (0,3,"c"),
+                (0,1,"a3"),
+            ])),
+    ]
+    seq=source_state.log_commit(
+        con,"source-stage",
+        ("binlog.000008",100),None,
+        parts)
+    assert seq==1
+
+    original=source_state.decode_batch
+    calls=[0]
+    def fail_second(payload):
+        calls[0]+=1
+        if calls[0]==2:
+            raise RuntimeError(
+                "synthetic second-part decode failure")
+        return original(payload)
+
+    with patch.object(
+        source_state,"decode_batch",
+        side_effect=fail_second
+    ):
+        try:
+            source_state.apply_pending(con)
+            raise AssertionError(
+                "partial staged apply unexpectedly committed")
+        except RuntimeError as exc:
+            assert "second-part" in str(exc)
+
+    assert source_state.base_applied_seq(con)==0
+    assert con.execute(
+        "SELECT COUNT(*) "
+        "FROM source_apply_actions"
+    ).fetchone()[0]==0
+    assert con.execute(
+        "SELECT COUNT(*) "
+        "FROM source_versions "
+        "WHERE valid_from>0"
+    ).fetchone()[0]==0
+    assert con.execute(
+        "SELECT base_applied "
+        "FROM source_commits WHERE seq=1"
+    ).fetchone()[0]==0
+
+    assert source_state.apply_pending(con)==1
+    assert source_state.base_applied_seq(con)==1
+    assert con.execute(
+        "SELECT COUNT(*) "
+        "FROM source_apply_actions"
+    ).fetchone()[0]==0
+    pin=source_state.acquire_pin(
+        con,"stage-result",["db.orders"])
+    snapshot_values(
+        con,pin,{1:"a3",3:"c"})
+    source_state.release_pin(
+        con,pin["pin_id"])
+    status=source_state.status(con)
+    assert status["pipeline_stats"][
+        "apply_input_rows"]==6
+    assert status["pipeline_stats"][
+        "apply_actions"]==3
+    assert status["pipeline_stats"][
+        "apply_staging_rows"]==0
+    con.close()
+
+
 def child_crash_after_log(path):
     con = open_db(path)
     source_state.register_relation(
@@ -139,6 +228,7 @@ def main():
 
     with tempfile.TemporaryDirectory(prefix="m2s-source-state-") as td:
         assert_log_stats_migration(td)
+        assert_apply_staging_atomicity(td)
         path = os.path.join(td, "state.sqlite3")
         con = open_db(path)
         source_state.register_relation(
