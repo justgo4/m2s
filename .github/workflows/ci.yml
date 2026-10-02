@@ -140,4 +140,4 @@ jobs:
       - name: Synthetic benchmark smoke
         run: |
           python tools/partition_benchmark.py --rows 10000 --repeats 3 --commit '${{ github.sha }}'
-          python tools/stateful_sharing_ab_benchmark.py tools/longhaul_gate.py --tasks 1,10,100 --output benchmark-results/stateful-sharing-ab.json
+          python tools/stateful_sharing_ab_benchmark.py --tasks 1,10,100 --output benchmark-results/stateful-sharing-ab.json
