@@ -2052,6 +2052,9 @@ def cursor_advance(con, position):
 
 SPOOL_HEADER = ">HIIQQ"
 SPOOL_HEADER_SIZE = struct.calcsize(SPOOL_HEADER)
+SOURCE_PART_SPOOL_HEADER = ">HIQQ"
+SOURCE_PART_SPOOL_HEADER_SIZE = struct.calcsize(
+    SOURCE_PART_SPOOL_HEADER)
 
 _NATIVE_PARTITION_LIB = None
 _NATIVE_PARTITION_TRIED = False
@@ -2341,6 +2344,54 @@ def read_spool_record(spool):
     return table_bytes.decode("utf-8"),lane,payload,count,int(logical_bytes)
 
 
+def write_source_part_record(spool, part):
+    table_bytes=str(part["table_name"]).encode("utf-8")
+    if len(table_bytes)>65535:
+        raise ValueError(
+            "source relation name is too long for the source transaction spool")
+    schema_epoch=int(part["schema_epoch"])
+    nrows=int(part["nrows"])
+    payload=part["payload"]
+    if schema_epoch<0 or schema_epoch>0xffffffff:
+        raise ValueError("source schema epoch is outside spool range")
+    if nrows<0:
+        raise ValueError("source part row count cannot be negative")
+    spool.write(struct.pack(
+        SOURCE_PART_SPOOL_HEADER,
+        len(table_bytes),schema_epoch,nrows,len(payload)))
+    spool.write(table_bytes)
+    spool.write(payload)
+
+
+def read_source_part_record(spool):
+    header=spool.read(SOURCE_PART_SPOOL_HEADER_SIZE)
+    if not header:
+        return None
+    if len(header)!=SOURCE_PART_SPOOL_HEADER_SIZE:
+        raise RuntimeError("truncated source transaction spool header")
+    table_len,schema_epoch,nrows,payload_len=struct.unpack(
+        SOURCE_PART_SPOOL_HEADER,header)
+    table_bytes=spool.read(table_len)
+    payload=spool.read(payload_len)
+    if len(table_bytes)!=table_len or len(payload)!=payload_len:
+        raise RuntimeError("truncated source transaction spool payload")
+    return dict(
+        table_name=table_bytes.decode("utf-8"),
+        schema_epoch=int(schema_epoch),
+        payload=payload,
+        nrows=int(nrows),
+    )
+
+
+def source_part_records(spool):
+    spool.seek(0)
+    while True:
+        part=read_source_part_record(spool)
+        if part is None:
+            return
+        yield part
+
+
 def spool_routed(spool, mapping, routed, cfg):
     if not routed.num_rows:
         return
@@ -2497,6 +2548,42 @@ def transaction_spool_guard(spool, cfg, state=None, force=False):
     return size
 
 
+def source_part_spool_guard(
+        source_spool,cfg,state=None,force=False,
+        target_spool_bytes=0
+):
+    size=int(source_spool.tell())
+    limit=int(cfg["txn_spool_max_bytes"])
+    if size>limit:
+        raise RuntimeError(
+            "shared source transaction spool exceeds CDC_TXN_SPOOL_MAX_BYTES "
+            "bytes=%d limit=%d; durable cursor retained"
+            % (size,limit))
+    now=time.monotonic()
+    if state is not None and not force:
+        if (
+            size-int(state.get("size",0))
+            <max(1,int(cfg["batch_bytes"]))
+            and now-float(state.get("checked",0.0))<1.0
+        ):
+            return size
+    if force:
+        wal_slack=min(
+            256*1024**2,
+            max(64*1024**2,int(cfg["batch_bytes"])*2))
+        journal_disk_guard(
+            cfg,size+max(0,int(target_spool_bytes))+wal_slack)
+    else:
+        journal_disk_guard(
+            cfg,min(
+                max(int(cfg["batch_bytes"])*2,size),
+                256*1024**2))
+    if state is not None:
+        state["size"]=size
+        state["checked"]=now
+    return size
+
+
 def spool_rows(spool, mapping, mutations, cfg, engine=None):
     own_engine = engine is None
     engine = transform_engine(cfg) if own_engine else engine
@@ -2540,7 +2627,8 @@ def insert_touched_column(con, table, column):
 
 def commit_spool(
         con, spool, position, source_time, mapping_by_name, gtid=None,
-        plan_version=0, source_parts=None, source_epoch=None):
+        plan_version=0, source_parts=None, source_spool=None,
+        source_epoch=None):
     """All rows of a committed source transaction and its read cursor commit together."""
     spool.seek(0)
     now = time.time()
@@ -2550,6 +2638,11 @@ def commit_spool(
             return set()
         total, changed_tables = 0, set()
         source_seq = None
+        if source_parts is not None and source_spool is not None:
+            raise RuntimeError(
+                "source-state commit received both in-memory and spooled parts")
+        if source_spool is not None:
+            source_parts=source_part_records(source_spool)
         if source_parts is not None:
             if not source_epoch:
                 raise RuntimeError("source-state logging requires a source epoch")
@@ -9192,21 +9285,13 @@ def capture_binlog_native(cfg, prepared, runtime):
                 in_transaction = False
                 current_gtid = None
                 with tempfile.SpooledTemporaryFile(
-                    max_size=1024**2,dir=state_temp_dir(cfg)) as spool:
+                    max_size=1024**2,dir=state_temp_dir(cfg)) as spool, \
+                     tempfile.SpooledTemporaryFile(
+                    max_size=1024**2,dir=state_temp_dir(cfg)) as source_spool:
                     transaction_batches = transaction_batch_new()
-                    source_parts = []
                     source_parts_bytes = 0
-                    if shared_source_state:
-                        resource_mb = int(
-                            (cfg.get("resource") or {}).get("memory_mb",512))
-                        source_parts_limit = max(
-                            64*1024**2,
-                            min(
-                                int(cfg["txn_spool_max_bytes"]),
-                                resource_mb*1024**2//4))
-                    else:
-                        source_parts_limit = 0
                     spool_guard_state = dict(size=0,checked=0.0)
+                    source_spool_guard_state = dict(size=0,checked=0.0)
                     pending_events = []
                     pending_event_bytes = 0
                     group_limit = max(1,min(4096,int(cfg.get("native_event_group_events",1))))
@@ -9234,14 +9319,14 @@ def capture_binlog_native(cfg, prepared, runtime):
                         if shared_source_state:
                             part = source_state.prepare_part(
                                 source_relation_key(cfg,table),batch)
-                            source_parts_bytes += len(part["payload"])
-                            if source_parts_bytes > source_parts_limit:
-                                raise RuntimeError(
-                                    "shared source-state transaction exceeds bounded "
-                                    f"in-memory log budget bytes={source_parts_bytes} "
-                                    f"limit={source_parts_limit}; disk-spooled source "
-                                    "parts are not implemented yet")
-                            source_parts.append(part)
+                            write_source_part_record(
+                                source_spool,part)
+                            source_parts_bytes=int(
+                                source_spool.tell())
+                            source_part_spool_guard(
+                                source_spool,cfg,
+                                source_spool_guard_state,
+                                target_spool_bytes=spool.tell())
                         for mapping in fanout:
                             transaction_batch_add(transaction_batches,mapping,batch,cfg,route_engine,spool)
 
@@ -9336,11 +9421,15 @@ def capture_binlog_native(cfg, prepared, runtime):
                                 pending_events.clear()
                                 pending_event_bytes = 0
                                 transaction_batch_clear(transaction_batches)
-                                source_parts.clear()
                                 source_parts_bytes = 0
                                 spool.seek(0)
                                 spool.truncate()
-                                spool_guard_state.update(size=0,checked=time.monotonic())
+                                source_spool.seek(0)
+                                source_spool.truncate()
+                                spool_guard_state.update(
+                                    size=0,checked=time.monotonic())
+                                source_spool_guard_state.update(
+                                    size=0,checked=time.monotonic())
                         elif event_type not in passive_events and event_type != BINLOG_XID_EVENT:
                             raise RuntimeError(f"unsupported binlog event type {event_type}")
 
@@ -9355,12 +9444,21 @@ def capture_binlog_native(cfg, prepared, runtime):
                                     transaction_batches,cfg,route_engine,spool)
                                 transaction_spool_guard(
                                     spool,cfg,spool_guard_state,force=True)
+                                if shared_source_state:
+                                    source_part_spool_guard(
+                                        source_spool,cfg,
+                                        source_spool_guard_state,
+                                        force=True,
+                                        target_spool_bytes=spool.tell())
                             transaction_plan_version = runtime_active_version(runtime)
                             changed_tables = commit_spool(
                                 con,spool,position,source_time,by_sink,
                                 current_gtid if durable_gtid is not None else None,
                                 plan_version=transaction_plan_version,
-                                source_parts=source_parts if shared_source_state else None,
+                                source_spool=(
+                                    source_spool
+                                    if shared_source_state
+                                    else None),
                                 source_epoch=runtime.get("source_uuid"))
                             if shared_source_state:
                                 source_state.apply_pending(con)
@@ -9370,9 +9468,13 @@ def capture_binlog_native(cfg, prepared, runtime):
                                     wake_loaders(runtime,table)
                             spool.seek(0)
                             spool.truncate()
-                            source_parts.clear()
+                            source_spool.seek(0)
+                            source_spool.truncate()
                             source_parts_bytes = 0
-                            spool_guard_state.update(size=0,checked=time.monotonic())
+                            spool_guard_state.update(
+                                size=0,checked=time.monotonic())
+                            source_spool_guard_state.update(
+                                size=0,checked=time.monotonic())
                             in_transaction = False
                             current_gtid = None
                             failures = 0
