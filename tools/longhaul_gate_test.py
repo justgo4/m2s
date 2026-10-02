@@ -79,6 +79,12 @@ def workload():
         latency_p95_seconds=4.9,
         latency_p99_seconds=9.9,
         latency_max_seconds=12.0,
+        latency_over_5_seconds=200,
+        latency_over_10_seconds=20,
+        recovery_latency_samples=8,
+        recovery_latency_p95_seconds=15.0,
+        recovery_latency_p99_seconds=20.0,
+        recovery_latency_max_seconds=22.0,
         dynamic_tasks=10,
         dynamic_task_ready_seconds=tasks,
         faults=[
@@ -239,6 +245,8 @@ def main():
     assert full["ok"],full
     assert full["evidence"]["faults"]["count"]==2
     assert full["evidence"]["dynamic_tasks"]["ready"]==10
+    assert full["evidence"]["latency_over_10_seconds"]==20
+    assert full["evidence"]["recovery_latency_samples"]==8
     assert full["evidence"]["debt"]["max_rowset"]==73
 
     bad=workload()
@@ -274,6 +282,15 @@ def main():
     assert "debt_evidence_missing" in full["failures"]
 
     bad=workload()
+    bad["recovery_latency_samples"]=0
+    bad["recovery_latency_p95_seconds"]=None
+    bad["recovery_latency_p99_seconds"]=None
+    bad["recovery_latency_max_seconds"]=None
+    full=evaluate_workload(bad)
+    assert not full["ok"]
+    assert "fault_recovery_latency_missing" in full["failures"]
+
+    bad=workload()
     bad["faults"][0]["source_frontier"][
         "base_applied_seq"]=499
     full=evaluate_workload(bad)
@@ -305,8 +322,8 @@ def main():
 
     print(
         "longhaul_gate_test ok 50m_72h 50rps p95_p99 cross_restart "
-        "drain stateful_health space_version_debt rowset_recovery "
-        "overflow_fail_closed",
+        "healthy_recovery_latency drain stateful_health space_version_debt "
+        "rowset_recovery overflow_fail_closed",
         flush=True,
     )
 
