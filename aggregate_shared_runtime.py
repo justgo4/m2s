@@ -19,6 +19,7 @@ import aggregate_state
 import aggregate_task_catalog
 import physical_state_catalog
 import source_state
+import stateful_share_policy
 import task_generation
 
 
@@ -172,7 +173,7 @@ def _leader_candidates(con,task):
     ]
 
 
-def try_bind(con,task):
+def try_bind(con,task,cfg=None):
     """Attach a candidate to an exact or compatible active compute owner."""
     task=aggregate_task_catalog.task_info(
         con,task["task_id"])
@@ -200,9 +201,11 @@ def try_bind(con,task):
             return None
         leaders=_leader_candidates(
             con,task)
-        if not leaders:
+        chosen=stateful_share_policy.choose(
+            con,KIND,task,leaders,cfg=cfg)
+        if chosen is None:
             return None
-        leader,state,consumer,physical,reuse=leaders[0]
+        leader,state,consumer,physical,reuse=chosen
         fixed_w=int(state["watermark"])
         if fixed_w!=int(consumer["watermark"]):
             return None
