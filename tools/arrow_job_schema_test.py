@@ -12,8 +12,14 @@ import j4
 
 
 def table(label_type,label,id_type=pa.int64()):
+    id_value=(
+        "1"
+        if pa.types.is_string(id_type)
+        or pa.types.is_large_string(id_type)
+        else 1
+    )
     return pa.Table.from_arrays([
-        pa.array([1],type=id_type),
+        pa.array([id_value],type=id_type),
         pa.array([label],type=label_type),
         pa.array([0],type=pa.int16()),
         pa.array([99],type=pa.int32()),
