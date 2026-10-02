@@ -284,12 +284,22 @@ def main():
                 (2,0,10,"b"),
             ],
         ]
+    ), patch.object(
+        longhaul_workload,
+        "_event_source_total_rows",
+        return_value=2
+    ), patch.object(
+        longhaul_workload,
+        "_target_total_rows",
+        side_effect=[2,2]
     ):
         event_checks=longhaul_workload.event_exactness(
             object(),{},["events","events_bad"],
             partitions=[0])
-    assert event_checks["comparison"]=="partitioned_full_rows_v1"
+    assert event_checks["comparison"]=="partitioned_full_rows_v2"
     assert event_checks["expected_rows"]==2
+    assert event_checks["source_total_rows"]==2
+    assert event_checks["source_uncovered_rows"]==0
     assert event_checks["tables"]["events"]["match"]
     assert not event_checks["tables"]["events_bad"]["match"]
     assert not event_checks["all_match"]
@@ -314,6 +324,14 @@ def main():
                 (2,0,"dim-0000",10),
             ],
         ]
+    ), patch.object(
+        longhaul_workload,
+        "_join_source_total_rows",
+        return_value=2
+    ), patch.object(
+        longhaul_workload,
+        "_target_total_rows",
+        side_effect=[2,2]
     ):
         join_checks=longhaul_workload.join_exactness(
             object(),{},["join_000","join_002"],
@@ -327,6 +345,62 @@ def main():
         "actual_digest"
     ]
     assert not join_checks["all_match"]
+
+    # Rows outside the scanned partition set must fail coverage even when every
+    # compared row is exact. The cases model bucket=1024, bucket=-1 and NULL.
+    for invalid_case in (
+        "bucket_above_domain",
+        "bucket_below_domain",
+        "bucket_null",
+    ):
+        with patch.object(
+            longhaul_workload,
+            "_join_rows_source",
+            return_value=join_expected
+        ), patch.object(
+            longhaul_workload,
+            "_join_rows_target",
+            return_value=list(join_expected)
+        ), patch.object(
+            longhaul_workload,
+            "_join_source_total_rows",
+            return_value=2
+        ), patch.object(
+            longhaul_workload,
+            "_target_total_rows",
+            return_value=3
+        ):
+            extra=longhaul_workload.join_exactness(
+                object(),{},["join_extra"],
+                partitions=[0])
+        assert not extra["all_match"],invalid_case
+        assert not extra["coverage_complete"],invalid_case
+        assert extra["tables"]["join_extra"]["total_rows"]==3
+        assert extra["tables"]["join_extra"]["uncovered_rows"]==1
+        assert not extra["tables"]["join_extra"]["match"]
+
+    with patch.object(
+        longhaul_workload,
+        "_event_rows_source",
+        return_value=event_expected
+    ), patch.object(
+        longhaul_workload,
+        "_event_rows_target",
+        return_value=list(event_expected)
+    ), patch.object(
+        longhaul_workload,
+        "_event_source_total_rows",
+        return_value=2
+    ), patch.object(
+        longhaul_workload,
+        "_target_total_rows",
+        return_value=3
+    ):
+        event_extra=longhaul_workload.event_exactness(
+            object(),{},["events"],
+            partitions=[0])
+    assert not event_extra["all_match"]
+    assert event_extra["tables"]["events"]["uncovered_rows"]==1
 
     with tempfile.TemporaryDirectory(
         prefix="m2s-longhaul-workdir-test-"
