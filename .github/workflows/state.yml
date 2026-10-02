@@ -8,6 +8,7 @@ on:
       - tools/source_apply_staging_benchmark.py
       - tools/source_snapshot_staging_benchmark.py
       - tools/source_capture_apply_async_benchmark.py
+      - tools/source_gc_overlap_benchmark.py
       - source_state.py
       - requirements-state-benchmark.txt
       - requirements.txt
@@ -19,6 +20,7 @@ on:
       - tools/source_apply_staging_benchmark.py
       - tools/source_snapshot_staging_benchmark.py
       - tools/source_capture_apply_async_benchmark.py
+      - tools/source_gc_overlap_benchmark.py
       - source_state.py
       - requirements-state-benchmark.txt
       - requirements.txt
@@ -60,6 +62,8 @@ jobs:
         run: python tools/source_snapshot_staging_benchmark.py --rows 100000 --batch-rows 5000 --output benchmark-results/source-snapshot-staging.json
       - name: Overlapped durable capture and asynchronous base apply
         run: python tools/source_capture_apply_async_benchmark.py --commits 100 --rows-per-commit 1000 --part-rows 250 --key-space 50000 --max-pending-bytes 33554432 --output benchmark-results/source-capture-apply-async.json
+      - name: Capture and apply tail latency under bounded source GC
+        run: python tools/source_gc_overlap_benchmark.py --commits 80 --rows-per-commit 500 --part-rows 250 --key-space 10000 --gc-version-rows 512 --gc-commit-rows 32 --gc-sleep-ms 5 --output benchmark-results/source-gc-overlap.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: state-layout-python-${{ matrix.python }}
@@ -69,4 +73,5 @@ jobs:
             benchmark-results/source-apply-staging.json
             benchmark-results/source-snapshot-staging.json
             benchmark-results/source-capture-apply-async.json
+            benchmark-results/source-gc-overlap.json
           if-no-files-found: error
