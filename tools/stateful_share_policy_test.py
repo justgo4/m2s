@@ -235,6 +235,29 @@ def main():
         assert "state_rows" in reasons
         assert "state_bytes" in reasons
 
+        # Worst-case owner retirement must fit the configured copy budget.
+        # One existing follower plus this candidate means two private clones.
+        with patch.object(
+            stateful_share_policy,"_state_stats",
+            return_value=dict(
+                rows=100,payload_bytes=4*1024*1024)
+        ):
+            rejected=stateful_share_policy.choose(
+                con,"aggregate",task,[subview],
+                cfg=dict(
+                    stateful_share_mode="adaptive",
+                    stateful_share_max_lag=10,
+                    stateful_share_max_followers=10,
+                    stateful_share_max_surplus=2,
+                    stateful_share_max_promotion_bytes=7*1024*1024,
+                ))
+        assert rejected is None
+        decision=stateful_share_policy.decision_info(
+            con,"follower")
+        rejected_metrics=decision["metrics"]["rejected"][0]
+        assert "promotion_bytes" in rejected_metrics["reasons"]
+        assert rejected_metrics["metrics"]["promotion_bytes"]==8*1024*1024
+
         stateful_share_policy.observe(
             con,"existing",10,10,10,7,
             copied_sequences=0)
@@ -283,7 +306,8 @@ def main():
     print(
         "stateful_share_policy_test ok off compatible adaptive "
         "lag fanout surplus incremental_state_size lazy_state_size "
-        "state_size observed_visible_lag durable_decision runtime_feedback",
+        "state_size promotion_budget observed_visible_lag "
+        "durable_decision runtime_feedback",
         flush=True,
     )
 
