@@ -10406,19 +10406,63 @@ def stateful_rebuild_freeze_if_ready(
     consumer=result.get("consumer")
     if consumer is None:
         return rebuild
+
+    cohort=stateful_rebuild_cohort.for_sink(
+        con,rebuild["sink_key"])
+    if cohort is None:
+        frontier=int(source_state.base_applied_seq(con))
+        if int(consumer["watermark"])>frontier:
+            raise RuntimeError(
+                "stateful rebuild candidate consumer is ahead of source base")
+        rebuild=stateful_rebuild.freeze_frontier(
+            con,rebuild["sink_key"],frontier)
+        log(
+            "STATEFUL REBUILD FENCE sink=%s frontier=%d old=%s new=%s"
+            % (
+                rebuild["sink_key"],frontier,
+                rebuild["old_task_id"],
+                rebuild["new_task_id"]))
+        return rebuild
+
+    if cohort["phase"]!="building":
+        return stateful_rebuild.info(
+            con,rebuild["sink_key"])
+    cohort=stateful_rebuild_cohort.mark_member_ready(
+        con,cohort["cohort_id"],
+        rebuild["sink_key"])
+    if not stateful_rebuild_cohort.ready(
+        con,cohort["cohort_id"]):
+        return rebuild
+
     frontier=int(source_state.base_applied_seq(con))
-    if int(consumer["watermark"])>frontier:
-        raise RuntimeError(
-            "stateful rebuild candidate consumer is ahead of source base")
-    rebuild=stateful_rebuild.freeze_frontier(
-        con,rebuild["sink_key"],frontier)
+    for member in cohort["members"]:
+        member_rebuild=stateful_rebuild.info(
+            con,member["sink_key"])
+        new_task=stateful_durable_task(
+            con,member_rebuild["kind"],
+            member_rebuild["new_task_id"])
+        new_consumer=source_state.consumer_info(
+            con,new_task["consumer_id"])
+        if int(new_consumer["watermark"])>frontier:
+            raise RuntimeError(
+                "stateful rebuild cohort candidate is ahead of source base "
+                "sink=%s consumer=%d frontier=%d"
+                % (
+                    member["sink_key"],
+                    int(new_consumer["watermark"]),
+                    frontier))
+    cohort=stateful_rebuild_cohort.freeze(
+        con,cohort["cohort_id"],frontier)
     log(
-        "STATEFUL REBUILD FENCE sink=%s frontier=%d old=%s new=%s"
+        "STATEFUL REBUILD COHORT FENCE cohort=%s frontier=%d sinks=%s"
         % (
-            rebuild["sink_key"],frontier,
-            rebuild["old_task_id"],
-            rebuild["new_task_id"]))
-    return rebuild
+            cohort["cohort_id"],frontier,
+            ",".join(
+                member["sink_key"]
+                for member in cohort["members"])))
+    return stateful_rebuild.info(
+        con,rebuild["sink_key"])
+
 
 
 def stateful_rebuild_frontier_for_task(
@@ -10830,9 +10874,16 @@ def stateful_rebuild_guarded_step(
             con,task["task_id"],cfg,
             mapping=mapping,
             bootstrap_limit=bootstrap_limit)
-    lock=runtime.setdefault(
-        "stateful_rebuild_locks",{}).setdefault(
-            rebuild["sink_key"],threading.Lock())
+    cohort=stateful_rebuild_cohort.for_sink(
+        con,rebuild["sink_key"])
+    if cohort is None:
+        lock=runtime.setdefault(
+            "stateful_rebuild_locks",{}).setdefault(
+                rebuild["sink_key"],threading.Lock())
+    else:
+        lock=runtime.setdefault(
+            "stateful_rebuild_cohort_locks",{}).setdefault(
+                cohort["cohort_id"],threading.Lock())
     with lock:
         rebuild,frontier=stateful_rebuild_frontier_for_task(
             con,task["task_id"])
