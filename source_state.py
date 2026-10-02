@@ -608,60 +608,66 @@ def apply_one(con, seq):
 
         action_count=_stage_commit_actions(
             con,seq)
-        actions=con.execute("""
-            SELECT table_name,pk,deleted,
-                   row_payload,schema_epoch
+        missing_relation=con.execute("""
+            SELECT a.table_name
+            FROM source_apply_actions a
+            LEFT JOIN source_relations r
+              ON r.table_name=a.table_name
+            WHERE a.seq=? AND r.table_name IS NULL
+            LIMIT 1
+        """,(seq,)).fetchone()
+        if missing_relation is not None:
+            raise RuntimeError(
+                "source relation disappeared before base apply")
+
+        duplicate_current=con.execute("""
+            SELECT v.table_name,v.pk
+            FROM source_versions v
+            JOIN source_apply_actions a
+              ON a.seq=?
+             AND a.table_name=v.table_name
+             AND a.pk=v.pk
+            WHERE v.valid_to IS NULL
+            GROUP BY v.table_name,v.pk
+            HAVING COUNT(*)>1
+            LIMIT 1
+        """,(seq,)).fetchone()
+        if duplicate_current is not None:
+            raise RuntimeError(
+                "multiple current source versions for one key")
+
+        con.execute("""
+            UPDATE source_versions
+            SET valid_to=?
+            WHERE valid_to IS NULL
+              AND EXISTS(
+                  SELECT 1
+                  FROM source_apply_actions a
+                  WHERE a.seq=?
+                    AND a.table_name=source_versions.table_name
+                    AND a.pk=source_versions.pk
+              )
+        """,(seq,seq))
+        con.execute("""
+            INSERT INTO source_versions(
+                table_name,pk,valid_from,
+                valid_to,deleted,row_payload,
+                schema_epoch)
+            SELECT table_name,pk,?,NULL,
+                   deleted,row_payload,schema_epoch
             FROM source_apply_actions
             WHERE seq=?
             ORDER BY table_name,pk
+        """,(seq,seq))
+        con.execute("""
+            INSERT OR IGNORE INTO source_touched(
+                table_name,pk)
+            SELECT a.table_name,a.pk
+            FROM source_apply_actions a
+            JOIN source_relations r
+              ON r.table_name=a.table_name
+            WHERE a.seq=? AND r.complete_seq IS NULL
         """,(seq,))
-        for (
-            table_name,pk,deleted,
-            row_payload,schema_epoch
-        ) in actions:
-            current=con.execute("""
-                SELECT valid_from
-                FROM source_versions
-                WHERE table_name=? AND pk=?
-                  AND valid_to IS NULL
-                LIMIT 2
-            """,(table_name,pk)).fetchall()
-            if len(current)>1:
-                raise RuntimeError(
-                    "multiple current source versions for one key")
-            if current:
-                con.execute("""
-                    UPDATE source_versions
-                    SET valid_to=?
-                    WHERE table_name=? AND pk=?
-                      AND valid_to IS NULL
-                """,(seq,table_name,pk))
-            con.execute("""
-                INSERT INTO source_versions(
-                    table_name,pk,valid_from,
-                    valid_to,deleted,row_payload,
-                    schema_epoch)
-                VALUES(?,?,?,NULL,?,?,?)
-            """,(
-                table_name,pk,seq,
-                int(bool(deleted)),row_payload,
-                int(schema_epoch),
-            ))
-            relation=con.execute(
-                "SELECT complete_seq "
-                "FROM source_relations "
-                "WHERE table_name=?",
-                (table_name,),
-            ).fetchone()
-            if relation is None:
-                raise RuntimeError(
-                    "source relation disappeared before base apply")
-            if relation[0] is None:
-                con.execute("""
-                    INSERT OR IGNORE INTO source_touched(
-                        table_name,pk)
-                    VALUES(?,?)
-                """,(table_name,pk))
 
         con.execute(
             "DELETE FROM source_apply_actions "
