@@ -966,6 +966,7 @@ def evaluate_workload(
     catchup_seconds=[]
     source_rows_during_fault=[]
     frontiers=[]
+    join_right_fault_updates=[]
     for index,item in enumerate(faults):
         item=dict(item or {})
         restart_seconds.append(_number(
@@ -980,6 +981,19 @@ def evaluate_workload(
         source_rows_during_fault.append(produced)
         if produced<=0:
             failures.append("fault_source_stalled")
+        right_update=item.get("join_right_update")
+        if right_update is not None:
+            right_update=dict(right_update or {})
+            join_right_fault_updates.append(dict(
+                bucket=_integer(
+                    right_update.get("bucket"),
+                    "fault_%d.join_right_update.bucket"
+                    % index),
+                revision=_integer(
+                    right_update.get("revision"),
+                    "fault_%d.join_right_update.revision"
+                    % index),
+            ))
         frontier=dict(
             item.get("source_frontier") or {})
         durable=_integer(
@@ -993,12 +1007,42 @@ def evaluate_workload(
             base_applied_seq=applied))
         if durable!=applied:
             failures.append("fault_source_not_caught_up")
+
+    join_fault_coverage=(
+        mix_raw is not None
+        and dynamic_task_mix in {"mixed","join"}
+    )
+    reported_join_right_updates=report.get(
+        "join_right_updates")
+    if reported_join_right_updates is None:
+        reported_join_right_updates=0
+        if join_fault_coverage and faults:
+            failures.append(
+                "join_right_fault_evidence_missing")
+    else:
+        reported_join_right_updates=_integer(
+            reported_join_right_updates,
+            "join_right_updates")
+    if (
+        int(reported_join_right_updates)
+        !=len(join_right_fault_updates)
+    ):
+        failures.append(
+            "join_right_fault_evidence_inconsistent")
+    if (
+        join_fault_coverage
+        and faults
+        and len(join_right_fault_updates)!=len(faults)
+    ):
+        failures.append("join_right_fault_coverage")
+
     evidence["faults"]=dict(
         count=len(faults),
         restart_seconds=restart_seconds,
         catchup_seconds=catchup_seconds,
         source_rows_during_fault=source_rows_during_fault,
         source_frontiers=frontiers,
+        join_right_updates=join_right_fault_updates,
         max_restart_seconds=(
             max(restart_seconds)
             if restart_seconds else None),
