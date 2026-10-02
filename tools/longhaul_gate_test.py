@@ -86,6 +86,16 @@ def workload():
             cgroup_cpu_quota_cores=8.0,
             cgroup_memory_limit_bytes=8*1024**3,
         ),
+        daemon_resources=dict(
+            supported=True,
+            samples=int(elapsed),
+            process_identities_seen=12,
+            peak_processes=3,
+            peak_rss_bytes=768*1024**2,
+            cpu_seconds=36*3600,
+            read_bytes=4*1024**3,
+            write_bytes=8*1024**3,
+        ),
         live_rows=int(50*elapsed),
         latency_samples=int(elapsed),
         latency_p50_seconds=1.0,
@@ -292,6 +302,11 @@ def main():
     assert full["evidence"]["debt"]["max_rowset"]==73
     assert full["evidence"]["resources"]["logical_cpus"]==8
     assert full["evidence"]["resources"]["configured_memory_mb"]==4096
+    assert full["evidence"]["daemon_resources"]["peak_rss_bytes"]==768*1024**2
+    assert abs(
+        full["evidence"]["daemon_resources"]["cpu_core_equivalent"]
+        -(36*3600)/elapsed
+    )<1e-12
 
     bad=workload()
     del bad["resource_fingerprint"]
@@ -304,6 +319,18 @@ def main():
     full=evaluate_workload(bad)
     assert not full["ok"]
     assert "configured_memory_exceeds_cgroup" in full["failures"]
+
+    bad=workload()
+    del bad["daemon_resources"]
+    full=evaluate_workload(bad)
+    assert not full["ok"]
+    assert "daemon_resource_evidence_missing" in full["failures"]
+
+    bad=workload()
+    bad["daemon_resources"]["supported"]=False
+    full=evaluate_workload(bad)
+    assert not full["ok"]
+    assert "daemon_resource_probe_unsupported" in full["failures"]
 
     bad=workload()
     bad["debt"]["max_rowset"]=-1
@@ -386,7 +413,8 @@ def main():
     print(
         "longhaul_gate_test ok 50m_72h 50rps lifetime_exact_p95_p99 cross_restart "
         "healthy_recovery_latency drain stateful_health space_version_debt "
-        "rowset_recovery overflow_fail_closed reproducible_resource_fingerprint",
+        "rowset_recovery overflow_fail_closed reproducible_resource_fingerprint "
+        "daemon_process_resource_evidence",
         flush=True,
     )
 
