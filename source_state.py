@@ -504,17 +504,24 @@ def _stage_commit_actions(con, seq):
         "DELETE FROM source_apply_actions WHERE seq=?",
         (seq,))
     parts=con.execute("""
-        SELECT part,table_name,schema_epoch,payload
+        SELECT part,table_name,schema_epoch,payload,nrows
         FROM source_commit_parts
         WHERE seq=?
         ORDER BY part
     """,(seq,))
-    for _,table_name,schema_epoch,payload in parts:
-        info=relation_info(con,table_name)
+    relations={}
+    for _,table_name,schema_epoch,payload,nrows in parts:
+        info=relations.get(table_name)
+        if info is None:
+            info=relation_info(con,table_name)
+            relations[table_name]=info
         if int(schema_epoch)!=info["schema_epoch"]:
             raise RuntimeError(
                 "source commit schema epoch changed before apply")
         batch=decode_batch(payload)
+        if int(batch.num_rows)!=int(nrows):
+            raise RuntimeError(
+                "source commit part row count differs from durable metadata")
         expected=(
             info["columns"]
             +["_sync_op","_sync_order"]
