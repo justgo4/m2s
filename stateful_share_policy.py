@@ -385,6 +385,7 @@ def plan_graph(con,compiled,cfg=None):
     }
     limits=_limits(cfg)
     planned_counts={}
+    assigned_followers=set()
     now=time.time()
     planned=[]
     for follower_item in refreshed:
@@ -402,6 +403,7 @@ def plan_graph(con,compiled,cfg=None):
             if (
                 leader["task_id"]==follower["task_id"]
                 or leader["status"] not in {"candidate","active"}
+                or leader["task_id"] in assigned_followers
             ):
                 continue
             leader_rank=ranks.get(
@@ -454,6 +456,8 @@ def plan_graph(con,compiled,cfg=None):
             else "graph_candidate_owner")
         planned_counts[leader["task_id"]]=(
             int(planned_counts.get(leader["task_id"],0))+1)
+        assigned_followers.add(
+            follower["task_id"])
         con.execute("""
             INSERT INTO stateful_share_preferences(
                 task_id,kind,preferred_leader_task_id,
