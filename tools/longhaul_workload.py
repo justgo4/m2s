@@ -987,6 +987,54 @@ def run(args):
             source_ready_at=None
             next_checkpoint=started
 
+            def deploy_due_tasks(
+                    current,now=None,force=False
+            ):
+                if not source_ready(current):
+                    return 0
+                now=(
+                    time.monotonic()
+                    if now is None else float(now))
+                deployed=0
+                while (
+                    task_due
+                    and (force or now>=task_due[0])
+                ):
+                    task_due.pop(0)
+                    task_index=len(
+                        added_tasks)+1
+                    sink_key=(
+                        "starrocks.agg_%03d"
+                        % task_index)
+                    task_publish[sink_key]=(
+                        time.monotonic())
+                    sink=add_aggregate_task(
+                        directory,env,task_index)
+                    if sink!=sink_key:
+                        raise RuntimeError(
+                            "longhaul dynamic aggregate "
+                            "sink identity changed")
+                    added_tasks.append(sink)
+                    deployed+=1
+                return deployed
+
+            def observe_task_ready(current):
+                statuses=dict(
+                    [] if current is None
+                    else current[
+                        "aggregate_tasks"])
+                observed=time.monotonic()
+                for sink in added_tasks:
+                    if (
+                        sink not in task_ready
+                        and statuses.get(sink)=="active"
+                    ):
+                        task_ready[sink]=(
+                            observed
+                            -task_publish[sink]
+                        )
+                return statuses
+
             def persist_checkpoint(now=None,force=False):
                 nonlocal next_checkpoint
                 interval=float(
@@ -1108,35 +1156,9 @@ def run(args):
                 ):
                     source_ready_at=now-started
 
-                while (
-                    task_due
-                    and now>=task_due[0]
-                    and source_ready(current)
-                ):
-                    task_due.pop(0)
-                    task_index=len(
-                        added_tasks)+1
-                    task_publish[
-                        "starrocks.agg_%03d"
-                        % task_index
-                    ]=time.monotonic()
-                    sink=add_aggregate_task(
-                        directory,env,task_index)
-                    added_tasks.append(sink)
-
-                statuses=dict(
-                    [] if current is None
-                    else current[
-                        "aggregate_tasks"])
-                for sink in added_tasks:
-                    if (
-                        sink not in task_ready
-                        and statuses.get(sink)=="active"
-                    ):
-                        task_ready[sink]=(
-                            time.monotonic()
-                            -task_publish[sink]
-                        )
+                deploy_due_tasks(
+                    current,now=now)
+                observe_task_ready(current)
 
                 if (
                     next_fault is not None
@@ -1170,6 +1192,11 @@ def run(args):
                     sample_daemon_resources(force=True)
                     recovery_latency.extend(
                         recovered["latencies"])
+                    # Fault-period commits are still ordinary CDC latency
+                    # samples. Keep the dedicated recovery distribution, but
+                    # also include them in the end-to-end workload SLO sample.
+                    latency.extend(
+                        recovered["latencies"])
                     faults.append(dict(
                         sequence=before,
                         sequence_after=int(sequence),
@@ -1184,6 +1211,13 @@ def run(args):
                                 "state"]["base_applied_seq"],
                         ),
                     ))
+                    current=recovered["state"]
+                    # A long recovery can cross one or more dynamic-task due
+                    # times. Deploy them immediately after catch-up instead of
+                    # silently losing them when wall time has passed deadline.
+                    deploy_due_tasks(
+                        current,now=time.monotonic())
+                    observe_task_ready(current)
                     persist_checkpoint(force=True)
                     next_fault=(
                         time.monotonic()
@@ -1228,6 +1262,13 @@ def run(args):
                 persist_checkpoint()
                 current=read_state(
                     state_path)
+                # Drain is after the scheduled workload window. Any task whose
+                # deployment was delayed by a restart/catch-up must still be
+                # created and brought to active before final evidence is taken.
+                deploy_due_tasks(
+                    current,
+                    now=time.monotonic(),
+                    force=True)
                 visible=visible_markers(
                     cfg,commit_times.keys())
                 if visible:
@@ -1238,15 +1279,16 @@ def run(args):
                         if committed is not None:
                             latency.append(
                                 observed-committed)
-                statuses=dict(
-                    [] if current is None
-                    else current[
-                        "aggregate_tasks"])
+                statuses=observe_task_ready(
+                    current)
                 tasks_ready=all(
                     statuses.get(sink)=="active"
                     for sink in added_tasks)
                 if (
-                    not commit_times
+                    not task_due
+                    and len(added_tasks)==int(
+                        args.dynamic_tasks)
+                    and not commit_times
                     and current is not None
                     and current["pending"]==0
                     and current["deliveries"]==0
@@ -1304,6 +1346,8 @@ def run(args):
                 rows_per_second=int(
                     args.rows_per_second),
                 duration_seconds=elapsed,
+                source_schedule_seconds=float(
+                    args.duration_seconds),
                 memory_mb=int(args.memory_mb),
                 work_directory_persistent=bool(
                     getattr(args,"work_directory",None)),
