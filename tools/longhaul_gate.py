@@ -984,6 +984,45 @@ def evaluate_workload(
         right_update=item.get("join_right_update")
         if right_update is not None:
             right_update=dict(right_update or {})
+            missing_recovery=[
+                name
+                for name in (
+                    "source_rows",
+                    "target_rows",
+                    "fully_visible",
+                    "recovery_seconds",
+                )
+                if right_update.get(name) is None
+            ]
+            if missing_recovery:
+                failures.append(
+                    "join_right_fault_recovery_evidence_missing")
+                source_rows=0
+                target_rows=0
+                fully_visible=False
+                recovery_seconds=None
+            else:
+                source_rows=_integer(
+                    right_update.get("source_rows"),
+                    "fault_%d.join_right_update.source_rows"
+                    % index)
+                target_rows=_integer(
+                    right_update.get("target_rows"),
+                    "fault_%d.join_right_update.target_rows"
+                    % index)
+                fully_visible=bool(
+                    right_update.get("fully_visible"))
+                recovery_seconds=_number(
+                    right_update.get("recovery_seconds"),
+                    "fault_%d.join_right_update.recovery_seconds"
+                    % index)
+                if (
+                    source_rows<=0
+                    or target_rows!=source_rows
+                    or not fully_visible
+                ):
+                    failures.append(
+                        "join_right_fault_not_recovered")
             join_right_fault_updates.append(dict(
                 bucket=_integer(
                     right_update.get("bucket"),
@@ -993,6 +1032,10 @@ def evaluate_workload(
                     right_update.get("revision"),
                     "fault_%d.join_right_update.revision"
                     % index),
+                source_rows=source_rows,
+                target_rows=target_rows,
+                fully_visible=fully_visible,
+                recovery_seconds=recovery_seconds,
             ))
         frontier=dict(
             item.get("source_frontier") or {})
@@ -1035,6 +1078,19 @@ def evaluate_workload(
         and len(join_right_fault_updates)!=len(faults)
     ):
         failures.append("join_right_fault_coverage")
+
+    revisions=[
+        item["revision"]
+        for item in join_right_fault_updates
+    ]
+    if (
+        join_fault_coverage
+        and revisions
+        and revisions!=list(
+            range(1,len(revisions)+1))
+    ):
+        failures.append(
+            "join_right_fault_revision_sequence")
 
     evidence["faults"]=dict(
         count=len(faults),
