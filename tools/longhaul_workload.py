@@ -430,15 +430,24 @@ def wait_started(proc,log,state_path,timeout=180):
         "longhaul daemon did not initialize state")
 
 
-def target_max_id(cfg,marker_start):
-    rows,_=execute(
-        cfg,
-        "SELECT MAX(id) FROM "
-        +DATABASE+".events "
-        "WHERE id>="+str(int(marker_start)))
-    if not rows or rows[0][0] is None:
-        return marker_start-1
-    return int(rows[0][0])
+def visible_markers(cfg,marker_ids):
+    marker_ids=[
+        int(value) for value in marker_ids
+    ]
+    if not marker_ids:
+        return set()
+    result=set()
+    for offset in range(0,len(marker_ids),512):
+        chunk=marker_ids[offset:offset+512]
+        rows,_=execute(
+            cfg,
+            "SELECT id FROM "+DATABASE+".events "
+            "WHERE id IN ("
+            +",".join(str(value) for value in chunk)
+            +")")
+        result.update(
+            int(row[0]) for row in rows)
+    return result
 
 
 def source_target_totals(source,cfg):
@@ -530,7 +539,6 @@ def run(args):
             sequence=0
             commit_times={}
             latency=[]
-            max_observed=marker_start-1
             daemon_index=1
             faults=[]
             source_ready_at=None
@@ -618,38 +626,28 @@ def run(args):
                             +DATABASE+".events "
                             "VALUES(%s,%s,%s,%s)",
                             rows)
-                    committed=time.monotonic()
                     source.commit()
-                    first_seq=(
-                        sequence-len(rows))
-                    for offset in range(
-                        len(rows)):
-                        commit_times[
-                            first_seq+offset]=committed
+                    committed=time.monotonic()
+                    # One sentinel per source transaction measures the intended
+                    # MySQL commit -> StarRocks queryable latency without using
+                    # MAX(id), which could hide a slower hash lane.
+                    sentinel=int(rows[-1][0])
+                    commit_times[sentinel]=committed
                     next_tick+=1.0
                     if next_tick<now-1.0:
                         next_tick=now+1.0
 
                 if now>=next_sample:
-                    visible=target_max_id(
-                        cfg,marker_start)
-                    if visible>max_observed:
+                    visible=visible_markers(
+                        cfg,commit_times.keys())
+                    if visible:
                         observed=time.monotonic()
-                        upper=min(
-                            visible-marker_start,
-                            sequence-1)
-                        start_seq=max(
-                            0,
-                            max_observed-marker_start+1)
-                        for seq in range(
-                            start_seq,upper+1):
+                        for marker in visible:
                             committed=commit_times.pop(
-                                seq,None)
+                                marker,None)
                             if committed is not None:
                                 latency.append(
                                     observed-committed)
-                        max_observed=max(
-                            max_observed,visible)
                     next_sample=now+float(
                         args.sample_seconds)
 
@@ -674,8 +672,16 @@ def run(args):
                 assert_live(proc,log)
                 current=read_state(
                     state_path)
-                visible=target_max_id(
-                    cfg,marker_start)
+                visible=visible_markers(
+                    cfg,commit_times.keys())
+                if visible:
+                    observed=time.monotonic()
+                    for marker in visible:
+                        committed=commit_times.pop(
+                            marker,None)
+                        if committed is not None:
+                            latency.append(
+                                observed-committed)
                 statuses=dict(
                     [] if current is None
                     else current[
@@ -684,7 +690,7 @@ def run(args):
                     statuses.get(sink)=="active"
                     for sink in added_tasks)
                 if (
-                    visible>=marker_start+sequence-1
+                    not commit_times
                     and current is not None
                     and current["pending"]==0
                     and current["deliveries"]==0
@@ -692,14 +698,6 @@ def run(args):
                         ==current["base_applied_seq"]
                     and tasks_ready
                 ):
-                    observed=time.monotonic()
-                    for seq,committed in list(
-                        commit_times.items()):
-                        if marker_start+seq<=visible:
-                            latency.append(
-                                observed-committed)
-                            commit_times.pop(
-                                seq,None)
                     break
                 time.sleep(.5)
             else:
