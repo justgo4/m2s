@@ -7031,15 +7031,17 @@ def wait_visible(cfg, txn_id, stop):
 
 
 
-def merge_commit_headers(mapping, cfg, request_id):
+def merge_commit_headers(mapping, cfg):
     columns = mapping["_output_columns"] + (["_cdc_seq"] if mapping["_target_sequence"] else []) + ["__op"]
+    # Merge Commit assigns its own transaction label. A local request id is
+    # durable diagnostic identity only and must never be treated as a remote
+    # idempotency/reconciliation key.
     headers = {"Expect":"100-continue","Content-Type":"application/json",
                "format":"json","read_json_by_line":"true","strip_outer_array":"false",
                "ignore_json_size":"true","max_filter_ratio":"0","strict_mode":"true",
                "log_rejected_record_num":"10","timezone":"+00:00",
                "timeout":str(cfg["load_timeout"]),
                "columns":",".join(sql_name(n,True) for n in columns),
-               "label":request_id,
                "enable_merge_commit":"true","merge_commit_async":"true",
                "merge_commit_interval_ms":str(cfg["merge_commit_interval_ms"]),
                "merge_commit_parallel":str(cfg["merge_commit_parallel"])}
@@ -7068,7 +7070,7 @@ def submit_merge_async(handle, con, mapping, delivery, part, cfg, stop, runtime)
         return int(txn_id),{"Status":"LOCAL_PENDING","TxnId":int(txn_id)}
 
     url = merge_stream_load_url(cfg,mapping)
-    headers = merge_commit_headers(mapping,cfg,label)
+    headers = merge_commit_headers(mapping,cfg)
     last_error = None
     attempt = 0
     while not stop.is_set():
