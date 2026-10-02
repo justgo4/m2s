@@ -12,19 +12,34 @@ import join_shared_runtime
 import join_target_mapping
 import join_task_catalog
 import stateful_share_policy
+import stateful_rebuild
 import task_generation
 
 
 RUNNABLE={"candidate","active"}
 
 
-def _validate_mapping(task,mapping):
+def _validate_mapping(task,mapping,con=None):
     if j4.mapping_key(mapping)!=task["sink_key"]:
         raise RuntimeError(
             "JOIN writer mapping sink identity changed")
     if str(mapping.get("sr_table"))!=task["target_table"]:
-        raise RuntimeError(
-            "JOIN writer mapping target table changed")
+        rebuild=(
+            None if con is None else
+            stateful_rebuild.maybe_info(
+                con,task["sink_key"]))
+        if not (
+            rebuild is not None
+            and rebuild["new_task_id"]==task["task_id"]
+            and rebuild["shadow_target"]==str(
+                mapping.get("sr_table"))
+            and rebuild["phase"] in {
+                "building_shadow","fencing",
+                "ready_to_swap"
+            }
+        ):
+            raise RuntimeError(
+                "JOIN writer mapping target table changed")
     if int(mapping.get("_plan_version",-1))!=int(
         task["plan_version"]
     ):
@@ -89,7 +104,7 @@ def load_task(
     return dict(
         task=task,
         mapping=_validate_mapping(
-            task,mapping),
+            task,mapping,con),
     )
 
 
@@ -109,7 +124,7 @@ def step(
         mapping=join_target_mapping.load_target_mapping(
             cfg,task)
     mapping=_validate_mapping(
-        task,mapping)
+        task,mapping,con)
 
     binding=join_shared_runtime.maybe_binding(
         con,task["task_id"])
