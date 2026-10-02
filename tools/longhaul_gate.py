@@ -1097,12 +1097,46 @@ def evaluate_workload(
 
     source_totals=report.get("source_totals")
     target_totals=report.get("target_totals")
-    evidence["source_target_exact"]=(
-        source_totals==target_totals
-        and source_totals is not None)
+    evidence["source_target_totals"]=dict(
+        source=source_totals,
+        target=target_totals,
+        match=(
+            source_totals==target_totals
+            and source_totals is not None
+        ),
+    )
     if source_totals is None or target_totals is None:
         failures.append("source_target_totals_missing")
     elif source_totals!=target_totals:
+        failures.append("source_target_totals_mismatch")
+
+    event_checks=dict(
+        report.get("event_checks") or {})
+    event_tables=dict(
+        event_checks.get("tables") or {})
+    event_matches={
+        str(table):bool(
+            (value or {}).get("match",False))
+        for table,value in event_tables.items()
+    }
+    event_exact=(
+        bool(event_checks.get("all_match",False))
+        and bool(event_matches)
+        and all(event_matches.values())
+    )
+    evidence["source_target_exact"]=event_exact
+    evidence["event_exactness"]=dict(
+        comparison=str(
+            event_checks.get("comparison") or ""),
+        expected_rows=int(
+            event_checks.get("expected_rows",0) or 0),
+        checked_targets=len(event_matches),
+        all_match=event_exact,
+        matches=event_matches,
+    )
+    if not event_checks:
+        failures.append("source_target_exactness_missing")
+    elif not event_exact:
         failures.append("source_target_mismatch")
 
     aggregate_checks=dict(
