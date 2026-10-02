@@ -612,6 +612,19 @@ def collect_final_debt(state_path):
     max_rowset=(
         max(per_table_rowset.values())
         if per_table_rowset else -1)
+    merge_uncertain_recovery=dict(
+        replays=0,visible=0,aborted=0,blocked=0)
+    recovery_fields={
+        "merge_uncertain_replays":"replays",
+        "merge_uncertain_replay_visible":"visible",
+        "merge_uncertain_replay_aborted":"aborted",
+        "merge_uncertain_replay_blocked":"blocked",
+    }
+    for value in tables.values():
+        total=dict((value or {}).get("total") or {})
+        for source_name,target_name in recovery_fields.items():
+            merge_uncertain_recovery[target_name]+=int(
+                total.get(source_name,0))
 
     stateful=dict(summary.get("stateful") or {})
     physical=dict(stateful.get("physical") or {})
@@ -649,6 +662,7 @@ def collect_final_debt(state_path):
             state.get("prepared_budget_used",0)),
         field_overflow_rows=int(
             state.get("field_overflow_rows",0)),
+        merge_uncertain_recovery=merge_uncertain_recovery,
     )
 
 
