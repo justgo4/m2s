@@ -48,6 +48,7 @@ import incremental_contract
 import incremental_ir
 import join_job_bridge
 import join_outbox
+import join_shared_runtime
 import join_state
 import join_task_catalog
 import join_task_runner
@@ -1641,6 +1642,7 @@ def init_state(path):
     aggregate_task_catalog.install(con)
     stateful_catalog_runtime.install(con)
     aggregate_shared_runtime.install(con)
+    join_shared_runtime.install(con)
     physical_state_catalog.install(con)
     task_generation.install(con)
     existing_format = meta_get(con,"state_format")
