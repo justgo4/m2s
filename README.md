@@ -127,7 +127,7 @@ cost_vector = {
 | **P9A/P9B/P9C** | **correctness-first P9 基线已进入代码**：aggregate/JOIN exact sharing、aggregate 输出子集、JOIN projection subview、durable follower binding、owner promotion、dependency ref/retention GC；100-task scale contracts 验证一个 compute state 服务 100 个 exact/subview follower。stateful_share_policy.py 提供 compatible/off/adaptive、lag/fanout/surplus/observed-visible-lag fence、durable decision/telemetry 与确定性的 whole-graph leader preference。stateful_admission.py 已在 hot-add / semantic rebuild 建表和注册前按 task/building 数、当前 state payload bytes、pending bytes、source lag 与可配置 per-task state reserve 做 fail-closed 资源准入，并加入 durable wait/backoff、异常退避、plan supersede 清理，以及“admission 成功→descriptor/rebuild intent durable”崩溃边界与无 owner reservation 回收。默认预算为 0 时保持现有行为；它仍只约束当前可观测压力/显式 reserve，不宣称已经预测未来基数或 lifetime cost。仍需真实大负载下校准成本向量/滞后、跨 operator 的共享 arrangement/factorized state、50M/72h 与故障下策略切换验证 |
 | P4–P5 | 按 profile 插入 event/transaction batching、布局融合、native socket/snapshot；同 raw binlog 差分先通过，再重复 Python/native A/B，报告两进程总 CPU/RSS 和 IPC 成本 |
 | **P11** | **可执行 long-haul driver/gate 已进入代码，但尚未完成正式 50M/72h 认证运行。** 固定机器目标仍是 50M 初始行 + 50 rows/s × 72h，并动态新增任务/注入故障。daemon 精确累计全程 `>5s`/`>10s` CDC 样本；workload 在故障期间继续向 MySQL 产数并要求恢复追到持续推进的 live frontier。报告同时保存机器/cgroup 指纹、代码 revision、MySQL/StarRocks/关键 Python 依赖版本，以及 m2s daemon、MySQL、StarRocks 服务 scope 的 RSS/CPU/实际读写字节；相同 StarRocks 容器 scope 会去重，source/sink scope 混叠则 fail-closed。正式长跑还支持显式保留工作目录与原子 progress checkpoint，避免中途失败只剩控制台日志。gate 仍单独报告 recovery latency、time-to-ready、空间与版本债务；下一步是让真实 smoke 持续通过并在固定资源上完成正式 50M/72h 证据 |
-| P12 / P13 | 公平对标后再给优势结论；补可解释 deploy/explain/status/cancel、预算准入、权限、版本化升级/回滚，MCP 接同一控制面；catalog 已保存不等于任务已激活 |
+| P12 / P13 | **基础控制面已开始闭环**：现有 `sql/cli` 继续作为 deploy 入口，新增离线 `status`、published-plan `explain`、rollback-only `explain <file.sql>` dry-run，以及通过同一 catalog publish/drop 协议执行的 `cancel <starrocks.sink>`；dry-run 不连接 MySQL/StarRocks、不提交 catalog 草稿，并只暴露配置项名称而不输出密码/UDF 源码。仍需权限、版本化升级/回滚和 MCP 接同一控制面；catalog 已保存不等于任务已激活 |
 
 最短主线现在是：**让真实 stateful catalog/P11 smoke 持续通过 → 用固定资源完成 50M/72h gate → 只把实测有收益的共享 arrangement/状态布局下沉到更通用物理计划。** 1/10/100 task sharing A/B、在线 rebuild/new-generation、远端 swap/fence 与 durable admission wait/backoff 已进入代码和合同测试；当前 whole-graph preference、adaptive sharing 与 stateful resource admission 仍是可解释规则，不把它们宣传成完整成本优化器。
 
@@ -177,6 +177,10 @@ cp setup.sql.example setup.sql
 python j4.py                  # daemon
 python j4.py sql setup.sql    # 另一终端部署
 python j4.py cli              # 或交互部署
+python j4.py status           # 只读 durable runtime 状态
+python j4.py explain          # 已发布计划 + durable runtime 关联
+python j4.py explain setup.sql # rollback-only SQL dry-run，不部署
+python j4.py cancel starrocks.orders_clean # 通过 catalog 发布 drop/cancel
 ```
 
 正式 P11 认证使用代码内唯一 profile，避免把自定义 smoke 当成 50M/72h 结果。认证前工作树必须 clean；MySQL/StarRocks 必须是一次性测试实例，且运行目录必须为空或不存在。以下命令会固定为 **50,000,000 初始行、50 rows/s、72h、10 个动态任务、每 6h 强退一次、8 GiB m2s 内存预算、adaptive sharing**，并保留中途 checkpoint：
