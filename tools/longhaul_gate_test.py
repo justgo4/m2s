@@ -840,7 +840,7 @@ def main():
         "dynamic_tasks_not_ready",
         "fault_injection",
         "pending_jobs",
-        "source_target_mismatch",
+        "source_target_totals_mismatch",
         "aggregate_target_mismatch",
         "join_target_mismatch",
     ):
