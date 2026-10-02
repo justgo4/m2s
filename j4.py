@@ -11917,7 +11917,9 @@ def run_cdc(
             checkpoint_thread.start()
             threads.append(checkpoint_thread)
             gc_thread = threading.Thread(
-                target=state_gc_worker,args=(cfg,runtime),name="state-gc")
+                target=guarded_worker,
+                args=(state_gc_worker,runtime,cfg),
+                name="state-gc")
             gc_thread.start()
             threads.append(gc_thread)
             resource_thread = threading.Thread(

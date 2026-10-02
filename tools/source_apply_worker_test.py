@@ -245,9 +245,50 @@ def main():
         assert not worker.is_alive()
         con.close()
 
+        # Advisory SQLite/OSError handling remains inside state_gc_worker, but
+        # an unexpected invariant failure must not silently kill only the GC
+        # thread while the daemon continues without history reclamation.
+        stop=threading.Event()
+        runtime=dict(
+            stop=stop,
+            error_lock=threading.Lock(),
+            errors=[],
+        )
+        original_sync=j4.sync_source_base_catalog
+        def fail_source_gc_sync(_con):
+            raise RuntimeError(
+                "forced source GC invariant")
+        j4.sync_source_base_catalog=fail_source_gc_sync
+        try:
+            worker=threading.Thread(
+                target=j4.guarded_worker,
+                args=(
+                    j4.state_gc_worker,
+                    runtime,
+                    dict(
+                        state=path,
+                        shared_source_state=True,
+                        detail_logs=False,
+                    ),
+                ),
+                name="source-gc-fatal-contract")
+            worker.start()
+            worker.join(5)
+            assert not worker.is_alive()
+            assert stop.is_set()
+            assert runtime["errors"]==[
+                (
+                    "state_gc_worker",
+                    "forced source GC invariant",
+                )
+            ]
+        finally:
+            j4.sync_source_base_catalog=original_sync
+            stop.set()
+
     print(
         "source_apply_worker_test ok durable_bytes "
-        "async_drain restart_rebuild",
+        "async_drain restart_rebuild gc_fatal_guard",
         flush=True,
     )
 
