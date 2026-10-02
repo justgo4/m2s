@@ -127,6 +127,23 @@ def install(con):
             commits INTEGER NOT NULL CHECK(commits>=0),
             event_rows INTEGER NOT NULL CHECK(event_rows>=0),
             payload_bytes INTEGER NOT NULL CHECK(payload_bytes>=0));
+
+        CREATE TABLE IF NOT EXISTS source_pipeline_stats(
+            id INTEGER PRIMARY KEY CHECK(id=1),
+            log_commits INTEGER NOT NULL CHECK(log_commits>=0),
+            log_parts INTEGER NOT NULL CHECK(log_parts>=0),
+            log_rows INTEGER NOT NULL CHECK(log_rows>=0),
+            log_payload_bytes INTEGER NOT NULL CHECK(log_payload_bytes>=0),
+            log_work_ns INTEGER NOT NULL CHECK(log_work_ns>=0),
+            apply_commits INTEGER NOT NULL CHECK(apply_commits>=0),
+            apply_input_rows INTEGER NOT NULL CHECK(apply_input_rows>=0),
+            apply_actions INTEGER NOT NULL CHECK(apply_actions>=0),
+            apply_work_ns INTEGER NOT NULL CHECK(apply_work_ns>=0));
+        INSERT OR IGNORE INTO source_pipeline_stats(
+            id,log_commits,log_parts,log_rows,log_payload_bytes,
+            log_work_ns,apply_commits,apply_input_rows,apply_actions,
+            apply_work_ns)
+        VALUES(1,0,0,0,0,0,0,0,0,0);
     """)
     if _meta_int(con, "log_durable_seq", None) is None:
         with transaction(con):
@@ -352,6 +369,10 @@ def log_commit_tx(con, source_epoch, position, gtid, parts):
     if existing:
         return int(existing[0])
 
+    started_ns=time.perf_counter_ns()
+    part_count=0
+    row_count=0
+    payload_bytes=0
     cursor = con.execute("""
         INSERT INTO source_commits(
             source_epoch,source_file,source_pos,gtid,created,base_applied)
@@ -369,6 +390,9 @@ def log_commit_tx(con, source_epoch, position, gtid, parts):
             raise RuntimeError("schema epoch mismatch while logging source commit")
         payload=sqlite_blob(part["payload"])
         nrows=int(part["nrows"])
+        part_count+=1
+        row_count+=nrows
+        payload_bytes+=len(payload)
         con.execute("""
             INSERT INTO source_commit_parts(
                 seq,part,table_name,schema_epoch,payload,nrows)
@@ -393,6 +417,20 @@ def log_commit_tx(con, source_epoch, position, gtid, parts):
     if seq <= previous:
         raise RuntimeError("source commit sequence did not advance")
     _meta_set_int(con, "log_durable_seq", seq)
+    elapsed_ns=max(
+        0,time.perf_counter_ns()-started_ns)
+    con.execute("""
+        UPDATE source_pipeline_stats
+        SET log_commits=log_commits+1,
+            log_parts=log_parts+?,
+            log_rows=log_rows+?,
+            log_payload_bytes=log_payload_bytes+?,
+            log_work_ns=log_work_ns+?
+        WHERE id=1
+    """,(
+        int(part_count),int(row_count),
+        int(payload_bytes),int(elapsed_ns),
+    ))
     return seq
 
 
@@ -485,6 +523,12 @@ def _commit_actions(con, seq):
 
 def apply_one(con, seq):
     seq = int(seq)
+    started_ns=time.perf_counter_ns()
+    input_rows=int(con.execute("""
+        SELECT COALESCE(SUM(nrows),0)
+        FROM source_commit_parts
+        WHERE seq=?
+    """,(seq,)).fetchone()[0] or 0)
     actions = _commit_actions(con, seq)
     with transaction(con):
         applied = base_applied_seq(con)
@@ -539,6 +583,19 @@ def apply_one(con, seq):
             "UPDATE source_commits SET base_applied=1 WHERE seq=?", (seq,)
         )
         _meta_set_int(con, "base_applied_seq", seq)
+        elapsed_ns=max(
+            0,time.perf_counter_ns()-started_ns)
+        con.execute("""
+            UPDATE source_pipeline_stats
+            SET apply_commits=apply_commits+1,
+                apply_input_rows=apply_input_rows+?,
+                apply_actions=apply_actions+?,
+                apply_work_ns=apply_work_ns+?
+            WHERE id=1
+        """,(
+            int(input_rows),int(len(actions)),
+            int(elapsed_ns),
+        ))
     return True
 
 
@@ -889,6 +946,30 @@ def gc(con, consumer_watermarks=()):
 
 
 def status(con):
+    pipeline_row=con.execute("""
+        SELECT log_commits,log_parts,log_rows,log_payload_bytes,
+               log_work_ns,apply_commits,apply_input_rows,
+               apply_actions,apply_work_ns
+        FROM source_pipeline_stats
+        WHERE id=1
+    """).fetchone()
+    pipeline=dict(
+        log_commits=int(pipeline_row[0]),
+        log_parts=int(pipeline_row[1]),
+        log_rows=int(pipeline_row[2]),
+        log_payload_bytes=int(pipeline_row[3]),
+        log_work_seconds=float(pipeline_row[4])/1e9,
+        log_rows_per_second=(
+            float(pipeline_row[2])*1e9/float(pipeline_row[4])
+            if int(pipeline_row[4])>0 else None),
+        apply_commits=int(pipeline_row[5]),
+        apply_input_rows=int(pipeline_row[6]),
+        apply_actions=int(pipeline_row[7]),
+        apply_work_seconds=float(pipeline_row[8])/1e9,
+        apply_rows_per_second=(
+            float(pipeline_row[6])*1e9/float(pipeline_row[8])
+            if int(pipeline_row[8])>0 else None),
+    )
     incomplete = [
         row[0] for row in con.execute(
             "SELECT table_name FROM source_relations "
@@ -933,4 +1014,5 @@ def status(con):
         pins=pins,
         consumers=consumers,
         log_stats=log_stats,
+        pipeline_stats=pipeline,
     )
