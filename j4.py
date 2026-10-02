@@ -43,6 +43,7 @@ import aggregate_shared_runtime
 import aggregate_state
 import aggregate_task_catalog
 import aggregate_task_runner
+import catalog_explain
 import cdc_catalog
 import incremental_contract
 import incremental_ir
@@ -11883,7 +11884,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "command",nargs="?",default="run",
-        choices=("run","cli","sql","check","probe","status","selftest"))
+        choices=("run","cli","sql","check","probe","status","explain","selftest"))
     parser.add_argument("sql_file",nargs="?")
     args = parser.parse_args()
 
@@ -11895,6 +11896,28 @@ def main():
             orjson.dumps(
                 durable_status_snapshot(
                     default_state_path()),
+                option=orjson.OPT_SORT_KEYS
+            ).decode("utf-8"),
+            flush=True)
+        return 0
+
+    if args.command == "explain":
+        if args.sql_file:
+            parser.error(
+                "python j4.py explain does not accept a file argument")
+        bootstrap=cdc_catalog.catalog_paths(__file__)
+        variables=cdc_catalog.variables_get(
+            bootstrap["catalog"])
+        paths=cdc_catalog.catalog_paths(
+            __file__,variables=variables)
+        plan=cdc_catalog.load_plan(
+            paths["catalog"],paths["seed"])
+        status=durable_status_snapshot(
+            paths["state"])
+        print(
+            orjson.dumps(
+                catalog_explain.explain(
+                    plan,status),
                 option=orjson.OPT_SORT_KEYS
             ).decode("utf-8"),
             flush=True)
