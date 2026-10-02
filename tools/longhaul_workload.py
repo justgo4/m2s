@@ -918,6 +918,30 @@ def recover_after_fault(
         % (len(pending),read_state(state_path)))
 
 
+def mutate_join_right(source,index,initial_rows):
+    """Commit one deterministic right-side JOIN update while the daemon is down."""
+    index=max(1,int(index))
+    bucket=(index-1)%max(
+        1,min(1024,int(initial_rows)))
+    label="fault-%06d-bucket-%04d" % (
+        index,bucket)
+    with source.cursor() as cur:
+        cur.execute(
+            "UPDATE "+DATABASE+".dimensions "
+            "SET label=%s WHERE bucket=%s",
+            (label,bucket))
+        if int(cur.rowcount)!=1:
+            raise RuntimeError(
+                "longhaul right-side JOIN mutation "
+                "did not update exactly one dimension row")
+    source.commit()
+    return dict(
+        bucket=int(bucket),
+        revision=int(index),
+        label=label,
+    )
+
+
 def source_target_totals(source,cfg):
     with source.cursor() as cur:
         cur.execute(
@@ -1540,6 +1564,14 @@ def run(args):
                     stop_daemon(
                         proc,handle,kill=True)
                     proc=handle=log=None
+                    right_update=None
+                    if args.dynamic_task_mix in {
+                        "mixed","join"
+                    }:
+                        right_update=mutate_join_right(
+                            source,
+                            len(faults)+1,
+                            args.rows)
                     daemon_index+=1
                     proc,handle,log=start_daemon(
                         directory,env,daemon_index)
@@ -1573,6 +1605,16 @@ def run(args):
                             sequence-before),
                         restart_seconds=restart_seconds,
                         catchup_seconds=recovered["seconds"],
+                        join_right_update=(
+                            None
+                            if right_update is None
+                            else dict(
+                                bucket=right_update[
+                                    "bucket"],
+                                revision=right_update[
+                                    "revision"],
+                            )
+                        ),
                         source_frontier=dict(
                             log_durable_seq=recovered[
                                 "state"]["log_durable_seq"],
@@ -1795,6 +1837,10 @@ def run(args):
                     args.dynamic_task_mix),
                 dynamic_task_ready_seconds=dict(
                     sorted(task_ready.items())),
+                join_right_updates=sum(
+                    1 for item in faults
+                    if item.get("join_right_update")
+                    is not None),
                 faults=faults,
                 final_state=final_state,
                 debt=debt,
