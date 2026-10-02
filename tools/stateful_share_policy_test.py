@@ -123,6 +123,37 @@ def main():
             con,"inner_join","size-join"
         )==dict(rows=0,payload_bytes=0)
 
+        # Crash-safe migration marker: if the durable marker is missing,
+        # reinstall must rebuild counters from backing rows atomically instead
+        # of trusting a partially populated size table.
+        con.execute("""
+            INSERT INTO aggregate_groups(
+                state_id,key_blob,key_payload,row_count,accum_payload)
+            VALUES('size-agg',X'0A',X'0B0C',1,X'0D0E0F')
+        """)
+        con.execute("""
+            INSERT INTO join_rows(
+                state_id,side,pk_blob,join_blob,row_payload)
+            VALUES('size-join','left',X'0A',X'0B0C',X'0D0E0F')
+        """)
+        con.execute(
+            "UPDATE stateful_state_sizes SET rows=99,payload_bytes=99")
+        con.execute("""
+            DELETE FROM stateful_share_meta
+            WHERE key='size_counters_v1'
+        """)
+        stateful_share_policy.install(con)
+        assert stateful_share_policy._state_stats(
+            con,"aggregate","size-agg"
+        )==dict(rows=1,payload_bytes=6)
+        assert stateful_share_policy._state_stats(
+            con,"inner_join","size-join"
+        )==dict(rows=1,payload_bytes=6)
+        assert con.execute("""
+            SELECT value FROM stateful_share_meta
+            WHERE key='size_counters_v1'
+        """).fetchone()==("1",)
+
         exact=candidate(
             "leader-exact","state-exact",9,"exact",0)
         subview=candidate(
