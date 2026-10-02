@@ -729,6 +729,11 @@ def run(args):
                 rows_per_second=int(
                     args.rows_per_second),
                 duration_seconds=elapsed,
+                memory_mb=int(args.memory_mb),
+                snapshot_rows=int(args.snapshot_rows),
+                sample_seconds=float(args.sample_seconds),
+                fault_every_seconds=float(
+                    args.fault_every_seconds),
                 seed_seconds=seed_seconds,
                 source_ready_seconds=source_ready_at,
                 live_rows=int(sequence),
@@ -800,7 +805,7 @@ def main():
         default=10)
     parser.add_argument(
         "--fault-every-seconds",type=float,
-        default=0)
+        default=6*3600)
     parser.add_argument(
         "--sample-seconds",type=float,
         default=1.0)
