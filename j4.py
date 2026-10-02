@@ -10644,6 +10644,31 @@ def durable_active_plan_version(state_path):
         con.close()
 
 
+def durable_stateful_rebuild_records(state_path):
+    if not os.path.exists(state_path):
+        return []
+    con=open_state(state_path)
+    try:
+        exists=con.execute("""
+            SELECT 1 FROM sqlite_master
+            WHERE type='table' AND name='stateful_rebuilds'
+        """).fetchone()
+        if not exists:
+            return []
+        rows=con.execute("""
+            SELECT sink_key FROM stateful_rebuilds
+            WHERE phase!='complete'
+            ORDER BY created,sink_key
+        """).fetchall()
+        return [
+            stateful_rebuild.info(
+                con,row[0])
+            for row in rows
+        ]
+    finally:
+        con.close()
+
+
 def activate_catalog(cfg):
     global mappings
     release_plan = os.environ.get("CDC_RELEASE_CATALOG_PLAN","").strip()
@@ -10653,7 +10678,21 @@ def activate_catalog(cfg):
     else:
         published = cdc_catalog.load_plan(cfg["catalog"],cfg["catalog_seed"])
         active_version = durable_active_plan_version(cfg["state"])
+        rebuild_records=durable_stateful_rebuild_records(
+            cfg["state"])
+        failed_rebuilds=[
+            item for item in rebuild_records
+            if item["phase"]=="failed"
+        ]
+        if failed_rebuilds:
+            raise RuntimeError(
+                "durable stateful rebuild is failed; inspect/clear it before "
+                "catalog activation: "
+                +",".join(
+                    item["sink_key"]
+                    for item in failed_rebuilds))
         cfg["catalog_restart_promote"] = False
+        cfg["catalog_rebuild_recover"] = False
         if active_version and active_version != int(published.get("version",0)):
             active_plan=cdc_catalog.load_plan_version(
                 cfg["catalog"],active_version)
@@ -10670,7 +10709,10 @@ def activate_catalog(cfg):
                         "change stateless sink topology; publish those changes "
                         "separately")
                 plan=published
-                cfg["catalog_restart_promote"] = True
+                if rebuild_records:
+                    cfg["catalog_rebuild_recover"]=True
+                else:
+                    cfg["catalog_restart_promote"] = True
             else:
                 plan=active_plan
         else:
