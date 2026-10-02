@@ -82,6 +82,7 @@ jobs:
           python tools/join_job_bridge_test.py
           python tools/join_runtime_test.py
           python tools/join_shared_runtime_test.py
+          python tools/join_subview_shared_runtime_test.py
           python tools/join_state_test.py
           python tools/join_state_oracle.py
           python tools/join_target_mapping_test.py
