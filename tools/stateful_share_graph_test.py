@@ -179,6 +179,41 @@ def main():
         except Exception:
             raise
 
+        # Adaptive graph placement respects fanout caps without creating
+        # follower chains. With max_followers=1, the wide aggregate owns only
+        # one follower; the remaining narrow task must stay private rather
+        # than depending on an already-assigned follower.
+        adaptive=stateful_share_policy.plan_graph(
+            con,compiled,
+            cfg=dict(
+                stateful_share_mode="adaptive",
+                stateful_share_max_followers=1,
+                stateful_share_max_surplus=8,
+                stateful_share_max_observed_visible_lag=100,
+            ))
+        aggregate_prefs={
+            item["task_id"]:item["preferred_leader_task_id"]
+            for item in adaptive
+            if item["kind"]=="aggregate"
+        }
+        assert len(aggregate_prefs)==1
+        only_follower,only_leader=next(
+            iter(aggregate_prefs.items()))
+        assert only_leader=="agg-wide"
+        assert only_follower in {"agg-narrow","agg-narrow-2"}
+        other=(
+            "agg-narrow-2"
+            if only_follower=="agg-narrow"
+            else "agg-narrow"
+        )
+        try:
+            stateful_share_policy.preference_info(
+                con,other)
+            raise AssertionError(
+                "adaptive placement created a follower chain")
+        except KeyError:
+            pass
+
         # Disabling sharing clears candidate preferences on the next graph
         # planning pass and restores independent bootstrap behavior.
         assert stateful_share_policy.plan_graph(
@@ -196,8 +231,8 @@ def main():
 
     print(
         "stateful_share_graph_test ok aggregate_superset "
-        "join_projection whole_graph_no_chain wait_before_private "
-        "sharing_off",
+        "join_projection whole_graph_no_chain adaptive_fanout "
+        "wait_before_private sharing_off",
         flush=True,
     )
 
