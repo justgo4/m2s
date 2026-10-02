@@ -7201,16 +7201,24 @@ def merge_payload_profile(mapping,payload):
             target_sequence=target_sequence,
             sequence_min=None,sequence_max=None,
             replay_safe=False)
-    replay_safe=bool(
+    sequence_guarded_upsert=bool(
         rows>0
         and target_sequence
         and sequence_min is not None
         and not has_delete)
+    # Do not treat conditional UPSERT as an exactly-once replay fence. If a
+    # newer DELETE becomes visible after a replay, the delayed original UPSERT
+    # can later see no destination row and become an INSERT; merge_condition
+    # has no destination sequence to compare and can resurrect the deleted key.
+    # Automatic replay stays disabled until deletes use a durable sequenced
+    # tombstone representation or the original remote transaction is exactly
+    # identified and proven terminal.
     return dict(
         known=True,rows=rows,has_delete=has_delete,
         target_sequence=target_sequence,
         sequence_min=sequence_min,sequence_max=sequence_max,
-        replay_safe=replay_safe)
+        sequence_guarded_upsert=sequence_guarded_upsert,
+        replay_safe=False)
 
 
 def begin_merge_request(
@@ -7289,27 +7297,28 @@ def quarantine_merge_table(con, table, runtime, reason):
 
 
 def quarantine_pending_merges(con, runtime):
-    # Sequence-guarded UPSERT-only requests are safe to replay because
-    # merge_condition prevents an older _cdc_seq from overwriting newer state.
-    # Any DELETE or unguarded request remains fail-closed.
+    # A local request id is not a StarRocks Merge Commit transaction identity.
+    # Even a sequence-guarded UPSERT cannot be released for replay here: a
+    # later DELETE can remove the comparison row before the delayed original
+    # request arrives, allowing that old UPSERT to re-insert the key.
     tables=con.execute("""
         SELECT table_name,COUNT(*),
-               SUM(CASE WHEN replay_safe=0 THEN 1 ELSE 0 END)
+               SUM(CASE WHEN replay_safe=1 THEN 1 ELSE 0 END)
         FROM merge_uncertain
         GROUP BY table_name
         ORDER BY table_name
     """).fetchall()
-    for table,total,unsafe in tables:
-        if int(unsafe):
-            quarantine_merge_table(
-                con,table,runtime,
-                'unresolved request restored from durable state')
-            continue
-        log(
-            f"MERGE CONDITIONAL REPLAY RESTORED table={table} "
-            f"parts={int(total)} replay=1 sequence_guard=_cdc_seq")
+    for table,total,legacy_safe in tables:
+        quarantine_merge_table(
+            con,table,runtime,
+            "unresolved Merge Commit request restored from durable state; "
+            "automatic replay requires delete-safe remote fencing")
+        if int(legacy_safe):
+            log(
+                f"MERGE REPLAY DOWNGRADED table={table} "
+                f"parts={int(total)} legacy_replay_safe={int(legacy_safe)} "
+                "replay=0 delete_resurrection_fence=required")
     return len(tables)
-
 
 def curl_error_before_request(exc):
     code = int(exc.args[0]) if getattr(exc,"args",None) else -1
