@@ -3842,7 +3842,8 @@ def arrow_job_table(mapping, payload):
             f"{mapping['src_table']}: Arrow journal columns differ from the checked source schema")
     if not pa.types.is_integer(table.schema.field("_sync_op").type) or \
        not pa.types.is_integer(table.schema.field("_sync_order").type) or \
-       not pa.types.is_string(table.schema.field("_sync_key").type) or \
+       not journal_type_compatible(
+           table.schema.field("_sync_key").type,pa.string()) or \
        not pa.types.is_integer(table.schema.field("_sync_lane").type):
         raise RuntimeError(f"{mapping['src_table']}: invalid Arrow routing metadata types")
     expected=journal_schema(mapping)
