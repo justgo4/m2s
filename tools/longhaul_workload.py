@@ -13,6 +13,7 @@ import argparse
 import hashlib
 import json
 import os
+import platform
 from pathlib import Path
 import shutil
 import signal
@@ -67,6 +68,56 @@ def percentile(values,p):
         len(values)-1,
         max(0,int((len(values)-1)*float(p))))
     return values[index]
+
+
+def _resource_file(path):
+    try:
+        return Path(path).read_text(
+            encoding="utf-8").strip()
+    except (OSError,UnicodeError):
+        return None
+
+
+def machine_resource_fingerprint():
+    """Record reproducibility evidence without host/user/network identity."""
+    cpu_max=_resource_file(
+        "/sys/fs/cgroup/cpu.max")
+    cpu_quota_cores=None
+    if cpu_max:
+        parts=cpu_max.split()
+        if (
+            len(parts)>=2
+            and parts[0]!="max"
+        ):
+            try:
+                quota=float(parts[0])
+                period=float(parts[1])
+                if quota>0 and period>0:
+                    cpu_quota_cores=quota/period
+            except ValueError:
+                pass
+
+    memory_max=_resource_file(
+        "/sys/fs/cgroup/memory.max")
+    cgroup_memory_limit_bytes=None
+    if memory_max and memory_max!="max":
+        try:
+            value=int(memory_max)
+            if value>0:
+                cgroup_memory_limit_bytes=value
+        except ValueError:
+            pass
+
+    return dict(
+        architecture=str(platform.machine() or ""),
+        system=str(platform.system() or ""),
+        kernel_release=str(platform.release() or ""),
+        python_version=str(platform.python_version() or ""),
+        logical_cpus=int(os.cpu_count() or 0),
+        cgroup_cpu_quota_cores=cpu_quota_cores,
+        cgroup_memory_limit_bytes=(
+            cgroup_memory_limit_bytes),
+    )
 
 
 def wait_create(cfg,ddl):
@@ -956,6 +1007,7 @@ def run(args):
                     args.rows_per_second),
                 duration_seconds=elapsed,
                 memory_mb=int(args.memory_mb),
+                resource_fingerprint=machine_resource_fingerprint(),
                 snapshot_rows=int(args.snapshot_rows),
                 sample_seconds=float(args.sample_seconds),
                 fault_every_seconds=float(
