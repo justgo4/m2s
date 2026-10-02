@@ -9903,9 +9903,22 @@ def recover_stateful_rebuilds_startup(
     )
 
     phase=rebuild["phase"]
-    if phase in {
-        "building_shadow","fencing","ready_to_swap"
-    }:
+    if phase=="building_shadow":
+        marker=stateful_rebuild.remote_marker(
+            rebuild["new_task_id"])
+        logical_marker=stateful_rebuild_remote_marker(
+            cfg,rebuild["logical_target"])
+        shadow_marker=stateful_rebuild_remote_marker(
+            cfg,rebuild["shadow_target"])
+        if logical_marker==marker:
+            raise RuntimeError(
+                "stateful rebuild remote target swapped before frontier freeze")
+        if shadow_marker not in {
+            None,marker,rebuild["original_comment"]
+        }:
+            raise RuntimeError(
+                "stateful rebuild shadow ownership changed across restart")
+    elif phase in {"fencing","ready_to_swap"}:
         remote=stateful_rebuild_remote_state(
             cfg,rebuild)
         if (
@@ -9972,7 +9985,10 @@ def recover_stateful_rebuilds_startup(
     new_item["rebuild"]=True
     spec["new"]=new_item
     ensure_stateful_rebuild_shadow(
-        cfg,spec,existing_intent=True)
+        cfg,spec,existing_intent=True,
+        recover_unmarked=(
+            rebuild["phase"]=="building_shadow"),
+        original_comment=rebuild["original_comment"])
     registered=stateful_catalog_runtime.register_compiled(
         con,[new_item])[0]
     spec["new"]=registered
