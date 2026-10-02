@@ -117,6 +117,24 @@ def main():
         assert "surplus" in (
             decision["metrics"]["rejected"][0]["reasons"])
 
+        stateful_share_policy.observe(
+            con,"existing",10,10,10,7,
+            copied_sequences=0)
+        rejected=stateful_share_policy.choose(
+            con,"aggregate",task,[subview],
+            cfg=dict(
+                stateful_share_mode="adaptive",
+                stateful_share_max_lag=10,
+                stateful_share_max_followers=10,
+                stateful_share_max_surplus=2,
+                stateful_share_max_observed_visible_lag=2,
+            ))
+        assert rejected is None
+        decision=stateful_share_policy.decision_info(
+            con,"follower")
+        assert "observed_visible_lag" in (
+            decision["metrics"]["rejected"][0]["reasons"])
+
         first=stateful_share_policy.observe(
             con,"follower",10,9,10,8,
             copied_sequences=1)
@@ -142,7 +160,7 @@ def main():
 
     print(
         "stateful_share_policy_test ok off compatible adaptive "
-        "lag fanout surplus durable_decision runtime_feedback",
+        "lag fanout surplus observed_visible_lag durable_decision runtime_feedback",
         flush=True,
     )
 
