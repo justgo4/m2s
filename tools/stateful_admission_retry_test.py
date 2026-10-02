@@ -48,6 +48,35 @@ def main():
         assert len(waits)==1
         assert waits[0]["task_id"]=="wait-a"
         assert waits[0]["retry_count"]==0
+        first_retry=waits[0]["next_retry"]
+
+        # Repeated pressure must back off instead of hot-looping expensive
+        # catalog validation/target checks. A replacement plan resets the
+        # retry generation because its resource shape may differ.
+        stateful_admission.queue_wait(
+            con,additions,7,
+            reason="max_state_bytes",
+            retry_seconds=1,max_retry_seconds=10)
+        waits=stateful_admission.waiting_tasks(
+            con,plan_version=7)
+        assert waits[0]["retry_count"]==1
+        assert waits[0]["next_retry"]>first_retry
+        second_retry=waits[0]["next_retry"]
+        stateful_admission.queue_wait(
+            con,additions,7,
+            reason="max_state_bytes",
+            retry_seconds=1,max_retry_seconds=10)
+        waits=stateful_admission.waiting_tasks(
+            con,plan_version=7)
+        assert waits[0]["retry_count"]==2
+        assert waits[0]["next_retry"]>second_retry
+        stateful_admission.queue_wait(
+            con,additions,8,
+            reason="replacement_plan",
+            retry_seconds=1,max_retry_seconds=10)
+        waits=stateful_admission.waiting_tasks(
+            con,plan_version=8)
+        assert waits[0]["retry_count"]==0
         con.close()
 
         runtime=dict(
@@ -150,7 +179,7 @@ def main():
     print(
         "stateful_admission_retry_test ok durable_defer "
         "superseded_plan_fence current_plan_retry "
-        "control_plane_nonfatal_wait",
+        "control_plane_nonfatal_wait bounded_retry_backoff plan_retry_reset",
         flush=True,
     )
 
