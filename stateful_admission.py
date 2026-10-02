@@ -10,6 +10,18 @@ import json
 import time
 
 
+class AdmissionDeferred(RuntimeError):
+    """Resource admission was rejected but can be retried without side effects."""
+
+    def __init__(self,result,plan_version):
+        self.result=dict(result or {})
+        self.plan_version=int(plan_version)
+        super().__init__(
+            "stateful resource admission deferred: "
+            +str(self.result.get("reason","rejected"))
+            +" plan_version="+str(self.plan_version))
+
+
 _LIMIT_KEYS = {
     "max_tasks":"stateful_admission_max_tasks",
     "max_building":"stateful_admission_max_building",
@@ -362,6 +374,21 @@ def admit(con,additions,cfg=None):
             metrics=metrics,
             limits=limits,
         )
+
+
+def admit_or_defer(
+        con,additions,plan_version,cfg=None,
+        retry_seconds=5.0
+):
+    """Admit now or durably queue the exact published plan for retry."""
+    result=admit(con,additions,cfg)
+    if result["ok"]:
+        return result
+    queue_wait(
+        con,additions,plan_version,
+        reason=result["reason"],
+        retry_seconds=retry_seconds)
+    raise AdmissionDeferred(result,plan_version)
 
 
 def admit_or_raise(con,additions,cfg=None):
