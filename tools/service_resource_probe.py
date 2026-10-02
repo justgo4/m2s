@@ -253,13 +253,21 @@ def service_sample(
         int(pid),proc_root=proc_root)
     if tree is None:
         return None
-    identities=sorted(
-        str(item["identity"])
-        for item in tree.get("processes",()))
+    prefix=str(int(pid))+":"
+    root_identity=next(
+        (
+            str(item["identity"])
+            for item in tree.get("processes",())
+            if str(item.get("identity","")).startswith(prefix)
+        ),
+        None,
+    )
+    if root_identity is None:
+        return None
     return dict(
         mode="process_tree",
         identity=_scope_fingerprint(
-            "process-tree:"+"|".join(identities)),
+            "process-tree-root:"+root_identity),
         memory_metric="process_tree_rss",
         memory_bytes=int(
             tree.get("rss_bytes",0)),
