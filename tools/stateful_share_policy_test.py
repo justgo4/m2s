@@ -52,9 +52,14 @@ def main():
         assert off["reason"]=="sharing_disabled"
         assert off["selected_leader_task_id"] is None
 
-        chosen=stateful_share_policy.choose(
-            con,"aggregate",task,[exact,subview],
-            cfg=dict(stateful_share_mode="compatible"))
+        with patch.object(
+            stateful_share_policy,"_state_stats",
+            side_effect=AssertionError(
+                "compatible sharing scanned full state")
+        ):
+            chosen=stateful_share_policy.choose(
+                con,"aggregate",task,[exact,subview],
+                cfg=dict(stateful_share_mode="compatible"))
         assert chosen is exact
         compatible=stateful_share_policy.decision_info(
             con,"follower")
@@ -63,14 +68,19 @@ def main():
 
         # Adaptive mode rejects the exact leader when lag exceeds the bound,
         # then admits the current subview within the configured surplus bound.
-        chosen=stateful_share_policy.choose(
-            con,"aggregate",task,[exact,subview],
-            cfg=dict(
-                stateful_share_mode="adaptive",
-                stateful_share_max_lag=0,
-                stateful_share_max_followers=10,
-                stateful_share_max_surplus=2,
-            ))
+        with patch.object(
+            stateful_share_policy,"_state_stats",
+            side_effect=AssertionError(
+                "adaptive sharing scanned full state without size budget")
+        ):
+            chosen=stateful_share_policy.choose(
+                con,"aggregate",task,[exact,subview],
+                cfg=dict(
+                    stateful_share_mode="adaptive",
+                    stateful_share_max_lag=0,
+                    stateful_share_max_followers=10,
+                    stateful_share_max_surplus=2,
+                ))
         assert chosen is subview
         adaptive=stateful_share_policy.decision_info(
             con,"follower")
@@ -187,7 +197,7 @@ def main():
 
     print(
         "stateful_share_policy_test ok off compatible adaptive "
-        "lag fanout surplus state_size observed_visible_lag "
+        "lag fanout surplus lazy_state_size state_size observed_visible_lag "
         "durable_decision runtime_feedback",
         flush=True,
     )
