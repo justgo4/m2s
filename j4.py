@@ -11522,6 +11522,12 @@ def durable_status_snapshot(state_path):
         ):
             share=stateful_share_policy.status(con)
 
+        admission=None
+        if _status_table_exists(
+            con,"stateful_admission_decisions"
+        ):
+            admission=stateful_admission.status(con)
+
         jobs=dict(active=0,deliveries=0,invisible_parts=0)
         if _status_table_exists(con,"active_jobs"):
             jobs["active"]=int(con.execute(
@@ -11597,6 +11603,7 @@ def durable_status_snapshot(state_path):
             rebuilds=rebuilds,
             retirements=retirements,
             sharing=share,
+            admission=admission,
             physical=physical,
         )
     finally:
