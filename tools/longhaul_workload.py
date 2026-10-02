@@ -873,15 +873,76 @@ def visible_markers(cfg,marker_ids):
     return result
 
 
+def join_right_visibility(
+        source,cfg,update,table="join_000"
+):
+    """Prove every current fan-out row for one dimension bucket uses the new label."""
+    if not update:
+        return dict(
+            visible=True,
+            bucket=None,
+            source_rows=0,
+            target_rows=0,
+        )
+    bucket=int(update["bucket"])
+    label=str(update["label"])
+    with source.cursor() as cur:
+        cur.execute(
+            "SELECT COUNT(*) FROM "
+            +DATABASE+".events WHERE bucket=%s",
+            (bucket,))
+        row=cur.fetchone()
+    source_rows=int(
+        row[0] if row else 0)
+    rows,_=execute(
+        cfg,
+        "SELECT COUNT(*),MIN(label),MAX(label) FROM "
+        +DATABASE+"."+str(table)
+        +" WHERE bucket="+str(bucket))
+    if not rows:
+        target_rows=0
+        minimum=maximum=None
+    else:
+        target_rows=int(rows[0][0] or 0)
+        minimum=(
+            None
+            if rows[0][1] is None
+            else str(rows[0][1]))
+        maximum=(
+            None
+            if rows[0][2] is None
+            else str(rows[0][2]))
+    visible=(
+        source_rows>0
+        and target_rows==source_rows
+        and minimum==label
+        and maximum==label
+    )
+    return dict(
+        visible=bool(visible),
+        bucket=bucket,
+        source_rows=source_rows,
+        target_rows=target_rows,
+        label_match=bool(
+            minimum==label
+            and maximum==label),
+    )
+
+
 def recover_after_fault(
         proc,log,state_path,cfg,commit_times,
-        timeout_seconds,progress=None
+        timeout_seconds,progress=None,
+        join_right_update=None,source=None
 ):
     pending=set(
         int(value) for value in commit_times)
     started=time.monotonic()
     deadline=started+float(timeout_seconds)
     recorded=[]
+    join_right_state=None
+    if join_right_update is not None and source is None:
+        raise ValueError(
+            "join_right_update recovery requires source connection")
     while time.monotonic()<deadline:
         if progress is not None:
             progress()
@@ -900,22 +961,46 @@ def recover_after_fault(
                     recorded.append(
                         observed-committed)
         current=read_state(state_path)
+        if join_right_update is not None:
+            join_right_state=join_right_visibility(
+                source,cfg,join_right_update)
+            if join_right_state["visible"]:
+                join_right_state=dict(
+                    join_right_state,
+                    recovery_seconds=max(
+                        0.0,
+                        time.monotonic()
+                        -float(join_right_update[
+                            "committed_at"])),
+                )
         if (
             not pending
             and current is not None
             and current["log_durable_seq"]
                 ==current["base_applied_seq"]
+            and (
+                join_right_update is None
+                or (
+                    join_right_state is not None
+                    and join_right_state["visible"]
+                )
+            )
         ):
             return dict(
                 seconds=time.monotonic()-started,
                 latencies=recorded,
                 state=current,
+                join_right=join_right_state,
             )
         time.sleep(.2)
     raise RuntimeError(
         "longhaul fault recovery timed out "
-        "pending_markers=%d state=%r"
-        % (len(pending),read_state(state_path)))
+        "pending_markers=%d state=%r join_right=%r"
+        % (
+            len(pending),
+            read_state(state_path),
+            join_right_state,
+        ))
 
 
 def mutate_join_right(source,index,initial_rows):
@@ -939,6 +1024,7 @@ def mutate_join_right(source,index,initial_rows):
         bucket=int(bucket),
         revision=int(index),
         label=label,
+        committed_at=time.monotonic(),
     )
 
 
@@ -1590,7 +1676,9 @@ def run(args):
                         proc,log,state_path,cfg,
                         commit_times,
                         args.fault_recovery_timeout_seconds,
-                        progress=fault_progress)
+                        progress=fault_progress,
+                        join_right_update=right_update,
+                        source=source)
                     fault_recovered_at=time.monotonic()
                     fault_unavailable_seconds+=interval_overlap_seconds(
                         fault_started,fault_recovered_at,
@@ -1613,6 +1701,20 @@ def run(args):
                                     "bucket"],
                                 revision=right_update[
                                     "revision"],
+                                source_rows=recovered[
+                                    "join_right"][
+                                        "source_rows"],
+                                target_rows=recovered[
+                                    "join_right"][
+                                        "target_rows"],
+                                fully_visible=bool(
+                                    recovered[
+                                        "join_right"][
+                                            "visible"]),
+                                recovery_seconds=float(
+                                    recovered[
+                                        "join_right"][
+                                            "recovery_seconds"]),
                             )
                         ),
                         source_frontier=dict(
