@@ -181,36 +181,61 @@ def _gc_ready(con,kind,task):
     return True
 
 
-def gc_retired(con,limit=64):
-    """Reclaim retired task backing state/outbox after all safety refs drain."""
+def gc_retired(con,limit=64,kind=None):
+    """Reclaim retired task backing state/outbox after all safety refs drain.
+
+    kind scopes cleanup during an online semantic rebuild cutover. Without it,
+    background GC keeps its historical all-kinds behavior.
+    """
     limit=max(1,int(limit))
-    removed=[
-        dict(
-            instance_id=None,
-            kind="aggregate_shared_follower",
-            task_id=item["follower_task_id"],
-            state_id=item["shared_state_id"],
+    if kind is not None:
+        kind=str(kind)
+        _adapter(kind)
+    removed=[]
+    if kind in (None,"aggregate"):
+        removed.extend(
+            dict(
+                instance_id=None,
+                kind="aggregate_shared_follower",
+                task_id=item["follower_task_id"],
+                state_id=item["shared_state_id"],
+            )
+            for item in aggregate_shared_runtime.gc_retired_followers(
+                con,limit=limit)
         )
-        for item in aggregate_shared_runtime.gc_retired_followers(
-            con,limit=limit)
-    ]
-    removed.extend(
-        dict(
-            instance_id=None,
-            kind="join_shared_follower",
-            task_id=item["follower_task_id"],
-            state_id=item["shared_state_id"],
+    if kind in (None,"inner_join"):
+        removed.extend(
+            dict(
+                instance_id=None,
+                kind="join_shared_follower",
+                task_id=item["follower_task_id"],
+                state_id=item["shared_state_id"],
+            )
+            for item in join_shared_runtime.gc_retired_followers(
+                con,limit=limit)
         )
-        for item in join_shared_runtime.gc_retired_followers(
-            con,limit=limit)
-    )
-    rows=con.execute("""
-        SELECT instance_id,format_tag,metadata_json
-        FROM physical_states
-        WHERE health='retired'
-        ORDER BY updated,instance_id
-        LIMIT ?
-    """,(limit,)).fetchall()
+    if kind=="aggregate":
+        format_like="aggregate-current-%"
+    elif kind=="inner_join":
+        format_like="join-current-%"
+    else:
+        format_like=None
+    if format_like is None:
+        rows=con.execute("""
+            SELECT instance_id,format_tag,metadata_json
+            FROM physical_states
+            WHERE health='retired'
+            ORDER BY updated,instance_id
+            LIMIT ?
+        """,(limit,)).fetchall()
+    else:
+        rows=con.execute("""
+            SELECT instance_id,format_tag,metadata_json
+            FROM physical_states
+            WHERE health='retired' AND format_tag LIKE ?
+            ORDER BY updated,instance_id
+            LIMIT ?
+        """,(format_like,limit)).fetchall()
     import json
     for instance_id,format_tag,metadata_json in rows:
         instance_id=str(instance_id)
