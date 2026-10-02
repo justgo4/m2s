@@ -6,6 +6,9 @@ includes:
   - disk-backed net-change apply staging
   - set-wise source base apply
   - disk-backed set-wise source snapshot staging
+  - bounded asynchronous source capture/base apply with durable byte backpressure
+  - canonical durable Arrow job schemas across string/large_string routing paths
+  - overlapped capture/apply wall, drain-tail and backlog benchmark evidence
 scope:
   - public baseline CI
   - native contracts and isolated MySQL
