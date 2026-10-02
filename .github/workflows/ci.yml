@@ -76,6 +76,7 @@ jobs:
           python tools/metric_slo_test.py
           python tools/longhaul_gate_test.py
           python tools/longhaul_workload_test.py
+          python tools/process_resource_probe_test.py
           python tools/stateful_rebuild_test.py
           python tools/stateful_rebuild_scale_test.py
           python tools/stateful_share_policy_test.py
