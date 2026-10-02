@@ -777,14 +777,47 @@ def evaluate_workload(
     dynamic_tasks=_integer(
         report.get("dynamic_tasks",0),
         "dynamic_tasks")
+    mix_raw=report.get("dynamic_task_mix")
+    dynamic_task_mix=str(
+        mix_raw or "aggregate")
+    if dynamic_task_mix not in {
+        "aggregate","join","mixed"
+    }:
+        failures.append("dynamic_task_mix")
+        dynamic_task_mix="aggregate"
+    if dynamic_task_mix=="aggregate":
+        dynamic_aggregate_tasks=dynamic_tasks
+        dynamic_join_tasks=0
+    elif dynamic_task_mix=="join":
+        dynamic_aggregate_tasks=0
+        dynamic_join_tasks=dynamic_tasks
+    else:
+        dynamic_aggregate_tasks=(
+            dynamic_tasks+1)//2
+        dynamic_join_tasks=dynamic_tasks//2
+
     ready=dict(
         report.get("dynamic_task_ready_seconds") or {})
     ready_values={}
     for sink,value in sorted(ready.items()):
         ready_values[str(sink)]=_number(
             value,str(sink)+".time_to_ready")
+    ready_aggregate=sum(
+        1 for sink in ready_values
+        if sink.startswith("starrocks.agg_"))
+    ready_join=sum(
+        1 for sink in ready_values
+        if sink.startswith("starrocks.join_"))
     evidence["dynamic_tasks"]=dict(
         requested=dynamic_tasks,
+        mix=(
+            dynamic_task_mix
+            if mix_raw is not None
+            else None),
+        aggregate_requested=dynamic_aggregate_tasks,
+        join_requested=dynamic_join_tasks,
+        aggregate_ready=ready_aggregate,
+        join_ready=ready_join,
         ready=len(ready_values),
         time_to_ready_seconds=ready_values,
         max_time_to_ready_seconds=(
@@ -795,6 +828,14 @@ def evaluate_workload(
         failures.append("dynamic_tasks")
     if len(ready_values)!=dynamic_tasks:
         failures.append("dynamic_tasks_not_ready")
+    if (
+        mix_raw is not None
+        and (
+            ready_aggregate!=dynamic_aggregate_tasks
+            or ready_join!=dynamic_join_tasks
+        )
+    ):
+        failures.append("dynamic_task_mix_mismatch")
 
     faults=list(report.get("faults") or ())
     restart_seconds=[]
@@ -905,7 +946,10 @@ def evaluate_workload(
             (value or {}).get("match",False))
         for table,value in aggregate_tables.items()
     }
-    expected_aggregate_targets=dynamic_tasks+1
+    expected_aggregate_targets=(
+        dynamic_tasks+1
+        if mix_raw is None
+        else dynamic_aggregate_tasks+1)
     evidence["aggregate_exactness"]=dict(
         expected_targets=expected_aggregate_targets,
         checked_targets=len(aggregate_matches),
@@ -924,6 +968,47 @@ def evaluate_workload(
         or not all(aggregate_matches.values())
     ):
         failures.append("aggregate_target_mismatch")
+
+    join_checks=dict(
+        report.get("join_checks") or {})
+    join_tables=dict(
+        join_checks.get("tables") or {})
+    join_matches={
+        str(table):bool(
+            (value or {}).get("match",False))
+        for table,value in join_tables.items()
+    }
+    expected_join_targets=(
+        0
+        if mix_raw is None
+        else dynamic_join_tasks+1)
+    evidence["join_exactness"]=dict(
+        expected_targets=expected_join_targets,
+        checked_targets=len(join_matches),
+        all_match=(
+            expected_join_targets==0
+            or (
+                bool(join_checks.get("all_match",False))
+                and bool(join_matches)
+                and all(join_matches.values())
+            )
+        ),
+        matches=join_matches,
+    )
+    if (
+        expected_join_targets
+        and len(join_matches)!=expected_join_targets
+    ):
+        failures.append("join_targets_missing")
+    if (
+        expected_join_targets
+        and (
+            not join_checks.get("all_match",False)
+            or not join_matches
+            or not all(join_matches.values())
+        )
+    ):
+        failures.append("join_target_mismatch")
 
     debt=dict(report.get("debt") or {})
     if not debt:
