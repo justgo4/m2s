@@ -679,6 +679,67 @@ def wait_hot_join_subview_exact(
         % (state(directory/"state.sqlite3"),last))
 
 
+def wait_aggregate_rebuild_exact(
+        proc,log,directory,source,cfg,
+        sink="starrocks.agg_subview",table="agg_subview",
+        timeout=240
+):
+    deadline=time.monotonic()+timeout
+    last=None
+    while time.monotonic()<deadline:
+        live(proc,log)
+        current=state(directory/"state.sqlite3")
+        if current is not None:
+            rows=[
+                row for row in current.get(
+                    "aggregate_task_rows",())
+                if row[1]==sink
+            ]
+            active=[
+                row for row in rows
+                if row[2]=="active"
+            ]
+            retired=[
+                row for row in rows
+                if row[2]=="retired"
+            ]
+            rebuild=[
+                row for row in current.get("rebuilds",())
+                if row[0]==sink
+            ]
+            if (
+                len(active)==1
+                and retired
+                and current["pending"]==0
+                and current["deliveries"]==0
+                and rebuild
+                and rebuild[0][4]=="complete"
+                and not rebuild[0][5]
+            ):
+                expected=aggregate_subview_filtered_expected(
+                    source)
+                actual=aggregate_subview_actual(
+                    cfg,table)
+                if expected==actual:
+                    return current,dict(
+                        expected=expected,actual=actual,
+                        active_task_id=active[0][0],
+                        retired_task_ids=[
+                            row[0] for row in retired],
+                        rebuild=rebuild[0],
+                    )
+                last=dict(
+                    expected=expected,
+                    actual=actual,
+                    rows=rows,
+                    rebuild=rebuild)
+        time.sleep(.2)
+    raise AssertionError(
+        "aggregate semantic rebuild did not reach exact swapped state "
+        "state=%r result=%r"
+        % (state(directory/"state.sqlite3"),last))
+
+
 def wait_stateful_retired(
         proc,log,directory,sink,kind="aggregate",timeout=180
 ):
