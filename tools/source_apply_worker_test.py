@@ -154,6 +154,94 @@ def main():
         wake.set()
         worker.join(5)
         assert not worker.is_alive()
+
+        # Deterministic snapshot/apply interleaving: CDC is already durable,
+        # but base apply is delayed while a stale historical page lands first.
+        # The later apply must close that baseline version, and final complete
+        # is allowed only after base_applied catches log_durable.
+        source_state.register_relation(
+            con,"db.race","epoch-async",
+            schema(),["id"])
+        cdc=source_state.prepare_part(
+            "db.race",batch(1,1))
+        cdc_table=source_state.decode_batch(
+            cdc["payload"])
+        value_index=cdc_table.schema.get_field_index(
+            "value")
+        cdc_table=cdc_table.set_column(
+            value_index,"value",
+            pa.array(["cdc-new"],type=pa.string()))
+        cdc=source_state.prepare_part(
+            "db.race",cdc_table)
+        assert source_state.log_commit(
+            con,"epoch-async",
+            ("binlog.000001",140),None,
+            [cdc])==3
+
+        stale=batch(1,1)
+        value_index=stale.schema.get_field_index(
+            "value")
+        stale=stale.set_column(
+            value_index,"value",
+            pa.array(["snapshot-old"],type=pa.string()))
+        source_state.stage_snapshot_batch(
+            con,"db.race",stale,
+            cursor=(1,),is_last=False)
+        before=con.execute("""
+            SELECT row_payload,valid_from,valid_to
+            FROM source_versions
+            WHERE table_name='db.race'
+              AND valid_to IS NULL
+        """).fetchone()
+        assert pickle.loads(before[0])==(
+            1,"snapshot-old")
+        assert int(before[1])==0
+        assert before[2] is None
+
+        stop=threading.Event()
+        wake=threading.Event()
+        runtime=dict(
+            stop=stop,
+            source_apply_event=wake,
+        )
+        worker=threading.Thread(
+            target=j4.source_state_apply_worker,
+            args=(dict(state=path),runtime),
+            name="source-apply-snapshot-race")
+        worker.start()
+        wake.set()
+        wait_applied(con,3)
+        current=con.execute("""
+            SELECT row_payload,valid_from
+            FROM source_versions
+            WHERE table_name='db.race'
+              AND valid_to IS NULL
+              AND deleted=0
+        """).fetchone()
+        assert pickle.loads(current[0])==(
+            1,"cdc-new")
+        assert int(current[1])==3
+        assert con.execute("""
+            SELECT valid_to
+            FROM source_versions
+            WHERE table_name='db.race'
+              AND valid_from=0
+        """).fetchone()[0]==3
+        source_state.stage_snapshot_batch(
+            con,"db.race",batch(0,0),
+            cursor=(1,),is_last=True)
+        assert source_state.relation_info(
+            con,"db.race")["complete_seq"]==3
+        assert con.execute("""
+            SELECT COUNT(*)
+            FROM source_versions
+            WHERE table_name='db.race'
+              AND valid_to IS NULL
+        """).fetchone()[0]==1
+        stop.set()
+        wake.set()
+        worker.join(5)
+        assert not worker.is_alive()
         con.close()
 
     print(
