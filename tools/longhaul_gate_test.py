@@ -88,7 +88,46 @@ def workload():
         duration_seconds=elapsed,
         source_schedule_seconds=source_schedule,
         healthy_observation_seconds=source_schedule,
-        memory_mb=4096,
+        memory_mb=8192,
+        topology_resource_preflight=dict(
+            ok=True,
+            requested_memory_mb=8192,
+            memory_mb=8192,
+            detected_memory_mb=16384,
+            memory_budget_available=True,
+            cpu_cap=8,
+            cpu_target=8,
+            cpu_target_assumption="cpu_cap_worst_case",
+            initial_physical_sinks=3,
+            final_physical_sinks=13,
+            dynamic_tasks=10,
+            load_mode="merge_async",
+            snapshot_workers=2,
+            writer_max=2,
+            requested_duckdb_mb=128,
+            effective_duckdb_mb=128,
+            minimum_per_engine_cap_mb=141,
+            failing_physical_sinks=[],
+            stages=[
+                dict(
+                    physical_sinks=value,
+                    writers_per_sink=(
+                        2 if value<=4 else 1),
+                    engine_slots=(
+                        3+4*value
+                        if value<=4
+                        else 3+2*value),
+                    per_engine_cap_mb=(
+                        8192//2
+                        //(
+                            3+4*value
+                            if value<=4
+                            else 3+2*value)),
+                    admitted=True,
+                )
+                for value in range(3,14)
+            ],
+        ),
         resource_fingerprint=dict(
             architecture="x86_64",
             system="Linux",
@@ -185,6 +224,13 @@ def workload():
         recovery_latency_max_seconds=22.0,
         dynamic_tasks=10,
         dynamic_task_mix="mixed",
+        snapshot_rows=16_384,
+        sample_seconds=1.0,
+        fault_every_seconds=6*3600,
+        fault_recovery_timeout_seconds=1800.0,
+        seed_chunk=10_000,
+        drain_timeout_seconds=1800.0,
+        checkpoint_seconds=300.0,
         dynamic_task_ready_seconds=tasks,
         faults=[
             dict(
@@ -415,7 +461,7 @@ def main():
     assert full["evidence"]["recovery_latency_samples"]==8
     assert full["evidence"]["debt"]["max_rowset"]==73
     assert full["evidence"]["resources"]["logical_cpus"]==8
-    assert full["evidence"]["resources"]["configured_memory_mb"]==4096
+    assert full["evidence"]["resources"]["configured_memory_mb"]==8192
     assert full["evidence"]["software"]["code_revision"]=="a"*40
     assert full["evidence"]["software"]["code_worktree_clean"] is True
     assert full["evidence"]["software"]["mysql_gtid_mode"]=="ON"
@@ -503,6 +549,52 @@ def main():
         bad,require_profile=p11_profile.NAME)
     assert not full["ok"]
     assert "workload_profile_mismatch" in full["failures"]
+
+    bad=workload()
+    bad["memory_mb"]=4096
+    bad["topology_resource_preflight"][
+        "requested_memory_mb"]=4096
+    full=evaluate_workload(
+        bad,require_profile=p11_profile.NAME)
+    assert not full["ok"]
+    assert (
+        "workload_profile_parameters_mismatch"
+        in full["failures"]
+    )
+    assert full["evidence"]["profile_parameters"][
+        "mismatches"]["memory_mb"]==dict(
+            expected=8192,actual=4096)
+
+    bad=workload()
+    bad["dynamic_task_mix"]="aggregate"
+    full=evaluate_workload(
+        bad,require_profile=p11_profile.NAME)
+    assert not full["ok"]
+    assert (
+        "workload_profile_parameters_mismatch"
+        in full["failures"]
+    )
+
+    bad=workload()
+    bad["topology_resource_preflight"][
+        "stages"][1]["admitted"]=False
+    full=evaluate_workload(
+        bad,require_profile=p11_profile.NAME)
+    assert not full["ok"]
+    assert (
+        "topology_resource_preflight_failed"
+        in full["failures"]
+    )
+
+    bad=workload()
+    del bad["topology_resource_preflight"]
+    full=evaluate_workload(
+        bad,require_profile=p11_profile.NAME)
+    assert not full["ok"]
+    assert (
+        "topology_resource_preflight_missing"
+        in full["failures"]
+    )
 
     bad=workload()
     bad["software_fingerprint"]["code_worktree_clean"]=False
@@ -687,7 +779,8 @@ def main():
         "rowset_recovery overflow_fail_closed reproducible_resource_fingerprint "
         "daemon_process_resource_evidence daemon_rss_budget source_sink_resource_evidence "
         "service_limit_drift_fail_closed scope_overlap_fail_closed exact_profile_gate "
-        "clean_worktree_gate software_fingerprint healthy_observation_window "
+        "clean_worktree_gate independent_profile_parameter_gate topology_preflight_gate "
+        "software_fingerprint healthy_observation_window "
         "mixed_aggregate_join_exactness",
         flush=True,
     )
