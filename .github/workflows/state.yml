@@ -5,6 +5,10 @@ on:
     branches: [main]
     paths:
       - tools/state_layout_benchmark.py
+      - tools/source_apply_staging_benchmark.py
+      - tools/source_snapshot_staging_benchmark.py
+      - tools/source_capture_apply_async_benchmark.py
+      - source_state.py
       - requirements-state-benchmark.txt
       - requirements.txt
       - j4.py
@@ -12,6 +16,10 @@ on:
   pull_request:
     paths:
       - tools/state_layout_benchmark.py
+      - tools/source_apply_staging_benchmark.py
+      - tools/source_snapshot_staging_benchmark.py
+      - tools/source_capture_apply_async_benchmark.py
+      - source_state.py
       - requirements-state-benchmark.txt
       - requirements.txt
       - j4.py
@@ -46,10 +54,19 @@ jobs:
         run: python tools/state_layout_benchmark.py --rows 1000 --transactions 10 --changes 20 --repeats 2 --rocks --faults --output benchmark-results/state-contract.json
       - name: High entropy wide values in independent randomized worker processes
         run: python tools/state_layout_benchmark.py --rows 10000 --transactions 100 --changes 50 --width 2048 --entropy high --repeats 3 --rocks --faults --output benchmark-results/state-wide.json
+      - name: Source apply disk staging
+        run: python tools/source_apply_staging_benchmark.py --rows 100000 --part-rows 5000 --key-space 50000 --output benchmark-results/source-apply-staging.json
+      - name: Source snapshot set-wise staging
+        run: python tools/source_snapshot_staging_benchmark.py --rows 100000 --batch-rows 5000 --output benchmark-results/source-snapshot-staging.json
+      - name: Overlapped durable capture and asynchronous base apply
+        run: python tools/source_capture_apply_async_benchmark.py --commits 100 --rows-per-commit 1000 --part-rows 250 --key-space 50000 --max-pending-bytes 33554432 --output benchmark-results/source-capture-apply-async.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: state-layout-python-${{ matrix.python }}
           path: |
             benchmark-results/state-contract.json
             benchmark-results/state-wide.json
+            benchmark-results/source-apply-staging.json
+            benchmark-results/source-snapshot-staging.json
+            benchmark-results/source-capture-apply-async.json
           if-no-files-found: error
