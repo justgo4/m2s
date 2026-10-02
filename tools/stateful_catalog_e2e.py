@@ -268,6 +268,11 @@ def state(path):
                 SELECT table_name,complete_seq
                 FROM source_relations ORDER BY table_name
             """).fetchall()
+            shared=con.execute("""
+                SELECT follower_task_id,leader_task_id,shared_state_id,fixed_w
+                FROM aggregate_shared_followers
+                ORDER BY follower_task_id
+            """).fetchall()
             return dict(
                 aggregate=[row[1] for row in agg],
                 join=[row[1] for row in joins],
@@ -283,6 +288,13 @@ def state(path):
                     for row in generations],
                 pending=pending,deliveries=deliveries,
                 consumers=consumers,
+                aggregate_shared=[
+                    (
+                        str(row[0]),str(row[1]),
+                        str(row[2]),int(row[3])
+                    )
+                    for row in shared
+                ],
                 source=[
                     (str(row[0]),None if row[1] is None else int(row[1]))
                     for row in source],
@@ -630,6 +642,18 @@ def main():
                     +json.dumps(response,sort_keys=True))
             hot_state,hot_before=wait_hot_aggregate_exact(
                 proc,log,directory,source,cfg)
+            if len(hot_state.get("aggregate_shared",()))!=1:
+                raise AssertionError(
+                    "identical hot aggregate did not attach to shared "
+                    "compute state: "+repr(hot_state))
+            shared_row=hot_state["aggregate_shared"][0]
+            if (
+                "starrocks.agg_hot" not in shared_row[0]
+                or "starrocks.agg" not in shared_row[1]
+            ):
+                raise AssertionError(
+                    "unexpected aggregate sharing leader/follower: "
+                    +repr(shared_row))
             daemon_text=log.read_text(
                 errors="replace")
             if (
@@ -637,8 +661,8 @@ def main():
                 or "sink=starrocks.agg_hot" not in daemon_text
             ):
                 raise AssertionError(
-                    "identical hot aggregate did not use physical fixed-W "
-                    "clone; diagnostics="+daemon_text[-6000:])
+                    "identical hot aggregate did not use shared physical "
+                    "state; diagnostics="+daemon_text[-6000:])
 
             mutate_after_hot_add(source)
             hot_live_state,hot_after=wait_hot_aggregate_exact(
@@ -663,6 +687,10 @@ def main():
                     +json.dumps(response,sort_keys=True))
             hot_retired=wait_stateful_retired(
                 proc,log,directory,"starrocks.agg_hot")
+            if hot_retired.get("aggregate_shared"):
+                raise AssertionError(
+                    "retired shared aggregate follower binding leaked: "
+                    +repr(hot_retired))
             if aggregate_actual(cfg,"agg_hot")!=aggregate_expected(source):
                 raise AssertionError(
                     "retired hot aggregate target was not preserved exactly")
