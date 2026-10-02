@@ -1024,7 +1024,6 @@ def mutate_join_right(source,index,initial_rows):
         bucket=int(bucket),
         revision=int(index),
         label=label,
-        committed_at=time.monotonic(),
     )
 
 
@@ -1658,6 +1657,8 @@ def run(args):
                             source,
                             len(faults)+1,
                             args.rows)
+                        right_update["committed_at"]=(
+                            time.monotonic())
                     daemon_index+=1
                     proc,handle,log=start_daemon(
                         directory,env,daemon_index)
