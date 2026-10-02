@@ -21,6 +21,7 @@ import aggregate_task_catalog
 import j4
 import source_state
 import stateful_physical_registry
+import stateful_share_policy
 import task_generation
 
 
@@ -108,6 +109,17 @@ def main():
         stateful_physical_registry.sync_ready(
             con,"aggregate",leader,0)
 
+        off_task=aggregate_task_catalog.register_task(
+            con,"off-follower","starrocks.off_follower",1001,ir,
+            "off_follower","off-state","off-consumer",target_schema())
+        assert aggregate_shared_runtime.try_bind(
+            con,off_task,
+            cfg=dict(stateful_share_mode="off")
+        ) is None
+        off_decision=stateful_share_policy.decision_info(
+            con,off_task["task_id"])
+        assert off_decision["reason"]=="sharing_disabled"
+
         followers=[]
         with patch.object(
             aggregate_shared_runtime.aggregate_job_bridge,
@@ -140,6 +152,25 @@ def main():
             "SELECT COUNT(*) FROM physical_state_refs "
             "WHERE role='dependency'"
         ).fetchone()[0]==100
+
+        adaptive_task=aggregate_task_catalog.register_task(
+            con,"adaptive-blocked","starrocks.adaptive_blocked",1002,ir,
+            "adaptive_blocked","adaptive-state","adaptive-consumer",
+            target_schema())
+        assert aggregate_shared_runtime.try_bind(
+            con,adaptive_task,
+            cfg=dict(
+                stateful_share_mode="adaptive",
+                stateful_share_max_lag=100,
+                stateful_share_max_followers=100,
+                stateful_share_max_surplus=0,
+            )
+        ) is None
+        adaptive_decision=stateful_share_policy.decision_info(
+            con,adaptive_task["task_id"])
+        assert adaptive_decision["reason"]=="adaptive_rejected_all"
+        assert "followers" in (
+            adaptive_decision["metrics"]["rejected"][0]["reasons"])
 
         part=source_state.prepare_part(
             "db.orders",mutation_table([
@@ -183,7 +214,8 @@ def main():
 
     print(
         "shared_state_scale_test ok tasks=100 compute_states=1 "
-        "incremental_compute=1 follower_journal_copies=100",
+        "incremental_compute=1 follower_journal_copies=100 "
+        "sharing_off=1 adaptive_fanout_fence=1",
         flush=True,
     )
 
