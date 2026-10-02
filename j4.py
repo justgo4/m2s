@@ -10782,19 +10782,73 @@ def recover_stateful_rebuilds_startup(
         con,cfg,compiled_stateful,fingerprint
 ):
     records=stateful_rebuild.active(con)
-    if not records:
-        return dict(
-            compiled=list(compiled_stateful),
-            worker_items=list(compiled_stateful),
-            protected=list(compiled_stateful),
-            rebuild_specs=[],
-            recovered_cutover=False)
-
     compiled=list(compiled_stateful)
     by_task={
         item["task"]["task_id"]:item
         for item in compiled
     }
+
+    # Upgrade the short-lived pre-cohort multi-rebuild format conservatively.
+    # Every active rebuild from one plan must either already belong to the same
+    # durable cohort or none of them may. Never guess across different plans.
+    unowned_by_version={}
+    owned_by_version={}
+    for rebuild in records:
+        new_item=by_task.get(
+            rebuild["new_task_id"])
+        if new_item is None:
+            raise RuntimeError(
+                "published catalog does not contain durable rebuild generation "
+                +rebuild["new_task_id"])
+        plan_version=int(
+            new_item["task"]["plan_version"])
+        cohort=stateful_rebuild_cohort.for_sink(
+            con,rebuild["sink_key"])
+        if cohort is None:
+            unowned_by_version.setdefault(
+                plan_version,[]).append(
+                    rebuild["sink_key"])
+        else:
+            owned_by_version.setdefault(
+                plan_version,set()).add(
+                    cohort["cohort_id"])
+    for plan_version,sinks in unowned_by_version.items():
+        owners=owned_by_version.get(
+            plan_version,set())
+        if owners:
+            raise RuntimeError(
+                "stateful rebuild cohort membership is partial for plan "
+                +str(plan_version))
+        if len(sinks)>1:
+            stateful_rebuild_cohort.begin(
+                con,plan_version,sinks)
+
+    if not records:
+        cohorts=stateful_rebuild_cohort.active(
+            con)
+        for cohort in cohorts:
+            if (
+                cohort["phase"]=="swapping"
+                and stateful_rebuild_cohort.all_swapped(
+                    con,cohort["cohort_id"])
+            ):
+                cohort=stateful_rebuild_cohort.mark_cleanup(
+                    con,cohort["cohort_id"])
+            if cohort["phase"]=="cleanup":
+                stateful_rebuild_cohort.mark_complete(
+                    con,cohort["cohort_id"])
+                continue
+            raise RuntimeError(
+                "active stateful rebuild cohort has no active member rebuilds "
+                "cohort="+cohort["cohort_id"]
+                +" phase="+cohort["phase"])
+        return dict(
+            compiled=compiled,
+            worker_items=compiled,
+            protected=compiled,
+            rebuild_specs=[],
+            recovered_cutover=bool(cohorts))
+
     replacements={}
     old_workers=[]
     rebuild_specs=[]
@@ -10826,6 +10880,8 @@ def recover_stateful_rebuilds_startup(
             shadow_target=rebuild["shadow_target"],
             logical_target=rebuild["logical_target"],
         )
+        cohort=stateful_rebuild_cohort.for_sink(
+            con,rebuild["sink_key"])
 
         phase=rebuild["phase"]
         if phase=="building_shadow":
@@ -10850,8 +10906,18 @@ def recover_stateful_rebuilds_startup(
                 phase=="ready_to_swap"
                 and remote=="swapped"
             ):
-                rebuild=stateful_rebuild.mark_swapped(
-                    con,rebuild["sink_key"])
+                if cohort is None:
+                    rebuild=stateful_rebuild.mark_swapped(
+                        con,rebuild["sink_key"])
+                elif cohort["phase"]=="swapping":
+                    rebuild=stateful_rebuild_cohort.mark_member_swapped(
+                        con,cohort["cohort_id"],
+                        rebuild["sink_key"])
+                else:
+                    raise RuntimeError(
+                        "stateful rebuild member swapped remotely before "
+                        "durable cohort swap gate: "
+                        +rebuild["sink_key"])
                 phase="swapped"
             elif remote!="shadow":
                 raise RuntimeError(
@@ -10877,10 +10943,14 @@ def recover_stateful_rebuilds_startup(
                 con,rebuild["sink_key"])
             recovered_cutover=True
             log(
-                "STATEFUL REBUILD RECOVERED CUTOVER sink=%s new=%s"
+                "STATEFUL REBUILD RECOVERED CUTOVER sink=%s new=%s cohort=%s"
                 % (
                     rebuild["sink_key"],
-                    rebuild["new_task_id"]))
+                    rebuild["new_task_id"],
+                    (
+                        cohort["cohort_id"]
+                        if cohort is not None
+                        else "single")))
             continue
 
         logical_mapping=dict(
@@ -10907,6 +10977,23 @@ def recover_stateful_rebuilds_startup(
         replacements[rebuild["new_task_id"]]=registered
         rebuild_specs.append(spec)
         old_workers.append(old_item)
+
+    # A cohort may survive after some/all member rebuild rows were individually
+    # recovered. Close only phases whose remote swaps are already durable.
+    for cohort in stateful_rebuild_cohort.active(
+        con
+    ):
+        durable=cohort
+        if (
+            durable["phase"]=="swapping"
+            and stateful_rebuild_cohort.all_swapped(
+                con,durable["cohort_id"])
+        ):
+            durable=stateful_rebuild_cohort.mark_cleanup(
+                con,durable["cohort_id"])
+        if durable["phase"]=="cleanup":
+            stateful_rebuild_cohort.mark_complete(
+                con,durable["cohort_id"])
 
     final=[
         replacements.get(
@@ -10939,6 +11026,7 @@ def recover_stateful_rebuilds_startup(
         protected=workers,
         rebuild_specs=rebuild_specs,
         recovered_cutover=recovered_cutover)
+
 
 
 def stateful_rebuild_guarded_step(
