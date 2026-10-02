@@ -576,6 +576,64 @@ def aggregate_exactness(source,cfg,tables):
     )
 
 
+def collect_final_debt(state_path):
+    state_path=Path(state_path)
+    summary_path=Path(
+        str(state_path)+".summary.json")
+    if not summary_path.exists():
+        raise RuntimeError(
+            "longhaul final daemon summary is missing")
+    summary=json.loads(
+        summary_path.read_text(
+            encoding="utf-8"))
+    if summary.get("event")!="run_summary":
+        raise RuntimeError(
+            "longhaul final daemon summary is not run_summary")
+
+    tables=dict(summary.get("tables") or {})
+    per_table_rowset={}
+    for table,value in sorted(tables.items()):
+        per_table_rowset[str(table)]=int(
+            (value or {}).get("max_rowset",-1))
+    max_rowset=(
+        max(per_table_rowset.values())
+        if per_table_rowset else -1)
+
+    stateful=dict(summary.get("stateful") or {})
+    physical=dict(stateful.get("physical") or {})
+    sizes=dict(physical.get("sizes") or {})
+    stateful_rows=0
+    stateful_payload_bytes=0
+    for value in sizes.values():
+        value=dict(value or {})
+        stateful_rows+=int(value.get("rows",0))
+        stateful_payload_bytes+=int(
+            value.get("payload_bytes",0))
+
+    state_storage_bytes=0
+    for suffix in ("","-wal","-shm"):
+        candidate=Path(str(state_path)+suffix)
+        if candidate.exists():
+            state_storage_bytes+=candidate.stat().st_size
+
+    state=dict(summary.get("state") or {})
+    return dict(
+        state_storage_bytes=int(
+            state_storage_bytes),
+        stateful_rows=int(stateful_rows),
+        stateful_payload_bytes=int(
+            stateful_payload_bytes),
+        max_rowset=int(max_rowset),
+        per_table_max_rowset=per_table_rowset,
+        pending_bytes=int(
+            state.get("pending_bytes",0)),
+        prepared_budget_used=int(
+            state.get("prepared_budget_used",0)),
+        field_overflow_rows=int(
+            state.get("field_overflow_rows",0)),
+    )
+
+
 def copy_evidence(directory,output):
     state_path=directory/"state.sqlite3"
     summary=Path(
@@ -850,6 +908,8 @@ def run(args):
             stop_daemon(
                 proc,handle,kill=False)
             proc=handle=log=None
+            debt=collect_final_debt(
+                state_path)
             copied=copy_evidence(
                 directory,args.output)
             final_state=read_state(
@@ -887,6 +947,7 @@ def run(args):
                     sorted(task_ready.items())),
                 faults=faults,
                 final_state=final_state,
+                debt=debt,
                 source_totals=expected,
                 target_totals=actual,
                 aggregate_checks=aggregate_checks,
