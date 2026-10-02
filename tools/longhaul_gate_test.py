@@ -76,6 +76,16 @@ def workload():
         initial_rows=50_000_000,
         rows_per_second=50,
         duration_seconds=elapsed,
+        memory_mb=4096,
+        resource_fingerprint=dict(
+            architecture="x86_64",
+            system="Linux",
+            kernel_release="test",
+            python_version="3.14.0",
+            logical_cpus=8,
+            cgroup_cpu_quota_cores=8.0,
+            cgroup_memory_limit_bytes=8*1024**3,
+        ),
         live_rows=int(50*elapsed),
         latency_samples=int(elapsed),
         latency_p50_seconds=1.0,
@@ -280,6 +290,20 @@ def main():
     assert full["evidence"]["latency_over_10_seconds"]==20
     assert full["evidence"]["recovery_latency_samples"]==8
     assert full["evidence"]["debt"]["max_rowset"]==73
+    assert full["evidence"]["resources"]["logical_cpus"]==8
+    assert full["evidence"]["resources"]["configured_memory_mb"]==4096
+
+    bad=workload()
+    del bad["resource_fingerprint"]
+    full=evaluate_workload(bad)
+    assert not full["ok"]
+    assert "resource_fingerprint_missing" in full["failures"]
+
+    bad=workload()
+    bad["resource_fingerprint"]["cgroup_memory_limit_bytes"]=1024**3
+    full=evaluate_workload(bad)
+    assert not full["ok"]
+    assert "configured_memory_exceeds_cgroup" in full["failures"]
 
     bad=workload()
     bad["debt"]["max_rowset"]=-1
@@ -362,7 +386,7 @@ def main():
     print(
         "longhaul_gate_test ok 50m_72h 50rps lifetime_exact_p95_p99 cross_restart "
         "healthy_recovery_latency drain stateful_health space_version_debt "
-        "rowset_recovery overflow_fail_closed",
+        "rowset_recovery overflow_fail_closed reproducible_resource_fingerprint",
         flush=True,
     )
 
