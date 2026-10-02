@@ -160,6 +160,11 @@ def begin(
         else _text(shadow,"shadow_target"))
     original_comment=str(
         original_comment or "")
+    if original_comment==remote_marker(
+        new_task_id
+    ):
+        raise ValueError(
+            "stateful rebuild marker collides with original target comment")
     if old_task_id==new_task_id:
         raise ValueError(
             "stateful rebuild requires a new task generation")
@@ -283,6 +288,11 @@ def fail(con,sink_key,error):
 
 def for_task(con,task_id):
     task_id=_text(task_id,"task_id")
+    if not con.execute("""
+        SELECT 1 FROM sqlite_master
+        WHERE type='table' AND name='stateful_rebuilds'
+    """).fetchone():
+        return None
     row=con.execute("""
         SELECT sink_key FROM stateful_rebuilds
         WHERE (old_task_id=? OR new_task_id=?)
