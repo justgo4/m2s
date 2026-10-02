@@ -243,7 +243,7 @@ def main():
         stateful_physical_registry.retire(
             con,"aggregate",task)
         removed=stateful_physical_registry.gc_retired(
-            con,limit=8)
+            con,limit=8,kind="aggregate")
         assert [item["task_id"] for item in removed]==[
             "agg-task-gc"]
         try:
