@@ -378,6 +378,35 @@ def evaluate_workload(
     elif source_totals!=target_totals:
         failures.append("source_target_mismatch")
 
+    aggregate_checks=dict(
+        report.get("aggregate_checks") or {})
+    aggregate_tables=dict(
+        aggregate_checks.get("tables") or {})
+    aggregate_matches={
+        str(table):bool(
+            (value or {}).get("match",False))
+        for table,value in aggregate_tables.items()
+    }
+    expected_aggregate_targets=dynamic_tasks+1
+    evidence["aggregate_exactness"]=dict(
+        expected_targets=expected_aggregate_targets,
+        checked_targets=len(aggregate_matches),
+        all_match=(
+            bool(aggregate_checks.get("all_match",False))
+            and bool(aggregate_matches)
+            and all(aggregate_matches.values())
+        ),
+        matches=aggregate_matches,
+    )
+    if len(aggregate_matches)!=expected_aggregate_targets:
+        failures.append("aggregate_targets_missing")
+    if (
+        not aggregate_checks.get("all_match",False)
+        or not aggregate_matches
+        or not all(aggregate_matches.values())
+    ):
+        failures.append("aggregate_target_mismatch")
+
     return dict(
         ok=not failures,
         failures=sorted(set(failures)),
