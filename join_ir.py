@@ -356,6 +356,38 @@ def validate_ir(ir):
     return ir
 
 
+def reuse_plan(leader_ir,follower_ir):
+    """Return a safe exact/subview reuse plan for two INNER JOIN IRs.
+
+    Partial reuse is projection-only: both tasks must have identical source
+    schemas/primary keys, join predicate and SQL semantics, and every follower
+    projection must exist byte-for-byte in the leader by output/source/column.
+    """
+    validate_ir(leader_ir)
+    validate_ir(follower_ir)
+    for name in ("sources","join_pairs","semantics"):
+        if leader_ir[name]!=follower_ir[name]:
+            return None
+    leader_outputs={
+        item["output"]:dict(item)
+        for item in leader_ir["projections"]
+    }
+    for item in follower_ir["projections"]:
+        if leader_outputs.get(item["output"])!=dict(item):
+            return None
+    exact=semantic_id(leader_ir)==semantic_id(follower_ir)
+    return dict(
+        mode="exact" if exact else "subview",
+        projection_outputs=[
+            item["output"] for item in follower_ir["projections"]
+        ],
+        surplus_projections=(
+            len(leader_ir["projections"])
+            -len(follower_ir["projections"])
+        ),
+    )
+
+
 def state_spec(ir):
     validate_ir(ir)
     return dict(
