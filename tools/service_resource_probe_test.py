@@ -165,6 +165,19 @@ def main():
             result["selection_source"]
             =="listen_port")
 
+        # A freshly created cgroup can expose an empty io.stat before
+        # the first block I/O. Keep the cgroup scope and treat it as zero.
+        cgroup_dir=(
+            cgroup/"system.slice"/"mysql.service")
+        (cgroup_dir/"io.stat").write_text(
+            "",encoding="utf-8")
+        zero_io=service_resource_probe.service_sample(
+            100,proc_root=proc,
+            cgroup_root=cgroup)
+        assert zero_io["mode"]=="cgroup_v2"
+        assert zero_io["read_bytes"]==0
+        assert zero_io["write_bytes"]==0
+
         explicit=(
             service_resource_probe
             .resolve_service_pid(
