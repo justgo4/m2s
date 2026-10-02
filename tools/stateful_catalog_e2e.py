@@ -280,6 +280,11 @@ def state(path):
                 FROM join_shared_followers
                 ORDER BY follower_task_id
             """).fetchall()
+            rebuilds=con.execute("""
+                SELECT sink_key,old_task_id,new_task_id,frontier,phase,error
+                FROM stateful_rebuilds
+                ORDER BY sink_key
+            """).fetchall()
             return dict(
                 aggregate=[row[2] for row in agg],
                 join=[row[2] for row in joins],
@@ -314,6 +319,14 @@ def state(path):
                         str(row[2]),int(row[3])
                     )
                     for row in join_shared
+                ],
+                rebuilds=[
+                    (
+                        str(row[0]),str(row[1]),str(row[2]),
+                        None if row[3] is None else int(row[3]),
+                        str(row[4]),str(row[5] or ""),
+                    )
+                    for row in rebuilds
                 ],
                 source=[
                     (str(row[0]),None if row[1] is None else int(row[1]))
