@@ -193,6 +193,10 @@ def main():
         prefix="m2s-longhaul-workdir-test-"
     ) as td:
         root=Path(td)
+        assert longhaul_workload.path_within(
+            root/"child",root)
+        assert not longhaul_workload.path_within(
+            root.parent/"sibling",root)
         explicit=root/"persistent"
         with longhaul_workload.work_directory(
             explicit
@@ -320,7 +324,8 @@ def main():
     print(
         "longhaul_workload_test ok percentile clean_worktree_probe source_ready baseline_ready "
         "per_transaction_sentinel continuous_source_during_fault crash_catchup aggregate_exactness "
-        "work_directory_retention checkpoint_atomic_replace evidence_copy",
+        "work_directory_privacy_boundary work_directory_retention "
+        "checkpoint_atomic_replace evidence_copy",
         flush=True,
     )
 
