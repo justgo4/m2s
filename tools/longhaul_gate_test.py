@@ -137,6 +137,8 @@ def workload():
             pending_bytes=0,
             prepared_budget_used=0,
             field_overflow_rows=0,
+            merge_uncertain_recovery=dict(
+                replays=2,visible=2,aborted=0,blocked=0),
         ),
         aggregate_checks=dict(
             expected_rows=1024,
@@ -198,6 +200,18 @@ def main():
     assert good["ok"],good
     assert good["evidence"]["max_snapshot_rows"]==50_000_000
     assert good["evidence"]["cdc_samples"]==1000
+
+    result=evaluate_workload(workload())
+    assert result["ok"],result
+    assert result["evidence"]["debt"]["merge_uncertain_recovery"]==dict(
+        replays=2,visible=2,aborted=0,blocked=0)
+
+    bad=workload()
+    bad["debt"]["merge_uncertain_recovery"]=dict(
+        replays=1,visible=2,aborted=0,blocked=0)
+    result=evaluate_workload(bad)
+    assert not result["ok"]
+    assert "merge_recovery_counters_invalid" in result["failures"]
 
     # Lifetime exact threshold counts, not the bounded recent quantile
     # window, decide the default 5s/10s SLO gate.
