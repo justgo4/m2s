@@ -956,6 +956,27 @@ def compile_online_catalog_tasks(
         allow_missing=allow_missing)
 
 
+def item_from_durable(kind,task):
+    kind=str(kind)
+    task=dict(task)
+    if kind=="aggregate":
+        sources=[str(task["source_relation"])]
+    elif kind=="inner_join":
+        sources=list(task["source_relations"])
+    else:
+        raise ValueError(
+            "unsupported durable stateful task kind: "+kind)
+    return dict(
+        kind=kind,
+        sink=str(task["sink_key"]),
+        catalog_plan_version=int(task["plan_version"]),
+        task_version=int(task["plan_version"]),
+        source_relations=sources,
+        task=task,
+        mapping=_task_mapping(kind,task),
+    )
+
+
 def compiled_by_sink(compiled):
     result={}
     for item in compiled or ():
