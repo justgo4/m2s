@@ -11,6 +11,7 @@ import time
 import aggregate_shared_runtime
 import aggregate_target_mapping
 import aggregate_task_catalog
+import join_shared_runtime
 import join_target_mapping
 import join_task_catalog
 import stateful_task_plan
@@ -666,18 +667,18 @@ def retire_task(con,cfg,kind,task):
 
     generation=task_generation.maybe_info(
         con,task["sink_key"],task["plan_version"])
-    shared_binding=(
-        aggregate_shared_runtime.maybe_binding(
-            con,task["task_id"])
-        if kind=="aggregate"
-        else None
-    )
+    if kind=="aggregate":
+        shared_runtime=aggregate_shared_runtime
+    else:
+        shared_runtime=join_shared_runtime
+    shared_binding=shared_runtime.maybe_binding(
+        con,task["task_id"])
     promoted_shared=[]
-    if kind=="aggregate" and shared_binding is None:
+    if shared_binding is None:
         # A compute owner cannot disappear under live followers. Freeze them at
         # this owner's current frontier and atomically give each its own state
         # before the owner consumer/generation is removed.
-        promoted_shared=aggregate_shared_runtime.promote_followers(
+        promoted_shared=shared_runtime.promote_followers(
             con,task)
 
     # Materialize any remaining outbox rows before removing the retention
@@ -714,7 +715,7 @@ def retire_task(con,cfg,kind,task):
         clear_retirement(
             con,task["task_id"])
     if shared_binding is not None:
-        aggregate_shared_runtime.release_dependency(
+        shared_runtime.release_dependency(
             con,durable["task_id"])
     import stateful_physical_registry
     stateful_physical_registry.retire(
