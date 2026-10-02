@@ -13,7 +13,7 @@ def summary():
     return dict(
         event="run_summary",
         elapsed_seconds=elapsed,
-        source=dict(
+        source_run=dict(
             log_stats={
                 "mysql.events":dict(
                     commits=100000,
@@ -21,6 +21,7 @@ def summary():
                     payload_bytes=1024**3,
                 ),
             },
+            counter_regressions=[],
         ),
         tables=dict(
             sink=dict(
@@ -72,16 +73,23 @@ def main():
     assert "sink:p99" in result["failures"]
 
     bad=summary()
-    bad["source"]["log_stats"]["mysql.events"]["event_rows"]=100
+    bad["source_run"]["log_stats"]["mysql.events"]["event_rows"]=100
     result=evaluate(bad)
     assert not result["ok"]
     assert "source_cdc_rows_per_second" in result["failures"]
 
     bad=summary()
-    bad["source"]["log_stats"]={}
+    bad["source_run"]["log_stats"]={}
     result=evaluate(bad)
     assert not result["ok"]
     assert "source_log_stats_missing" in result["failures"]
+
+    bad=summary()
+    bad["source_run"]["counter_regressions"]=[
+        "mysql.events.event_rows:100>99"]
+    result=evaluate(bad)
+    assert not result["ok"]
+    assert "source_counter_regression" in result["failures"]
 
     bad=summary()
     bad["elapsed_seconds"]=3600
