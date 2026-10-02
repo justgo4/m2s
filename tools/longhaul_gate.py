@@ -11,6 +11,11 @@ import json
 from pathlib import Path
 import sys
 
+ROOT=Path(__file__).resolve().parents[1]
+sys.path.insert(0,str(ROOT))
+
+import p11_profile
+
 
 def _number(value,name):
     if value is None:
@@ -248,6 +253,7 @@ def evaluate_workload(
         require_drained=True,
         require_sharing=True,
         require_service_resources=True,
+        require_profile=None,
 ):
     failures=[]
     evidence=dict()
@@ -258,6 +264,16 @@ def evaluate_workload(
             evidence={})
     if report.get("kind")!="m2s_longhaul_workload":
         failures.append("not_longhaul_workload")
+    workload_profile=str(
+        report.get("workload_profile") or "")
+    evidence["workload_profile"]=(
+        workload_profile or None)
+    if (
+        require_profile is not None
+        and workload_profile!=str(require_profile)
+    ):
+        failures.append(
+            "workload_profile_mismatch")
 
     elapsed=_number(
         report.get("duration_seconds"),
@@ -940,6 +956,10 @@ def evaluate_workload(
             require_sharing=bool(require_sharing),
             require_service_resources=bool(
                 require_service_resources),
+            require_profile=(
+                None
+                if require_profile is None
+                else str(require_profile)),
         ),
     )
 
@@ -980,6 +1000,12 @@ def main():
         "--allow-private-state",
         action="store_true")
     parser.add_argument(
+        "--require-profile",
+        nargs="?",const=p11_profile.NAME,
+        help=(
+            "require an exact workload profile identity; "
+            "without a value requires "+p11_profile.NAME))
+    parser.add_argument(
         "--output",type=Path)
     args=parser.parse_args()
 
@@ -1000,6 +1026,7 @@ def main():
             min_faults=args.min_faults,
             require_drained=not args.allow_undrained,
             require_sharing=not args.allow_private_state,
+            require_profile=args.require_profile,
         )
     else:
         result=evaluate(
