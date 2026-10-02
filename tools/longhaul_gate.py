@@ -113,29 +113,75 @@ def evaluate(
         )
         max_snapshot=max(max_snapshot,snapshot_rows)
         cdc=dict(total.get("cdc_age_seconds") or {})
+        exact_cdc=dict(
+            total.get("exact_cdc_age_seconds") or {})
         n=_integer(
-            cdc.get("total_n",cdc.get("n",0)),
+            exact_cdc.get(
+                "n",
+                cdc.get("total_n",cdc.get("n",0))),
             table+".cdc_age_seconds.n")
         p95=cdc.get("p95")
         p99=cdc.get("p99")
-        if n:
+        if p95 is not None:
             p95=_number(
                 p95,table+".cdc_age_seconds.p95")
+        if p99 is not None:
             p99=_number(
                 p99,table+".cdc_age_seconds.p99")
-            if p95>float(max_p95_seconds):
-                failures.append(table+":p95")
-            if p99>float(max_p99_seconds):
-                failures.append(table+":p99")
+        lag5_raw=total.get("lag_over_5")
+        lag10_raw=total.get("lag_over_10")
+        exact_default_thresholds=(
+            float(max_p95_seconds)==5.0
+            and float(max_p99_seconds)==10.0
+        )
+        if exact_default_thresholds:
+            if lag5_raw is None or lag10_raw is None:
+                failures.append(
+                    table+":exact_slo_counters_missing")
+                lag5=0
+                lag10=0
+            else:
+                lag5=_integer(
+                    lag5_raw,table+".lag_over_5")
+                lag10=_integer(
+                    lag10_raw,table+".lag_over_10")
+                if lag5>n or lag10>lag5:
+                    failures.append(
+                        table+":invalid_slo_counters")
+                if n and lag5*20>n:
+                    failures.append(table+":p95")
+                if n and lag10*100>n:
+                    failures.append(table+":p99")
+        else:
+            lag5=(
+                None if lag5_raw is None
+                else _integer(
+                    lag5_raw,table+".lag_over_5"))
+            lag10=(
+                None if lag10_raw is None
+                else _integer(
+                    lag10_raw,table+".lag_over_10"))
+            if n:
+                if p95 is None or p99 is None:
+                    failures.append(
+                        table+":recent_quantiles_missing")
+                else:
+                    if p95>float(max_p95_seconds):
+                        failures.append(table+":p95")
+                    if p99>float(max_p99_seconds):
+                        failures.append(table+":p99")
         total_cdc_samples+=n
         table_evidence[str(table)]=dict(
             snapshot_rows=snapshot_rows,
             cdc_samples=n,
             cdc_p95_seconds=p95,
             cdc_p99_seconds=p99,
-            lag_over_10=_integer(
-                total.get("lag_over_10",0),
-                table+".lag_over_10"),
+            lag_over_5=lag5,
+            lag_over_10=lag10,
+            slo_scope=(
+                "lifetime_exact_threshold_counts"
+                if exact_default_thresholds
+                else "recent_quantile_window"),
         )
     evidence["tables"]=table_evidence
     evidence["max_snapshot_rows"]=max_snapshot
