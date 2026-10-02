@@ -1368,6 +1368,9 @@ def read_config():
         stateful_admission_max_source_lag=env_int(
             "CDC_STATEFUL_ADMISSION_MAX_SOURCE_LAG",
             0,minimum=0,maximum=1000000000000),
+        stateful_admission_retry_seconds=env_int(
+            "CDC_STATEFUL_ADMISSION_RETRY_SECONDS",
+            5,minimum=1,maximum=3600),
         plan_retain=env_int("CDC_PLAN_RETAIN",32,minimum=4,maximum=10000),
         metrics_max_bytes=env_int(
             "CDC_METRICS_MAX_BYTES",64*1024**2,
@@ -6061,8 +6064,11 @@ def prepare_hot_stateful_additions(cfg, runtime, candidate):
     metadata=dict(candidate.get("stateful_source_metadata",{}) or {})
     admission_con=open_state(cfg["state"])
     try:
-        admission=stateful_admission.admit_or_raise(
-            admission_con,additions,cfg)
+        admission=stateful_admission.admit_or_defer(
+            admission_con,additions,
+            int(candidate["version"]),cfg,
+            retry_seconds=cfg.get(
+                "stateful_admission_retry_seconds",5))
     finally:
         admission_con.close()
     candidate["stateful_admission"]=admission
@@ -6260,6 +6266,11 @@ def catalog_activation_record(runtime, validation):
         log(f"PLAN NOT ACTIVATED version={record.get('version',0)} "
             f"active={runtime_active_version(runtime)} status={record['status']} "
             f"reason={record.get('reason','')}")
+    elif record.get('status')=="resource_waiting":
+        log(
+            f"PLAN RESOURCE WAIT version={record.get('version',0)} "
+            f"active={runtime_active_version(runtime)} "
+            f"reason={record.get('reason','')}")
     return validation
 
 
@@ -6376,8 +6387,11 @@ def activate_stateful_rebuild_candidate(
     sink=str(spec["sink"])
     admission_con=open_state(cfg["state"])
     try:
-        admission=stateful_admission.admit_or_raise(
-            admission_con,[new],cfg)
+        admission=stateful_admission.admit_or_defer(
+            admission_con,[new],
+            int(candidate["version"]),cfg,
+            retry_seconds=cfg.get(
+                "stateful_admission_retry_seconds",5))
     finally:
         admission_con.close()
     candidate["stateful_admission"]=admission
@@ -6591,6 +6605,21 @@ def install_hot_catalog_plan(cfg, runtime, publish_result, validation):
     return catalog_activation_record(runtime,validation)
 
 
+def catalog_admission_waiting_result(
+        runtime,version,deferred
+):
+    result=dict(
+        status="resource_waiting",
+        version=int(version),
+        reason=str(deferred.result.get(
+            "reason","resource admission rejected")),
+        stateful_admission=dict(deferred.result),
+        retryable=True,
+    )
+    return catalog_activation_record(
+        runtime,result)
+
+
 def catalog_publish_callback(cfg, runtime, publish_result, phase):
     if phase == "validate":
         return validate_hot_catalog_plan(cfg,runtime,publish_result)
@@ -6610,9 +6639,15 @@ def catalog_publish_callback(cfg, runtime, publish_result, phase):
         validation = publish_result.get("validation")
         if validation is None:
             validation = validate_hot_catalog_plan(cfg,runtime,publish_result)
+        lock=runtime.setdefault(
+            "catalog_install_lock",threading.Lock())
         try:
-            return install_hot_catalog_plan(
-                cfg,runtime,publish_result,validation)
+            with lock:
+                return install_hot_catalog_plan(
+                    cfg,runtime,publish_result,validation)
+        except stateful_admission.AdmissionDeferred as deferred:
+            return catalog_admission_waiting_result(
+                runtime,publish_result["version"],deferred)
         except Exception as exc:
             catalog_activation_record(runtime,dict(
                 status="restart_required",version=int(publish_result["version"]),
@@ -6622,9 +6657,94 @@ def catalog_publish_callback(cfg, runtime, publish_result, phase):
 
 
 def queue_hot_catalog_plan(cfg, runtime, publish_result):
-    validation = validate_hot_catalog_plan(cfg,runtime,publish_result)
-    return install_hot_catalog_plan(
-        cfg,runtime,publish_result,validation)
+    lock=runtime.setdefault(
+        "catalog_install_lock",threading.Lock())
+    with lock:
+        validation = validate_hot_catalog_plan(
+            cfg,runtime,publish_result)
+        try:
+            return install_hot_catalog_plan(
+                cfg,runtime,publish_result,validation)
+        except stateful_admission.AdmissionDeferred as deferred:
+            return catalog_admission_waiting_result(
+                runtime,publish_result["version"],deferred)
+
+
+def retry_waiting_stateful_admission(
+        cfg,runtime,now=None
+):
+    con=open_state(cfg["state"])
+    try:
+        waiting=stateful_admission.waiting_plans(
+            con,now=now,due_only=True)
+    finally:
+        con.close()
+    if not waiting:
+        return []
+
+    latest=cdc_catalog.load_plan(
+        cfg["catalog"],cfg.get("catalog_seed"))
+    latest_version=int(latest["version"])
+    outcomes=[]
+    for item in waiting:
+        version=int(item["plan_version"])
+        if version!=latest_version:
+            con=open_state(cfg["state"])
+            try:
+                cleared=stateful_admission.clear_wait(
+                    con,plan_version=version)
+            finally:
+                con.close()
+            log(
+                "STATEFUL ADMISSION SUPERSEDED "
+                f"plan={version} latest={latest_version} "
+                f"cleared_tasks={cleared}")
+            outcomes.append(dict(
+                status="superseded",
+                version=version,
+                latest_version=latest_version,
+                cleared_tasks=cleared))
+            continue
+
+        result=queue_hot_catalog_plan(
+            cfg,runtime,dict(
+                version=version,
+                plan_hash=str(
+                    latest.get("plan_hash") or "")))
+        outcomes.append(dict(result))
+        if str(result.get("status",""))=="active":
+            con=open_state(cfg["state"])
+            try:
+                stateful_admission.clear_wait(
+                    con,plan_version=version)
+            finally:
+                con.close()
+    return outcomes
+
+
+def stateful_admission_retry_worker(cfg,runtime):
+    stop=runtime["stop"]
+    retry_seconds=max(
+        1,int(cfg.get(
+            "stateful_admission_retry_seconds",5)))
+    while not stop.is_set():
+        try:
+            outcomes=retry_waiting_stateful_admission(
+                cfg,runtime)
+            for result in outcomes:
+                status=str(result.get("status",""))
+                if status not in {
+                    "resource_waiting","superseded"
+                }:
+                    log(
+                        "STATEFUL ADMISSION RETRY "
+                        f"plan={result.get('version',0)} "
+                        f"status={status}")
+        except Exception as exc:
+            log(
+                "STATEFUL ADMISSION RETRY HOLD "
+                f"reason={exc}")
+        stop.wait(retry_seconds)
 
 
 def runtime_thread_register(runtime, thread):
@@ -10852,6 +10972,7 @@ def run_cdc(
                            mapping_key(m):int(cfg["batch_bytes"])
                            for m in worker_mappings},
                        lane_locks={},plan_lock=threading.RLock(),
+                       catalog_install_lock=threading.Lock(),
                        active_plan_version=int(active_version),
                        catalog_activation=dict(
                            status=(
@@ -10941,6 +11062,12 @@ def run_cdc(
                 name="resource-monitor")
             resource_thread.start()
             threads.append(resource_thread)
+            admission_retry_thread=threading.Thread(
+                target=stateful_admission_retry_worker,
+                args=(cfg,runtime),
+                name="stateful-admission-retry")
+            admission_retry_thread.start()
+            threads.append(admission_retry_thread)
             if cfg["load_mode"] == "merge_async":
                 for mapping in list(worker_mappings):
                     for worker_id in range(cfg["writer_max"]):
