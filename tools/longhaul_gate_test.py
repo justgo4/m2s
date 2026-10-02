@@ -461,7 +461,7 @@ def main():
     assert full["evidence"]["recovery_latency_samples"]==8
     assert full["evidence"]["debt"]["max_rowset"]==73
     assert full["evidence"]["resources"]["logical_cpus"]==8
-    assert full["evidence"]["resources"]["configured_memory_mb"]==4096
+    assert full["evidence"]["resources"]["configured_memory_mb"]==8192
     assert full["evidence"]["software"]["code_revision"]=="a"*40
     assert full["evidence"]["software"]["code_worktree_clean"] is True
     assert full["evidence"]["software"]["mysql_gtid_mode"]=="ON"
