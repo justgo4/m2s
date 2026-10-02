@@ -8,6 +8,7 @@ import pyarrow as pa
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 
+import j4
 import source_state
 
 
@@ -21,6 +22,8 @@ def main():
     ])
     source_state.register_relation(
         con,"mysql.events","epoch-1",schema,["id"])
+    run_start=source_state.status(
+        con)["pipeline_stats"]
 
     batch=pa.table({
         "id":pa.array([1,2],type=pa.int64()),
@@ -61,6 +64,29 @@ def main():
     assert applied["apply_input_rows"]==2
     assert applied["apply_actions"]==2
     assert applied["apply_work_seconds"]>=0
+
+    run=j4.source_pipeline_stats_delta(
+        run_start,applied)
+    assert not run["counter_regressions"]
+    assert run["pipeline_stats"]["log_commits"]==1
+    assert run["pipeline_stats"]["log_rows"]==2
+    assert run["pipeline_stats"]["apply_commits"]==1
+    assert run["pipeline_stats"]["apply_input_rows"]==2
+    assert (
+        run["pipeline_stats"]["log_rows_per_second"]
+        is not None
+    )
+    assert (
+        run["pipeline_stats"]["apply_rows_per_second"]
+        is not None
+    )
+
+    regressed=dict(applied)
+    regressed["log_commits"]=0
+    bad=j4.source_pipeline_stats_delta(
+        applied,regressed)
+    assert bad["counter_regressions"]
+    assert bad["pipeline_stats"]["log_commits"]==0
 
     # Re-running apply at the same durable base watermark is a no-op and must
     # not count a second apply.
@@ -123,7 +149,8 @@ def main():
     con.close()
     print(
         "source_pipeline_metrics_test ok "
-        "durable_log apply idempotent_retry offline_upgrade_status",
+        "durable_log apply idempotent_retry run_delta "
+        "counter_regression offline_upgrade_status",
         flush=True,
     )
 
