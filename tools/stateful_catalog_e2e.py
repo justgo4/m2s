@@ -464,6 +464,20 @@ def join_subview_expected(source):
     ])
 
 
+def join_subview_rebuild_expected(source):
+    with source.cursor() as cur:
+        cur.execute(
+            "SELECT c.name,o.amount "
+            "FROM "+DATABASE+".orders o "
+            "INNER JOIN "+DATABASE+".customers c "
+            "ON o.id=c.id")
+        rows=cur.fetchall()
+    return sorted([
+        (str(row[0]),normalize_decimal(row[1]))
+        for row in rows
+    ])
+
+
 def join_subview_actual(cfg,table="joined_subview"):
     rows,_=execute(
         cfg,
@@ -740,6 +754,67 @@ def wait_aggregate_rebuild_exact(
         % (state(directory/"state.sqlite3"),last))
 
 
+def wait_join_rebuild_exact(
+        proc,log,directory,source,cfg,
+        sink="starrocks.joined_subview",table="joined_subview",
+        timeout=240
+):
+    deadline=time.monotonic()+timeout
+    last=None
+    while time.monotonic()<deadline:
+        live(proc,log)
+        current=state(directory/"state.sqlite3")
+        if current is not None:
+            rows=[
+                row for row in current.get(
+                    "join_task_rows",())
+                if row[1]==sink
+            ]
+            active=[
+                row for row in rows
+                if row[2]=="active"
+            ]
+            retired=[
+                row for row in rows
+                if row[2]=="retired"
+            ]
+            rebuild=[
+                row for row in current.get("rebuilds",())
+                if row[0]==sink
+            ]
+            if (
+                len(active)==1
+                and retired
+                and current["pending"]==0
+                and current["deliveries"]==0
+                and rebuild
+                and rebuild[0][4]=="complete"
+                and not rebuild[0][5]
+            ):
+                expected=join_subview_rebuild_expected(
+                    source)
+                actual=join_subview_actual(
+                    cfg,table)
+                if expected==actual:
+                    return current,dict(
+                        expected=expected,actual=actual,
+                        active_task_id=active[0][0],
+                        retired_task_ids=[
+                            row[0] for row in retired],
+                        rebuild=rebuild[0],
+                    )
+                last=dict(
+                    expected=expected,
+                    actual=actual,
+                    rows=rows,
+                    rebuild=rebuild)
+        time.sleep(.2)
+    raise AssertionError(
+        "JOIN semantic rebuild did not reach exact swapped state "
+        "state=%r result=%r"
+        % (state(directory/"state.sqlite3"),last))
+
+
 def wait_stateful_retired(
         proc,log,directory,sink,kind="aggregate",timeout=180
 ):
@@ -852,6 +927,19 @@ def mutate_after_semantic_rebuild(source):
             cur.execute(
                 "INSERT INTO "+DATABASE+".orders "
                 "VALUES(9,'e',11,NULL)")
+        source.commit()
+    except BaseException:
+        source.rollback()
+        raise
+
+
+def mutate_after_join_rebuild(source):
+    source.begin()
+    try:
+        with source.cursor() as cur:
+            cur.execute(
+                "INSERT INTO "+DATABASE+".orders "
+                "VALUES(10,'f',11,8.50)")
         source.commit()
     except BaseException:
         source.rollback()
