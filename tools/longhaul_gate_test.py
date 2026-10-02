@@ -9,9 +9,19 @@ from tools.longhaul_gate import evaluate
 
 
 def summary():
+    elapsed=72*3600+1
     return dict(
         event="run_summary",
-        elapsed_seconds=72*3600+1,
+        elapsed_seconds=elapsed,
+        source=dict(
+            log_stats={
+                "mysql.events":dict(
+                    commits=100000,
+                    event_rows=int(50*elapsed),
+                    payload_bytes=1024**3,
+                ),
+            },
+        ),
         tables=dict(
             sink=dict(
                 total=dict(
@@ -62,6 +72,18 @@ def main():
     assert "sink:p99" in result["failures"]
 
     bad=summary()
+    bad["source"]["log_stats"]["mysql.events"]["event_rows"]=100
+    result=evaluate(bad)
+    assert not result["ok"]
+    assert "source_cdc_rows_per_second" in result["failures"]
+
+    bad=summary()
+    bad["source"]["log_stats"]={}
+    result=evaluate(bad)
+    assert not result["ok"]
+    assert "source_log_stats_missing" in result["failures"]
+
+    bad=summary()
     bad["elapsed_seconds"]=3600
     bad["state"]["pending_jobs"]=1
     bad["stateful"]["rebuilds"]["active"]=1
@@ -86,7 +108,7 @@ def main():
     assert smoke["ok"]
 
     print(
-        "longhaul_gate_test ok 50m_72h p95_p99 "
+        "longhaul_gate_test ok 50m_72h 50rps p95_p99 "
         "drain stateful_health fail_closed",
         flush=True,
     )
