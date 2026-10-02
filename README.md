@@ -4,7 +4,7 @@
 
 目标：一次捕获源数据，已有任务持续更新；运行期间新增 SQL 和下游表，完成历史构建后持续增量维护。共享源镜像完整后，新任务正常情况下不再扫描 MySQL，也不默认复制整份基础数据。未来 MCP 自然语言入口复用同一套 SQL 校验与部署协议。
 
-**当前已是可运行的 CDC + shared fixed-W 动态投影基线；COUNT/SUM/AVG 与受限双源 INNER equi-join 的 correctness-first 有状态 SQL 已接入用户 catalog/daemon，并通过真实 MySQL→StarRocks 合同持续验证。** shared 模式已经接入 authoritative source log/base、fixed-W hot-add、generation 生命周期和 drop/drain；COUNT/SUM/AVG 与受限双源 INNER equi-join 已分别具备 canonical IR、durable state、fixed-W bootstrap、changelog catch-up、outbox、StarRocks writer bridge 和 restart-safe task descriptor/runner。legacy 模式仍保留 MySQL snapshot 路径。本文区分已有证据、待实现协议和研究候选；不宣称已达到物理极限、生产就绪或全面超过其他引擎。
+**当前已是可运行的 CDC + shared fixed-W 动态 SQL 基线；COUNT/SUM/AVG 与受限双源 INNER equi-join 已接入用户 catalog/daemon，支持无需重启的 stateful hot-add/drop，并持续用真实 MySQL→StarRocks 合同验证。** shared 模式已经接入 authoritative source log/base、generation 生命周期、drop/drain，以及 correctness-first 的跨任务状态复用：相同 aggregate/JOIN 可只维护一个 compute state；aggregate 的聚合输出子集与 JOIN 的投影子集可复用 superset state，保留独立 target/outbox/frontier；owner 退役时 follower 可在固定 frontier 提升为私有投影状态。当前还加入 durable sharing decision/telemetry、compatible/off/adaptive 准入和确定性的整图 leader preference。legacy 模式仍保留 MySQL snapshot 路径。本文区分已有证据、待实现协议和研究候选；不宣称已达到物理极限、生产就绪或全面超过其他引擎。
 
 ## 1. 场景与待验证假说
 
@@ -25,7 +25,8 @@
 - [source_state.py](source_state.py)：P6A/P6B correctness-first SQLite authoritative source state，已接入 daemon，显式区分 log durable 与 base applied，提供 fixed-W pin/read、durable consumer 和 GC。
 - [relational_ir.py](relational_ir.py)、[incremental_ir.py](incremental_ir.py)：当前 stateless SQL 的 canonical relational IR 和 delete/upsert retract IR；执行器仍沿用现有路径。
 - [aggregate_ir.py](aggregate_ir.py)、[aggregate_state.py](aggregate_state.py)、[aggregate_generation.py](aggregate_generation.py)、[aggregate_runtime.py](aggregate_runtime.py)、[aggregate_task_catalog.py](aggregate_task_catalog.py)、[aggregate_task_runner.py](aggregate_task_runner.py)：COUNT/SUM/AVG 候选闭环，包含 fixed-W、撤回、crash recovery、durable outbox/descriptor 和两种 StarRocks 输出协议的真实合同。
-- [join_ir.py](join_ir.py)、[join_state.py](join_state.py)、[join_generation.py](join_generation.py)、[join_runtime.py](join_runtime.py)、[join_task_catalog.py](join_task_catalog.py)、[join_task_runner.py](join_task_runner.py)：受限双源 INNER equi-join 候选闭环；用稳定 source-PK pair identity 保留 SQL bag 语义，支持双表共同 W、同事务净差分、NULL 不匹配、fan-out、retract、durable outbox/descriptor。真实 StarRocks transaction/merge_async 合同已通过 E2E，且加入 randomized/full-state oracle；用户 catalog/daemon 暴露仍待完成。
+- [join_ir.py](join_ir.py)、[join_state.py](join_state.py)、[join_generation.py](join_generation.py)、[join_runtime.py](join_runtime.py)、[join_task_catalog.py](join_task_catalog.py)、[join_task_runner.py](join_task_runner.py)：受限双源 INNER equi-join 已形成 catalog/daemon 闭环；用稳定 source-PK pair identity 保留 SQL bag 语义，支持双表共同 W、同事务净差分、NULL 不匹配、fan-out、retract、durable outbox/descriptor。真实 StarRocks transaction/merge_async 合同已通过 E2E，并有 randomized/full-state oracle。
+- [aggregate_shared_runtime.py](aggregate_shared_runtime.py)、[join_shared_runtime.py](join_shared_runtime.py)、[stateful_share_policy.py](stateful_share_policy.py)：共享 stateful compute 的 correctness/admission 层。exact sharing 与严格 subview sharing 均不建立 follower chain；follower 保有独立 durable journal/target frontier，leader retirement 会先冻结 frontier、投影/克隆必要 state，再解除依赖。scale contracts 覆盖 100 个 exact aggregate、100 个 aggregate subview、100 个 exact JOIN、100 个 JOIN projection subview，以及 100 个退休 follower 的 retention/GC 回收。
 - [native/](native/)、[tools/](tools/)、[cdc_selftest.py](cdc_selftest.py)：解码差分、恢复、协议、故障注入、randomized oracle 和候选性能测量。
 
 | 已验证范围 | 可核查证据 | 证据边界 |
@@ -87,7 +88,7 @@ generation 更替须证明旧的在途请求不能覆盖新结果。停止本地
 
 现有 `state_compatible(..., minimum_watermark)` 只证明当前最小的 hash/语义与进度条件，**不是 fixed-W 可读性证明**。最终复用必须拆成三个独立判断：`semantic_compatible(state, query)`、`version_readable(state, W)`、`physically_reusable(state, consumer)`；任一失败都不能直接共享。
 
-语义 identity 后续还需覆盖 source instance/epoch、稳定 relation identity、类型/精度、时区、NULL/bag 语义、collation 及宏/UDF 定义版本；watermark、路径、refcount 属于实例状态。物理复用另检查 backend/encoding/ABI、健康、pin/追赶与恢复能力。以上扩展**尚未全部在当前合同模块实现**。
+语义 identity 已开始覆盖 source epoch、稳定 relation identity、schema/type hash、NULL/bag 语义与当前受限算子的 collation/IR identity；watermark、backend/format、generation、health、refs 属于实例状态。current-only SQLite backing state 明确拒绝把逻辑 catalog pin 当作历史版本保留，fixed-W 复用使用同一 BEGIN IMMEDIATE 内校验并原子 clone/copy backing bytes。时区、更广 SQL 类型/collation、宏/UDF 跨算子依赖及未来 backend ABI 仍需继续扩展。
 
 最小共享接口只需先支持：获取/构建状态、fixed-version read、change subscription、retain/release、持久进度与安全 GC。当前 `source_state.py` 已有 fixed-W pin/read、版本/changelog GC 和 durable consumer watermark；consumer 可跨“零输出事务”单调推进，GC 自动受最慢 consumer/pin 约束。新增 `physical_state_catalog.py` 把 semantic identity、backend/format、generation、可读版本区间、health、refs、pins 与 GC eligibility 持久化，并将 `semantic_compatible` / `version_readable(W)` / `physically_reusable` 三个判断拆开。第一个正确 JOIN 不等待通用优化器。
 
@@ -121,14 +122,14 @@ cost_vector = {
 |---|---|
 | P0–P3 / P10 | 保持现有差分/故障测试；定义上述事务、水位、完整性、未知请求和代际协议；跨目标原子性未证明则明确不承诺 |
 | **P6A/P6B** | **SQLite correctness-first 路径已接 daemon 并通过真实 E2E**：authoritative log durable 与 base applied 分离、fixed-W pin/read、版本 GC、crash replay 已工作；本次继续加入 durable consumer frontier。尚未完成 50M 规模存储选型、schema epoch 在线迁移、空间耗尽/compaction 长跑 |
-| **P6C 最小接口 + P7** | **shared 模式的单源投影 hot-add 已不再回源历史 SELECT，并通过 GTID ON/OFF × transaction/merge_async 真实 E2E、构建中强退和重启续建。** generation 的 fixed-W/pin 生命周期、drop/drain/retire、同名 re-add fail-closed、retained semantic-change rebuild gate 已进入主线。仍需 10+ generation 并发取消/替换、真正的在线 rebuild/new-generation、旧 generation 远端 fence、更多 source scope/DDL 场景 |
-| **P8A/P8B** | **P8A stateless IR 已闭环；P8B correctness-first 候选也已推进到 COUNT/SUM/AVG + 受限双源 INNER equi-join 的完整 durable runtime。** 两者均已有 canonical IR、撤回语义、fixed-W bootstrap、atomic state/consumer/outbox、generation、writer bridge 与 restart-safe task descriptor/runner；聚合与 JOIN 的真实 StarRocks 4.1.1 transaction/merge_async 合同均已通过；JOIN 另有固定 seed 的 2000 事务 randomized/full-state DuckDB oracle，覆盖多-event 同事务、NULL、重复投影与 fan-out。**stateful task 已安全暴露给 cdc_catalog/daemon；当前语义变更、新增/删除 stateful task 采用经过校验的 restart-boundary 激活。尚未完成的是无需重启的 stateful deploy/rebuild/drop cutover、共享 arrangement/代价策略，以及更广 SQL 语义。** |
-| **P9A/P9B/P9C** | 共享 arrangement/subview、整图策略、统计反馈与 GC；1/10/100 个语义相同/部分共享任务，验证只维护所需共享状态、慢任务取消后安全回收；比较共享开/关、固定 IVM/自适应、不同放置，其他语义与耐久性保持一致 |
+| **P6C 最小接口 + P7** | **shared 模式的单源投影与受限 stateful task 已支持无需重启的 hot-add/drop；单源投影通过 GTID ON/OFF × transaction/merge_async 真实 E2E、构建中强退和重启续建。** generation 的 fixed-W/pin、drop/drain/retire、同名 re-add fail-closed、retained semantic-change rebuild gate 已进入主线。仍需 10+ generation 并发取消/替换压力、真正的在线 semantic rebuild/new-generation、旧 generation 远端 fence、更多 source scope/DDL 场景 |
+| **P8A/P8B** | **P8A stateless IR 已闭环；P8B 已推进到 COUNT/SUM/AVG + 受限双源 INNER equi-join 的完整 durable runtime 并暴露给 catalog/daemon。** 两者均有 canonical IR、撤回语义、fixed-W bootstrap、atomic state/consumer/outbox、generation、writer bridge 与 restart-safe descriptor/runner；聚合与 JOIN 的 StarRocks 4.1.1 transaction/merge_async 合同均已通过；JOIN 另有固定 seed 的 2000 事务 randomized/full-state oracle。在线新增/删除已经进入 hot cutover，**尚未完成的是 retained semantic change 的在线 rebuild/new-generation、更多 SQL 语义以及跨算子通用增量编译。** |
+| **P9A/P9B/P9C** | **correctness-first P9 基线已进入代码**：aggregate/JOIN exact sharing、aggregate 输出子集、JOIN projection subview、durable follower binding、owner promotion、dependency ref/retention GC；100-task scale contracts 验证一个 compute state 服务 100 个 exact/subview follower。stateful_share_policy.py 提供 compatible/off/adaptive、lag/fanout/surplus/observed-visible-lag fence、durable decision/telemetry 与确定性 whole-graph leader preference，候选 owner 未 ready 时 follower 等待而不抢先建立私有 state。仍需真实大负载下校准成本向量/滞后、跨 operator 的共享 arrangement/factorized state、资源预算准入、50M/72h 与故障下策略切换验证 |
 | P4–P5 | 按 profile 插入 event/transaction batching、布局融合、native socket/snapshot；同 raw binlog 差分先通过，再重复 Python/native A/B，报告两进程总 CPU/RSS 和 IPC 成本 |
 | **P11** | 固定机器 50M 初始行 + 50 rows/s，72h 并动态新增任务/注入故障；报告健康区间 P95/P99、违规数、恢复区间、time-to-ready、空间与版本债务；每个部署给可完成的预算，超预算明确拒绝/等待 |
 | P12 / P13 | 公平对标后再给优势结论；补可解释 deploy/explain/status/cancel、预算准入、权限、版本化升级/回滚，MCP 接同一控制面；catalog 已保存不等于任务已激活 |
 
-最短主线现在是：**把已通过 startup/restart E2E 的 stateful catalog task 推进到无需重启的 deploy/rebuild/drop cutover → 再做共享 arrangement/代价策略**。完整优化器和更多语言重写不应阻塞这条主线。
+最短主线现在是：**收口 retained semantic change 的在线 rebuild/new-generation 与远端 generation fence → 用固定资源做 1/10/100 task sharing A/B 和 50M/72h gate → 只把实测有收益的共享 arrangement/状态布局下沉到更通用物理计划。** 当前 whole-graph preference/adaptive admission 仍是可解释规则，不把它宣传成完整成本优化器。
 
 测量分 decoder、local durable pipeline、snapshot、端到端四层；最终 gate 固定机器/资源并计入 Python/C、source/sink、compaction、存储和网络。与 Flink、RisingWave、Materialize、Bytewax、Pathway、Proton、Arroyo 对比时保持 SQL/结果语义、源/目标、耐久性和恢复要求一致，分别报告吞吐、延迟、构建、空间、恢复与功能缺失；不宣称任意 SQL 下全面领先。
 
