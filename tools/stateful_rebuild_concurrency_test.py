@@ -123,6 +123,28 @@ def main():
         assert "identity collision" in str(errors[0])
         assert not isinstance(errors[0],sqlite3.IntegrityError)
 
+        def shared_old(index):
+            local=connection(path)
+            try:
+                return stateful_rebuild.begin(
+                    local,"aggregate",
+                    "starrocks.old_owner_%d" % index,
+                    "one-old-owner",
+                    "new-old-owner-%d" % index,
+                    "old_owner_%d" % index)
+            finally:
+                local.close()
+
+        results,errors=run_parallel(2,shared_old)
+        assert len(results)==1
+        assert len(errors)==1
+        assert isinstance(errors[0],RuntimeError)
+        assert (
+            "active owner" in str(errors[0])
+            or "identity collision" in str(errors[0])
+        )
+        assert not isinstance(errors[0],sqlite3.IntegrityError)
+
         con=connection(path)
         phase=stateful_rebuild.begin(
             con,"aggregate","starrocks.phase",
@@ -194,7 +216,8 @@ def main():
     print(
         "stateful_rebuild_concurrency_test ok "
         "identical_begin conflicting_begin unique_collision "
-        "phase_retry fail_retry no_sqlite_integrity_leak",
+        "old_task_atomic_owner phase_retry fail_retry "
+        "no_sqlite_integrity_leak",
         flush=True,
     )
 
