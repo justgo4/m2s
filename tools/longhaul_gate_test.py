@@ -108,6 +108,47 @@ def workload():
             read_bytes=4*1024**3,
             write_bytes=8*1024**3,
         ),
+        service_resources={
+            "mysql":dict(
+                supported=True,
+                scope_stable=True,
+                mode="cgroup_v2",
+                scope_fingerprint="mysql-scope",
+                selection_source="listen_port",
+                selection_reason="resolved",
+                samples=int(elapsed),
+                peak_memory_bytes=2*1024**3,
+                cpu_seconds=10*3600,
+                read_bytes=12*1024**3,
+                write_bytes=6*1024**3,
+            ),
+            "starrocks_fe":dict(
+                supported=True,
+                scope_stable=True,
+                mode="cgroup_v2",
+                scope_fingerprint="starrocks-fe-scope",
+                selection_source="listen_port",
+                selection_reason="resolved",
+                samples=int(elapsed),
+                peak_memory_bytes=1024**3,
+                cpu_seconds=5*3600,
+                read_bytes=2*1024**3,
+                write_bytes=3*1024**3,
+            ),
+            "starrocks_be":dict(
+                supported=True,
+                scope_stable=True,
+                mode="cgroup_v2",
+                scope_fingerprint="starrocks-be-scope",
+                selection_source="listen_port",
+                selection_reason="resolved",
+                samples=int(elapsed),
+                peak_memory_bytes=4*1024**3,
+                cpu_seconds=20*3600,
+                read_bytes=20*1024**3,
+                write_bytes=30*1024**3,
+            ),
+        },
         live_rows=int(50*elapsed),
         latency_samples=int(elapsed),
         latency_p50_seconds=1.0,
@@ -322,6 +363,49 @@ def main():
         full["evidence"]["daemon_resources"]["cpu_core_equivalent"]
         -(36*3600)/workload()["duration_seconds"]
     )<1e-12
+    assert (
+        full["evidence"]["service_resources"]["mysql"]["mode"]
+        =="cgroup_v2"
+    )
+    assert (
+        full["evidence"]["pipeline_resources"]["unique_service_scopes"]
+        ==3
+    )
+    assert abs(
+        full["evidence"]["pipeline_resources"]["total_cpu_seconds"]
+        -71*3600
+    )<1e-12
+
+    bad=workload()
+    del bad["service_resources"]
+    full=evaluate_workload(bad)
+    assert not full["ok"]
+    assert "service_resource_evidence_missing" in full["failures"]
+    assert "mysql_resource_evidence_missing" in full["failures"]
+
+    bad=workload()
+    bad["service_resources"]["mysql"]["supported"]=False
+    full=evaluate_workload(bad)
+    assert not full["ok"]
+    assert "mysql_resource_probe_unsupported" in full["failures"]
+
+    bad=workload()
+    bad["service_resources"]["starrocks_be"]["scope_stable"]=False
+    full=evaluate_workload(bad)
+    assert not full["ok"]
+    assert "starrocks_be_resource_scope_unstable" in full["failures"]
+
+    bad=workload()
+    bad["service_resources"]["starrocks_fe"]["scope_fingerprint"]=(
+        bad["service_resources"]["mysql"]["scope_fingerprint"])
+    full=evaluate_workload(bad)
+    assert not full["ok"]
+    assert "service_resource_scope_overlap" in full["failures"]
+
+    compatibility=evaluate_workload(
+        dict(workload(),service_resources=None),
+        require_service_resources=False)
+    assert compatibility["ok"],compatibility
 
     bad=workload()
     del bad["resource_fingerprint"]
@@ -448,7 +532,8 @@ def main():
         "longhaul_gate_test ok 50m_72h 50rps lifetime_exact_p95_p99 cross_restart "
         "healthy_recovery_latency drain stateful_health space_version_debt "
         "rowset_recovery overflow_fail_closed reproducible_resource_fingerprint "
-        "daemon_process_resource_evidence daemon_rss_budget software_fingerprint",
+        "daemon_process_resource_evidence daemon_rss_budget source_sink_resource_evidence "
+        "scope_overlap_fail_closed software_fingerprint",
         flush=True,
     )
 
