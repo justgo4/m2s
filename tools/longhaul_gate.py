@@ -543,6 +543,20 @@ def evaluate_workload(
             value.get("supported",False))
         scope_stable=bool(
             value.get("scope_stable",False))
+        limits_stable=bool(
+            value.get("limits_stable",False))
+        cpu_quota=value.get(
+            "cpu_quota_cores")
+        if cpu_quota is not None:
+            cpu_quota=_number(
+                cpu_quota,
+                name+"_resources.cpu_quota_cores")
+        memory_limit=value.get(
+            "memory_limit_bytes")
+        if memory_limit is not None:
+            memory_limit=_integer(
+                memory_limit,
+                name+"_resources.memory_limit_bytes")
         mode=str(value.get("mode") or "")
         scope=str(
             value.get("scope_fingerprint")
@@ -569,6 +583,9 @@ def evaluate_workload(
             if not scope_stable:
                 failures.append(
                     name+"_resource_scope_unstable")
+            if not limits_stable:
+                failures.append(
+                    name+"_resource_limits_unstable")
             if (
                 mode not in {
                     "cgroup_v2","process_tree"}
@@ -583,6 +600,9 @@ def evaluate_workload(
         service_evidence[name]=dict(
             supported=supported,
             scope_stable=scope_stable,
+            limits_stable=limits_stable,
+            cpu_quota_cores=cpu_quota,
+            memory_limit_bytes=memory_limit,
             mode=mode,
             scope_fingerprint=scope or None,
             selection_source=str(
