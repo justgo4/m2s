@@ -158,7 +158,12 @@ def main():
                     "starrocks.events":dict(
                         max_rowset=17),
                     "starrocks.agg_000":dict(
-                        max_rowset=9),
+                        max_rowset=9,
+                        total=dict(
+                            merge_uncertain_replays=2,
+                            merge_uncertain_replay_visible=1,
+                            merge_uncertain_replay_aborted=1,
+                            merge_uncertain_replay_blocked=3)),
                 },
                 state=dict(
                     pending_bytes=0,
@@ -183,6 +188,8 @@ def main():
         assert debt["stateful_rows"]==1024
         assert debt["stateful_payload_bytes"]==4096
         assert debt["max_rowset"]==17
+        assert debt["merge_uncertain_recovery"]==dict(
+            replays=2,visible=1,aborted=1,blocked=3)
         copied=longhaul_workload.copy_evidence(
             directory,output)
         assert set(copied)=={
