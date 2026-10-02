@@ -5614,6 +5614,21 @@ def validate_hot_catalog_plan(cfg, runtime, publish_result):
     if version == runtime_active_version(runtime):
         return dict(status="active",version=version)
 
+    with runtime["plan_lock"]:
+        rebuild_plans=dict(
+            runtime.get("stateful_rebuild_plans",{}))
+    if rebuild_plans:
+        pending_versions={
+            int(candidate["version"])
+            for candidate in rebuild_plans.values()
+        }
+        if version not in pending_versions:
+            raise cdc_catalog.CatalogBusyError(
+                "stateful semantic rebuild is still active for sinks "
+                +",".join(sorted(rebuild_plans))
+                +"; wait for the current rebuild candidate to finish "
+                "before publishing another catalog version")
+
     plan=_catalog_plan_payload(cfg,publish_result)
     current_catalog=cdc_catalog.load_plan_version(
         cfg["catalog"],runtime_active_version(runtime))
