@@ -705,6 +705,229 @@ def multi_validation_contract():
     }
 
 
+def cohort_cutover_contract():
+    with tempfile.TemporaryDirectory(
+        prefix="m2s-rebuild-cohort-cutover-"
+    ) as directory:
+        path=str(Path(directory)/"state.sqlite3")
+        con=setup_db(path)
+        ra=stateful_rebuild.begin(
+            con,"aggregate","starrocks.a",
+            "old-a","new-a","a",
+            original_comment="original-a")
+        rb=stateful_rebuild.begin(
+            con,"inner_join","starrocks.b",
+            "old-b","new-b","b",
+            original_comment="original-b")
+        cohort=stateful_rebuild_cohort.begin(
+            con,9,["starrocks.a","starrocks.b"])
+
+        new_a=item(
+            "aggregate","starrocks.a",
+            "new-a",9,ra["shadow_target"],
+            shadow=True)
+        new_a["logical_mapping"]["sr_table"]="a"
+        new_a["task"]["target_table"]="a"
+        new_b=item(
+            "inner_join","starrocks.b",
+            "new-b",9,rb["shadow_target"],
+            shadow=True)
+        new_b["logical_mapping"]["sr_table"]="b"
+        new_b["task"]["target_table"]="b"
+        old_a=old_item(
+            "aggregate","starrocks.a",
+            "old-a",3,"a")
+        old_b=old_item(
+            "inner_join","starrocks.b",
+            "old-b",3,"b")
+
+        durable_by_id={
+            "old-a":dict(
+                task_id="old-a",
+                sink_key="starrocks.a",
+                plan_version=3,
+                status="active",
+                consumer_id="consumer-old-a"),
+            "new-a":dict(
+                task_id="new-a",
+                sink_key="starrocks.a",
+                plan_version=9,
+                status="active",
+                consumer_id="consumer-new-a"),
+            "old-b":dict(
+                task_id="old-b",
+                sink_key="starrocks.b",
+                plan_version=3,
+                status="active",
+                consumer_id="consumer-old-b"),
+            "new-b":dict(
+                task_id="new-b",
+                sink_key="starrocks.b",
+                plan_version=9,
+                status="active",
+                consumer_id="consumer-new-b"),
+        }
+        consumer_watermarks={
+            "consumer-old-a":100,
+            "consumer-new-a":90,
+            "consumer-old-b":100,
+            "consumer-new-b":95,
+        }
+
+        def durable_task(con,kind,task_id):
+            return dict(durable_by_id[task_id])
+
+        def consumer_info(con,consumer_id):
+            return dict(
+                consumer_id=consumer_id,
+                watermark=consumer_watermarks[
+                    consumer_id])
+
+        with patch.object(
+            j4,"stateful_durable_task",
+            side_effect=durable_task
+        ), patch.object(
+            j4.source_state,
+            "base_applied_seq",
+            return_value=100
+        ), patch.object(
+            j4.source_state,
+            "consumer_info",
+            side_effect=consumer_info
+        ):
+            first=j4.stateful_rebuild_freeze_if_ready(
+                con,new_a,dict(
+                    phase="ready",
+                    consumer=dict(watermark=90)))
+            assert first["phase"]=="building_shadow"
+            assert stateful_rebuild_cohort.info(
+                con,cohort["cohort_id"]
+            )["phase"]=="building"
+            assert stateful_rebuild.info(
+                con,"starrocks.a"
+            )["frontier"] is None
+            second=j4.stateful_rebuild_freeze_if_ready(
+                con,new_b,dict(
+                    phase="ready",
+                    consumer=dict(watermark=95)))
+            assert second["phase"]=="fencing"
+
+        ca=stateful_rebuild.info(
+            con,"starrocks.a")
+        cb=stateful_rebuild.info(
+            con,"starrocks.b")
+        assert ca["frontier"]==100
+        assert cb["frontier"]==100
+        assert stateful_rebuild_cohort.info(
+            con,cohort["cohort_id"]
+        )["frontier"]==100
+
+        consumer_watermarks.update({
+            "consumer-new-a":100,
+            "consumer-new-b":100,
+        })
+        candidate=dict(
+            version=9,
+            fingerprint="fingerprint-9",
+            stateful_candidate_tasks=[
+                new_a,new_b],
+            stateful_rebuilds=[
+                dict(
+                    sink="starrocks.a",
+                    old=old_a,new=new_a,
+                    shadow_target=ra["shadow_target"],
+                    logical_target="a"),
+                dict(
+                    sink="starrocks.b",
+                    old=old_b,new=new_b,
+                    shadow_target=rb["shadow_target"],
+                    logical_target="b"),
+            ],
+        )
+        runtime=dict(
+            plan_lock=threading.RLock(),
+            active_plan_version=3,
+            pending_plan="pending",
+            deferred_plan="deferred",
+            stateful_tasks=[
+                old_a,old_b,new_a,new_b],
+            stateful_active_task_ids={
+                "old-a","old-b","new-a","new-b"},
+            stateful_rebuild_plans={
+                "starrocks.a":candidate,
+                "starrocks.b":candidate,
+            },
+            stateful_mappings={
+                (3,"starrocks.a"):old_a["mapping"],
+                (3,"starrocks.b"):old_b["mapping"],
+                (9,"starrocks.a"):new_a["mapping"],
+                (9,"starrocks.b"):new_b["mapping"],
+            },
+        )
+        cfg=dict()
+
+        def retire(con,cfg,kind,task):
+            return dict(
+                task=dict(task,status="retired"))
+
+        with patch.object(
+            j4,"stateful_durable_task",
+            side_effect=durable_task
+        ), patch.object(
+            j4.source_state,
+            "consumer_info",
+            side_effect=consumer_info
+        ), patch.object(
+            j4,"stateful_output_frontier",
+            return_value=100
+        ), patch.object(
+            j4,"stateful_rebuild_writer_drained",
+            return_value=True
+        ), patch.object(
+            j4,"stateful_rebuild_swap_remote",
+            return_value=True
+        ), patch.object(
+            j4.stateful_catalog_runtime,
+            "retire_task",
+            side_effect=retire
+        ), patch.object(
+            j4.stateful_physical_registry,
+            "gc_retired",
+            return_value=[]
+        ), patch.object(
+            j4,"stateful_rebuild_cleanup_remote",
+            return_value=None
+        ):
+            assert j4.stateful_rebuild_try_cutover(
+                con,cfg,runtime,new_a)
+            assert runtime["active_plan_version"]==3
+            assert j4.meta_get(
+                con,"active_plan_version") is None
+            assert stateful_rebuild.info(
+                con,"starrocks.a"
+            )["phase"]=="complete"
+            assert stateful_rebuild.info(
+                con,"starrocks.b"
+            )["phase"]=="ready_to_swap"
+            assert stateful_rebuild_cohort.info(
+                con,cohort["cohort_id"]
+            )["phase"]=="swapping"
+
+            assert j4.stateful_rebuild_try_cutover(
+                con,cfg,runtime,new_b)
+            assert runtime["active_plan_version"]==9
+            assert j4.meta_get(
+                con,"active_plan_version")==9
+            assert stateful_rebuild.info(
+                con,"starrocks.b"
+            )["phase"]=="complete"
+            assert stateful_rebuild_cohort.info(
+                con,cohort["cohort_id"]
+            )["phase"]=="complete"
+
+        con.close()
+
+
 def main():
     mixed_restart_contract()
     final_restart_promotes_plan()
@@ -712,10 +935,12 @@ def main():
     activation_contract()
     publish_busy_contract()
     multi_validation_contract()
+    cohort_cutover_contract()
     print(
         "stateful_rebuild_multi_test ok "
         "mixed_restart final_plan_promotion partial_runtime_switch "
-        "multi_activation publish_busy multi_validation",
+        "multi_activation publish_busy multi_validation "
+        "cohort_common_frontier cohort_cutover",
         flush=True,
     )
 
