@@ -24,6 +24,7 @@ on:
       - 'tools/longhaul_workload.py'
       - 'tools/longhaul_gate.py'
       - 'tools/process_resource_probe.py'
+      - 'tools/service_resource_probe.py'
       - 'tools/starrocks_contract.py'
       - '.github/workflows/e2e.yml'
   pull_request:
@@ -48,6 +49,7 @@ on:
       - 'tools/longhaul_workload.py'
       - 'tools/longhaul_gate.py'
       - 'tools/process_resource_probe.py'
+      - 'tools/service_resource_probe.py'
       - '.github/workflows/e2e.yml'
   workflow_dispatch:
 
@@ -131,10 +133,17 @@ jobs:
       - name: Live P11 fault and sustained-source smoke
         if: matrix.protocol == 'merge_async' && matrix.gtid == 'ON' && matrix.shared == 'ON'
         run: |
+          MYSQL_RESOURCE_PID="$(docker inspect --format '{{.State.Pid}}' m2s-e2e-mysql)"
+          STARROCKS_RESOURCE_PID="$(docker inspect --format '{{.State.Pid}}' m2s-e2e-starrocks)"
+          test "$MYSQL_RESOURCE_PID" -gt 0
+          test "$STARROCKS_RESOURCE_PID" -gt 0
           python tools/longhaul_workload.py --isolated --load-mode merge_async \
             --rows 5000 --rows-per-second 50 --duration-seconds 60 \
             --dynamic-tasks 2 --fault-every-seconds 20 --sample-seconds 0.5 \
             --snapshot-rows 512 --memory-mb 2048 \
+            --mysql-resource-pid "$MYSQL_RESOURCE_PID" \
+            --starrocks-fe-resource-pid "$STARROCKS_RESOURCE_PID" \
+            --starrocks-be-resource-pid "$STARROCKS_RESOURCE_PID" \
             --output benchmark-results/longhaul-smoke.json
           python tools/longhaul_gate.py benchmark-results/longhaul-smoke.json \
             --min-elapsed-seconds 55 --min-snapshot-rows 5000 \
