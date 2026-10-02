@@ -383,6 +383,8 @@ def plan_graph(con,compiled,cfg=None):
         for item in refreshed
         if item["task"]["status"] in {"candidate","active"}
     }
+    limits=_limits(cfg)
+    planned_counts={}
     now=time.time()
     planned=[]
     for follower_item in refreshed:
@@ -412,10 +414,32 @@ def plan_graph(con,compiled,cfg=None):
                 kind,leader,follower)
             if reuse is None:
                 continue
+            surplus=_surplus(reuse)
+            if mode=="adaptive":
+                existing_followers=_follower_count(
+                    con,kind,leader["task_id"])
+                projected_followers=(
+                    existing_followers
+                    +int(planned_counts.get(
+                        leader["task_id"],0)))
+                if projected_followers>=limits["max_followers"]:
+                    continue
+                if (
+                    reuse["mode"]!="exact"
+                    and surplus>limits["max_surplus"]
+                ):
+                    continue
+                if (
+                    leader["status"]=="active"
+                    and _observed_visible_lag(
+                        con,kind,leader["task_id"])
+                    >limits["max_observed_visible_lag"]
+                ):
+                    continue
             score=(
                 leader_rank,
                 0 if reuse["mode"]=="exact" else 1,
-                _surplus(reuse),
+                surplus,
                 str(leader["task_id"]),
             )
             choices.append(
@@ -428,6 +452,8 @@ def plan_graph(con,compiled,cfg=None):
             "graph_active_owner"
             if leader["status"]=="active"
             else "graph_candidate_owner")
+        planned_counts[leader["task_id"]]=(
+            int(planned_counts.get(leader["task_id"],0))+1)
         con.execute("""
             INSERT INTO stateful_share_preferences(
                 task_id,kind,preferred_leader_task_id,
