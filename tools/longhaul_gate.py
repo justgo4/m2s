@@ -287,15 +287,38 @@ def evaluate_workload(
     configured_rate=_number(
         report.get("rows_per_second"),
         "rows_per_second")
+    source_schedule_raw=report.get(
+        "source_schedule_seconds")
+    source_schedule=(
+        elapsed
+        if source_schedule_raw is None
+        else _number(
+            source_schedule_raw,
+            "source_schedule_seconds")
+    )
+    if source_schedule<=0:
+        failures.append(
+            "source_schedule_seconds")
+        source_schedule=elapsed
+    if (
+        elapsed>0
+        and source_schedule>elapsed+1.0
+    ):
+        failures.append(
+            "source_schedule_exceeds_elapsed")
+    # Source generation ends at the requested workload deadline. Recovery and
+    # final drain may legitimately extend wall-clock duration; counting that
+    # post-source time in the throughput or sampling denominator fabricates a
+    # rate regression even when every scheduled source tick was generated.
     observed_rate=(
-        float(live_rows)/elapsed
-        if elapsed>0 else 0.0)
+        float(live_rows)/source_schedule
+        if source_schedule>0 else 0.0)
     samples=_integer(
         report.get("latency_samples"),
         "latency_samples")
     sample_rate=(
-        float(samples)/elapsed
-        if elapsed>0 else 0.0)
+        float(samples)/source_schedule
+        if source_schedule>0 else 0.0)
     p95=_number(
         report.get("latency_p95_seconds"),
         "latency_p95_seconds")
@@ -330,6 +353,7 @@ def evaluate_workload(
 
     evidence.update(
         elapsed_seconds=elapsed,
+        source_schedule_seconds=source_schedule,
         initial_rows=initial_rows,
         live_rows=live_rows,
         configured_rows_per_second=configured_rate,
