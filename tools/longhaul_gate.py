@@ -247,6 +247,7 @@ def evaluate_workload(
         min_faults=1,
         require_drained=True,
         require_sharing=True,
+        require_service_resources=True,
 ):
     failures=[]
     evidence=dict()
@@ -521,6 +522,152 @@ def evaluate_workload(
             read_bytes=daemon_read,
             write_bytes=daemon_write,
         )
+    service_resources=report.get("service_resources")
+    service_evidence={}
+    service_scopes={}
+    expected_services=(
+        "mysql","starrocks_fe","starrocks_be")
+    if not isinstance(service_resources,dict):
+        if require_service_resources:
+            failures.append(
+                "service_resource_evidence_missing")
+        service_resources={}
+    for name in expected_services:
+        value=service_resources.get(name)
+        if not isinstance(value,dict):
+            if require_service_resources:
+                failures.append(
+                    name+"_resource_evidence_missing")
+            continue
+        supported=bool(
+            value.get("supported",False))
+        scope_stable=bool(
+            value.get("scope_stable",False))
+        mode=str(value.get("mode") or "")
+        scope=str(
+            value.get("scope_fingerprint")
+            or "").strip()
+        samples_count=_integer(
+            value.get("samples",0),
+            name+"_resources.samples")
+        peak_memory=_integer(
+            value.get("peak_memory_bytes",0),
+            name+"_resources.peak_memory_bytes")
+        cpu_seconds=_number(
+            value.get("cpu_seconds",0),
+            name+"_resources.cpu_seconds")
+        read_bytes=_integer(
+            value.get("read_bytes",0),
+            name+"_resources.read_bytes")
+        write_bytes=_integer(
+            value.get("write_bytes",0),
+            name+"_resources.write_bytes")
+        if require_service_resources:
+            if not supported:
+                failures.append(
+                    name+"_resource_probe_unsupported")
+            if not scope_stable:
+                failures.append(
+                    name+"_resource_scope_unstable")
+            if (
+                mode not in {
+                    "cgroup_v2","process_tree"}
+                or not scope
+                or samples_count<=0
+                or peak_memory<=0
+            ):
+                failures.append(
+                    name+"_resource_evidence_incomplete")
+        if scope:
+            service_scopes[name]=scope
+        service_evidence[name]=dict(
+            supported=supported,
+            scope_stable=scope_stable,
+            mode=mode,
+            scope_fingerprint=scope or None,
+            selection_source=str(
+                value.get("selection_source") or ""),
+            selection_reason=str(
+                value.get("selection_reason") or ""),
+            samples=samples_count,
+            peak_memory_bytes=peak_memory,
+            cpu_seconds=cpu_seconds,
+            cpu_core_equivalent=(
+                cpu_seconds/elapsed
+                if elapsed>0 else None),
+            read_bytes=read_bytes,
+            write_bytes=write_bytes,
+        )
+
+    mysql_scope=service_scopes.get("mysql")
+    sink_scopes={
+        service_scopes.get(name)
+        for name in (
+            "starrocks_fe","starrocks_be")
+        if service_scopes.get(name)
+    }
+    if (
+        require_service_resources
+        and mysql_scope
+        and mysql_scope in sink_scopes
+    ):
+        failures.append(
+            "service_resource_scope_overlap")
+
+    unique_service_values={}
+    for name,value in service_evidence.items():
+        scope=value.get("scope_fingerprint")
+        if scope and scope not in unique_service_values:
+            unique_service_values[scope]=value
+    service_cpu=sum(
+        float(value.get("cpu_seconds",0))
+        for value in unique_service_values.values())
+    service_read=sum(
+        int(value.get("read_bytes",0))
+        for value in unique_service_values.values())
+    service_write=sum(
+        int(value.get("write_bytes",0))
+        for value in unique_service_values.values())
+    service_peak_memory=sum(
+        int(value.get("peak_memory_bytes",0))
+        for value in unique_service_values.values())
+    daemon_evidence=evidence.get(
+        "daemon_resources",{})
+    pipeline_cpu=(
+        float(daemon_evidence.get(
+            "cpu_seconds",0))
+        +service_cpu)
+    pipeline_read=(
+        int(daemon_evidence.get(
+            "read_bytes",0))
+        +service_read)
+    pipeline_write=(
+        int(daemon_evidence.get(
+            "write_bytes",0))
+        +service_write)
+    pipeline_peak_memory_upper=(
+        int(daemon_evidence.get(
+            "peak_rss_bytes",0))
+        +service_peak_memory)
+    evidence["service_resources"]=service_evidence
+    evidence["pipeline_resources"]=dict(
+        unique_service_scopes=len(
+            unique_service_values),
+        service_cpu_seconds=service_cpu,
+        service_read_bytes=service_read,
+        service_write_bytes=service_write,
+        service_peak_memory_upper_bound_bytes=
+            service_peak_memory,
+        total_cpu_seconds=pipeline_cpu,
+        total_cpu_core_equivalent=(
+            pipeline_cpu/elapsed
+            if elapsed>0 else None),
+        total_read_bytes=pipeline_read,
+        total_write_bytes=pipeline_write,
+        total_peak_memory_upper_bound_bytes=
+            pipeline_peak_memory_upper,
+    )
+
     if elapsed<float(min_elapsed_seconds):
         failures.append("elapsed_seconds")
     if initial_rows<int(min_initial_rows):
@@ -771,6 +918,8 @@ def evaluate_workload(
             min_faults=int(min_faults),
             require_drained=bool(require_drained),
             require_sharing=bool(require_sharing),
+            require_service_resources=bool(
+                require_service_resources),
         ),
     )
 
