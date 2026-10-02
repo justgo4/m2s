@@ -61,6 +61,7 @@ jobs:
           python tools/aggregate_log_consumer_test.py
           python tools/aggregate_runtime_test.py
           python tools/aggregate_shared_runtime_test.py
+          python tools/aggregate_subview_shared_runtime_test.py
           python tools/aggregate_state_test.py
           python tools/aggregate_target_mapping_test.py
           python tools/aggregate_state_oracle.py
