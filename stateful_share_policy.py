@@ -167,15 +167,18 @@ def _state_stats(con,kind,state_id):
     )
 
 
-def candidate_metrics(con,kind,candidate):
+def candidate_metrics(con,kind,candidate,measure_state=False):
     leader,state,consumer,physical,reuse=candidate
     applied=int(source_state.base_applied_seq(con))
     watermark=int(consumer["watermark"])
     surplus=int(
         reuse.get("surplus_aggregates",
         reuse.get("surplus_projections",0)))
-    state_stats=_state_stats(
-        con,kind,leader["state_id"])
+    state_stats=(
+        _state_stats(con,kind,leader["state_id"])
+        if measure_state
+        else dict(rows=0,payload_bytes=0)
+    )
     return dict(
         leader_task_id=str(leader["task_id"]),
         state_id=str(leader["state_id"]),
@@ -595,8 +598,21 @@ def choose(con,kind,task,candidates,cfg=None):
             "no_compatible_leader",dict(candidate_count=0))
         return None
 
+    limits=_limits(cfg)
+    measure_state=(
+        mode=="adaptive"
+        and (
+            limits["max_state_rows"]>0
+            or limits["max_state_bytes"]>0
+        )
+    )
     measured=[
-        (candidate,candidate_metrics(con,kind,candidate))
+        (
+            candidate,
+            candidate_metrics(
+                con,kind,candidate,
+                measure_state=measure_state),
+        )
         for candidate in candidates
     ]
     if mode=="compatible":
@@ -608,7 +624,6 @@ def choose(con,kind,task,candidates,cfg=None):
             reuse_mode=metrics["reuse_mode"])
         return chosen
 
-    limits=_limits(cfg)
     admitted=[]
     rejected=[]
     for candidate,metrics in measured:
