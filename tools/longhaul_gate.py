@@ -1114,30 +1114,110 @@ def evaluate_workload(
         report.get("event_checks") or {})
     event_tables=dict(
         event_checks.get("tables") or {})
-    event_matches={
-        str(table):bool(
-            (value or {}).get("match",False))
-        for table,value in event_tables.items()
-    }
+    event_expected_rows=int(
+        event_checks.get("expected_rows",0) or 0)
+    event_expected_digest=str(
+        event_checks.get("expected_digest") or "")
+    event_comparison=str(
+        event_checks.get("comparison") or "")
+    event_partitions=int(
+        event_checks.get("partitions",0) or 0)
+    event_source_total=int(
+        event_checks.get("source_total_rows",0) or 0)
+    event_source_uncovered=int(
+        event_checks.get("source_uncovered_rows",0) or 0)
+    event_table_evidence={}
+    event_matches={}
+    for table,value in event_tables.items():
+        value=dict(value or {})
+        rows=int(value.get("rows",0) or 0)
+        total_rows=int(
+            value.get("total_rows",rows) or 0)
+        uncovered_rows=int(
+            value.get("uncovered_rows",0) or 0)
+        digest=str(value.get("digest") or "")
+        mismatches=list(
+            value.get("mismatches") or ())
+        match=bool(value.get("match",False))
+        event_matches[str(table)]=match
+        event_table_evidence[str(table)]=dict(
+            rows=rows,
+            total_rows=total_rows,
+            uncovered_rows=uncovered_rows,
+            digest=digest,
+            mismatches=len(mismatches),
+            match=match,
+        )
+
+    event_contract_ok=True
+    if require_profile is not None:
+        expected_event_targets={"events"}
+        if event_comparison!="partitioned_full_rows_v2":
+            failures.append(
+                "event_exactness_schema")
+            event_contract_ok=False
+        if event_partitions!=1024:
+            failures.append(
+                "event_exactness_partition_coverage")
+            event_contract_ok=False
+        if (
+            event_expected_rows<=0
+            or event_source_total!=event_expected_rows
+            or event_source_uncovered!=0
+            or not event_expected_digest
+        ):
+            failures.append(
+                "event_exactness_source_coverage")
+            event_contract_ok=False
+        if (
+            isinstance(source_totals,(list,tuple))
+            and source_totals
+            and int(source_totals[0])!=event_expected_rows
+        ):
+            failures.append(
+                "event_exactness_source_count_mismatch")
+            event_contract_ok=False
+        if set(event_tables)!=expected_event_targets:
+            failures.append(
+                "event_targets_missing")
+            event_contract_ok=False
+        for table,value in event_table_evidence.items():
+            if (
+                value["rows"]!=event_expected_rows
+                or value["total_rows"]!=value["rows"]
+                or value["uncovered_rows"]!=0
+                or value["digest"]!=event_expected_digest
+                or value["mismatches"]!=0
+                or not value["match"]
+            ):
+                failures.append(
+                    "event_exactness_contract")
+                event_contract_ok=False
+
     event_exact=(
-        bool(event_checks.get("all_match",False))
+        event_contract_ok
+        and bool(event_checks.get("all_match",False))
         and bool(event_matches)
         and all(event_matches.values())
     )
     evidence["source_target_exact"]=event_exact
     evidence["event_exactness"]=dict(
-        comparison=str(
-            event_checks.get("comparison") or ""),
-        expected_rows=int(
-            event_checks.get("expected_rows",0) or 0),
+        comparison=event_comparison,
+        partitions=event_partitions,
+        expected_rows=event_expected_rows,
+        source_total_rows=event_source_total,
+        source_uncovered_rows=event_source_uncovered,
+        expected_digest=event_expected_digest,
         checked_targets=len(event_matches),
         all_match=event_exact,
-        matches=event_matches,
+        tables=event_table_evidence,
     )
     if not event_checks:
-        failures.append("source_target_exactness_missing")
+        failures.append(
+            "source_target_exactness_missing")
     elif not event_exact:
-        failures.append("source_target_mismatch")
+        failures.append(
+            "source_target_mismatch")
 
     aggregate_checks=dict(
         report.get("aggregate_checks") or {})
@@ -1152,6 +1232,11 @@ def evaluate_workload(
         dynamic_tasks+1
         if mix_raw is None
         else dynamic_aggregate_tasks+1)
+    expected_aggregate_names={"agg_000"}|{
+        sink.split(".",1)[1]
+        for sink in ready_values
+        if sink.startswith("starrocks.agg_")
+    }
     evidence["aggregate_exactness"]=dict(
         expected_targets=expected_aggregate_targets,
         checked_targets=len(aggregate_matches),
@@ -1162,7 +1247,13 @@ def evaluate_workload(
         ),
         matches=aggregate_matches,
     )
-    if len(aggregate_matches)!=expected_aggregate_targets:
+    if (
+        len(aggregate_matches)!=expected_aggregate_targets
+        or (
+            require_profile is not None
+            and set(aggregate_tables)!=expected_aggregate_names
+        )
+    ):
         failures.append("aggregate_targets_missing")
     if (
         not aggregate_checks.get("all_match",False)
@@ -1175,41 +1266,126 @@ def evaluate_workload(
         report.get("join_checks") or {})
     join_tables=dict(
         join_checks.get("tables") or {})
-    join_matches={
-        str(table):bool(
-            (value or {}).get("match",False))
-        for table,value in join_tables.items()
-    }
+    join_expected_rows=int(
+        join_checks.get("expected_rows",0) or 0)
+    join_expected_digest=str(
+        join_checks.get("expected_digest") or "")
+    join_comparison=str(
+        join_checks.get("comparison") or "")
+    join_partitions=int(
+        join_checks.get("partitions",0) or 0)
+    join_source_total=int(
+        join_checks.get("source_total_rows",0) or 0)
+    join_source_uncovered=int(
+        join_checks.get("source_uncovered_rows",0) or 0)
+    join_table_evidence={}
+    join_matches={}
+    for table,value in join_tables.items():
+        value=dict(value or {})
+        rows=int(value.get("rows",0) or 0)
+        total_rows=int(
+            value.get("total_rows",rows) or 0)
+        uncovered_rows=int(
+            value.get("uncovered_rows",0) or 0)
+        digest=str(value.get("digest") or "")
+        mismatches=list(
+            value.get("mismatches") or ())
+        match=bool(value.get("match",False))
+        join_matches[str(table)]=match
+        join_table_evidence[str(table)]=dict(
+            rows=rows,
+            total_rows=total_rows,
+            uncovered_rows=uncovered_rows,
+            digest=digest,
+            mismatches=len(mismatches),
+            match=match,
+        )
     expected_join_targets=(
         0
         if mix_raw is None
         else dynamic_join_tasks+1)
+    expected_join_names=(
+        set()
+        if expected_join_targets==0
+        else {"join_000"}|{
+            sink.split(".",1)[1]
+            for sink in ready_values
+            if sink.startswith("starrocks.join_")
+        }
+    )
+    join_contract_ok=True
+    if (
+        require_profile is not None
+        and expected_join_targets
+    ):
+        if join_comparison!="partitioned_full_rows_v2":
+            failures.append(
+                "join_exactness_schema")
+            join_contract_ok=False
+        if join_partitions!=1024:
+            failures.append(
+                "join_exactness_partition_coverage")
+            join_contract_ok=False
+        if (
+            join_expected_rows<=0
+            or join_source_total!=join_expected_rows
+            or join_source_uncovered!=0
+            or not join_expected_digest
+        ):
+            failures.append(
+                "join_exactness_source_coverage")
+            join_contract_ok=False
+        if (
+            event_expected_rows>0
+            and join_expected_rows!=event_expected_rows
+        ):
+            failures.append(
+                "join_exactness_source_count_mismatch")
+            join_contract_ok=False
+        if set(join_tables)!=expected_join_names:
+            failures.append(
+                "join_targets_missing")
+            join_contract_ok=False
+        for table,value in join_table_evidence.items():
+            if (
+                value["rows"]!=join_expected_rows
+                or value["total_rows"]!=value["rows"]
+                or value["uncovered_rows"]!=0
+                or value["digest"]!=join_expected_digest
+                or value["mismatches"]!=0
+                or not value["match"]
+            ):
+                failures.append(
+                    "join_exactness_contract")
+                join_contract_ok=False
+
+    join_exact=(
+        expected_join_targets==0
+        or (
+            join_contract_ok
+            and bool(join_checks.get("all_match",False))
+            and bool(join_matches)
+            and all(join_matches.values())
+        )
+    )
     evidence["join_exactness"]=dict(
         expected_targets=expected_join_targets,
         checked_targets=len(join_matches),
-        all_match=(
-            expected_join_targets==0
-            or (
-                bool(join_checks.get("all_match",False))
-                and bool(join_matches)
-                and all(join_matches.values())
-            )
-        ),
-        matches=join_matches,
+        comparison=join_comparison,
+        partitions=join_partitions,
+        expected_rows=join_expected_rows,
+        source_total_rows=join_source_total,
+        source_uncovered_rows=join_source_uncovered,
+        expected_digest=join_expected_digest,
+        all_match=join_exact,
+        tables=join_table_evidence,
     )
     if (
         expected_join_targets
         and len(join_matches)!=expected_join_targets
     ):
         failures.append("join_targets_missing")
-    if (
-        expected_join_targets
-        and (
-            not join_checks.get("all_match",False)
-            or not join_matches
-            or not all(join_matches.values())
-        )
-    ):
+    if expected_join_targets and not join_exact:
         failures.append("join_target_mismatch")
 
     debt=dict(report.get("debt") or {})
