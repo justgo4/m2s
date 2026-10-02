@@ -9821,6 +9821,82 @@ def stateful_rebuild_try_cutover(
     return True
 
 
+def stateful_rebuild_guarded_step(
+        con,cfg,runtime,item,runner,mapping,
+        bootstrap_limit
+):
+    task=item["task"]
+    rebuild=stateful_rebuild.for_task(
+        con,task["task_id"])
+    if rebuild is None:
+        return runner.step(
+            con,task["task_id"],cfg,
+            mapping=mapping,
+            bootstrap_limit=bootstrap_limit)
+    lock=runtime.setdefault(
+        "stateful_rebuild_locks",{}).setdefault(
+            rebuild["sink_key"],threading.Lock())
+    with lock:
+        rebuild,frontier=stateful_rebuild_frontier_for_task(
+            con,task["task_id"])
+        if frontier is not None:
+            consumer=source_state.consumer_info(
+                con,task["consumer_id"])
+            watermark=int(consumer["watermark"])
+            if watermark>frontier:
+                raise RuntimeError(
+                    "stateful rebuild worker crossed frozen frontier "
+                    "task=%s consumer=%d frontier=%d"
+                    % (
+                        task["task_id"],watermark,
+                        frontier))
+            if watermark==frontier:
+                cutover=False
+                if task["task_id"]==rebuild[
+                    "new_task_id"
+                ]:
+                    cutover=stateful_rebuild_try_cutover(
+                        con,cfg,runtime,item)
+                return dict(
+                    rebuild_paused=True,
+                    rebuild_cutover=bool(cutover),
+                    rebuild_frontier=frontier)
+
+        result=runner.step(
+            con,task["task_id"],cfg,
+            mapping=mapping,
+            bootstrap_limit=bootstrap_limit)
+        rebuild=stateful_rebuild_freeze_if_ready(
+            con,item,result)
+        if (
+            rebuild is not None
+            and rebuild["frontier"] is not None
+            and rebuild["phase"] in {
+                "fencing","ready_to_swap"
+            }
+        ):
+            consumer=result.get("consumer")
+            if consumer is not None:
+                frontier=int(rebuild["frontier"])
+                watermark=int(consumer["watermark"])
+                if watermark>frontier:
+                    raise RuntimeError(
+                        "stateful rebuild runner crossed frozen frontier "
+                        "task=%s consumer=%d frontier=%d"
+                        % (
+                            task["task_id"],watermark,
+                            frontier))
+                if (
+                    watermark==frontier
+                    and task["task_id"]==rebuild[
+                        "new_task_id"]
+                ):
+                    result["rebuild_cutover"]=bool(
+                        stateful_rebuild_try_cutover(
+                            con,cfg,runtime,item))
+        return result
+
+
 def stateful_task_worker(item, cfg, runtime):
     con=open_state(cfg["state"])
     stop=runtime["stop"]
@@ -9881,9 +9957,8 @@ def stateful_task_worker(item, cfg, runtime):
                     continue
 
             try:
-                result=runner.step(
-                    con,task["task_id"],cfg,
-                    mapping=mapping,
+                result=stateful_rebuild_guarded_step(
+                    con,cfg,runtime,item,runner,mapping,
                     bootstrap_limit=max(
                         1,min(int(cfg.get("snapshot_rows",1000)),4096)))
             except (RuntimeError,KeyError):
@@ -9896,6 +9971,9 @@ def stateful_task_worker(item, cfg, runtime):
                 if removed:
                     break
                 raise
+            if result.get("rebuild_paused"):
+                stop.wait(0.05)
+                continue
             if result.get("waiting_shared_leader"):
                 stop.wait(0.05)
                 continue
