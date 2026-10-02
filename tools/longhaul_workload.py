@@ -833,6 +833,9 @@ def run(args):
                         recovered["latencies"])
                     faults.append(dict(
                         sequence=before,
+                        sequence_after=int(sequence),
+                        source_rows_during_fault=int(
+                            sequence-before),
                         restart_seconds=restart_seconds,
                         catchup_seconds=recovered["seconds"],
                         source_frontier=dict(
