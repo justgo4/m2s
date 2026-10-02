@@ -11380,9 +11380,9 @@ def durable_status_snapshot(state_path):
                 dict(
                     task_id=str(row[0]),kind=str(row[1]),
                     sink_key=str(row[2]),frontier=int(row[3]),
-                    phase=str(row[4]))
+                    phase="draining")
                 for row in con.execute("""
-                    SELECT task_id,kind,sink_key,frontier,phase
+                    SELECT task_id,kind,sink_key,frontier
                     FROM stateful_retirements
                     ORDER BY created,task_id
                 """).fetchall()
