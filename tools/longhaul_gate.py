@@ -289,17 +289,41 @@ def evaluate_workload(
         failures.append("dynamic_tasks_not_ready")
 
     faults=list(report.get("faults") or ())
-    recovery=[]
+    restart_seconds=[]
+    catchup_seconds=[]
+    frontiers=[]
     for index,item in enumerate(faults):
         item=dict(item or {})
-        recovery.append(_number(
+        restart_seconds.append(_number(
             item.get("restart_seconds"),
             "fault_%d.restart_seconds" % index))
+        catchup_seconds.append(_number(
+            item.get("catchup_seconds"),
+            "fault_%d.catchup_seconds" % index))
+        frontier=dict(
+            item.get("source_frontier") or {})
+        durable=_integer(
+            frontier.get("log_durable_seq",0),
+            "fault_%d.log_durable_seq" % index)
+        applied=_integer(
+            frontier.get("base_applied_seq",0),
+            "fault_%d.base_applied_seq" % index)
+        frontiers.append(dict(
+            log_durable_seq=durable,
+            base_applied_seq=applied))
+        if durable!=applied:
+            failures.append("fault_source_not_caught_up")
     evidence["faults"]=dict(
         count=len(faults),
-        restart_seconds=recovery,
+        restart_seconds=restart_seconds,
+        catchup_seconds=catchup_seconds,
+        source_frontiers=frontiers,
         max_restart_seconds=(
-            max(recovery) if recovery else None),
+            max(restart_seconds)
+            if restart_seconds else None),
+        max_catchup_seconds=(
+            max(catchup_seconds)
+            if catchup_seconds else None),
     )
     if len(faults)<int(min_faults):
         failures.append("fault_injection")
