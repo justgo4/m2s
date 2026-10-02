@@ -196,6 +196,24 @@ def begin(
     if current is not None:
         return validate(current)
 
+    owners=con.execute("""
+        SELECT sink_key,old_task_id,new_task_id,phase
+        FROM stateful_rebuilds
+        WHERE sink_key<>?
+          AND phase NOT IN ('complete','failed')
+          AND (old_task_id=? OR new_task_id=? OR old_task_id=?)
+        ORDER BY created,sink_key
+    """,(
+        sink_key,old_task_id,old_task_id,new_task_id
+    )).fetchall()
+    if owners:
+        owner=owners[0]
+        raise RuntimeError(
+            "stateful rebuild task already has an active owner "
+            "owner=%s old_task_id=%s new_task_id=%s phase=%s" % (
+                str(owner[0]),str(owner[1]),
+                str(owner[2]),str(owner[3])))
+
     # Multiple catalog/control paths can discover the same replacement at the
     # same time.  INSERT OR IGNORE makes an identical concurrent begin
     # idempotent instead of leaking sqlite UNIQUE errors.  We always re-read
@@ -248,13 +266,25 @@ def freeze_frontier(con,sink_key,frontier):
     if current["phase"]!="building_shadow":
         raise RuntimeError(
             "stateful rebuild frontier can only be frozen from building")
-    con.execute("""
+    changed=con.execute("""
         UPDATE stateful_rebuilds
         SET frontier=?,phase='fencing',updated=?
         WHERE sink_key=? AND frontier IS NULL
           AND phase='building_shadow'
-    """,(frontier,time.time(),current["sink_key"]))
-    return info(con,sink_key)
+    """,(frontier,time.time(),current["sink_key"])).rowcount
+    durable=info(con,sink_key)
+    if (
+        durable["frontier"]==frontier
+        and durable["phase"]=="fencing"
+    ):
+        return durable
+    if not changed:
+        raise RuntimeError(
+            "stateful rebuild changed concurrently while freezing frontier "
+            "phase=%s frontier=%r" % (
+                durable["phase"],durable["frontier"]))
+    raise RuntimeError(
+        "stateful rebuild frontier freeze was not durable")
 
 
 def _advance(con,sink_key,expected,new_phase):
@@ -348,16 +378,20 @@ def for_task(con,task_id):
         WHERE type='table' AND name='stateful_rebuilds'
     """).fetchone():
         return None
-    row=con.execute("""
+    rows=con.execute("""
         SELECT sink_key FROM stateful_rebuilds
         WHERE (old_task_id=? OR new_task_id=?)
           AND phase NOT IN ('complete','failed')
-        ORDER BY created DESC
-        LIMIT 1
-    """,(task_id,task_id)).fetchone()
-    if row is None:
+        ORDER BY created DESC,sink_key
+        LIMIT 2
+    """,(task_id,task_id)).fetchall()
+    if not rows:
         return None
-    return info(con,row[0])
+    if len(rows)>1:
+        raise RuntimeError(
+            "stateful rebuild task has multiple active owners: "
+            +task_id)
+    return info(con,rows[0][0])
 
 
 def active(con):
