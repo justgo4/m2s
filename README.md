@@ -33,10 +33,10 @@
 |---|---|---|
 | daemon + MySQL 8.4.6 → StarRocks 4.1.1；GTID ON/OFF、两输出协议、动态第二下游、断线/强退恢复、逐字段 oracle | [E2E](https://github.com/justgo4/m2s/actions/runs/36787425832)、[样本](reports/e2e-20261001.json)、[回填强退](https://github.com/justgo4/m2s/actions/runs/36787945824) | 短测，非 50M/72h |
 | Python/C 解码差分、真实 MySQL、多类型、durable cursor、sanitizer | [integration](https://github.com/justgo4/m2s/actions/runs/36795348569)、[baseline](https://github.com/justgo4/m2s/actions/runs/36795348655) | 正确性/恢复，不是性能结论 |
-| merge 已接受但响应丢失；未知请求持久化并隔离目标，独立目标继续 | [网络故障 CI](https://github.com/justgo4/m2s/actions/runs/36795348744)、[报告](reports/merge-quarantine-20261001.json) | 尚无自动远端对账/解隔离 |
+| merge 已接受但响应丢失；未知请求先持久化并隔离目标，独立目标继续；在 durable payload SHA、FIFO lane ownership 与闭合目标列同时证明幂等时，可做有界 exact-payload replay 并自动解隔离 | [网络故障合同](tools/merge_quarantine_network_test.py)、[恢复单测](tools/merge_uncertain_reconcile_test.py)、[历史隔离报告](reports/merge-quarantine-20261001.json) | Merge Commit 的远端 label 由 StarRocks 生成，本地 request id 不是远端幂等键；无法证明安全或重试预算耗尽时继续隔离，不做盲目重放 |
 | SQLite / DuckDB / RocksDB 状态候选；fixed-W 与 crash recovery 原型 | [layout](reports/state-layout-20261001.json)、[RocksDB](reports/state-rocks-20261001.json) | 小规模、未在线 pin/GC、未接 daemon |
 
-2PC 与 merge_commit async 是已独立验收的两条输出协议。默认 `merge_async`，可选 `transaction`；不能因同时设置 header 就声称双机制已叠加。已知事务 ID 的恢复与“是否被接收也未知”的请求必须分开处理，后者不得盲目重放。
+2PC 与 merge_commit async 是已独立验收的两条输出协议。默认 `merge_async`，可选 `transaction`；不能因同时设置 header 就声称双机制已叠加。已知事务 ID 的恢复与“是否被接收也未知”的请求必须分开处理。Merge Commit 不把本地 request id 当作远端 label：未知结果先 durable quarantine；默认只在 immutable payload SHA 未变、原 delivery 仍阻塞其全部 FIFO lane、目标表除 payload 控制列外没有额外列时，做持久计数、指数退避且有次数上限的 exact-payload replay。任一证明失败、预算耗尽或显式 `CDC_MERGE_UNCERTAIN_RECOVERY=off` 时继续隔离，不盲目确认成功。
 
 ## 3. 必须先成立的运行协议
 
@@ -68,7 +68,7 @@
 
 generation 更替须证明旧的在途请求不能覆盖新结果。停止本地线程不是远端 fence；可选择隔离的物理目标代际，或经实测成立的远端 fencing/drain 协议。发布前必须达到相应完整性和 VISIBLE 条件。目录/路由切换与 StarRocks 换表能力分别验收，不预设可原子交换表名。
 
-输出主键必须稳定、确定；UPDATE 按旧值撤回再加入新值处理，过滤条件改变和 DELETE 必须撤回旧结果。失败目标保留 outbox 和必要状态、有限重试后进入 degraded；其他独立目标继续。未知请求的自动对账、解除隔离和代际修复仍需实现，不能为了进度直接确认成功或重放。
+输出主键必须稳定、确定；UPDATE 按旧值撤回再加入新值处理，过滤条件改变和 DELETE 必须撤回旧结果。失败目标保留 outbox 和必要状态、有限重试后进入 degraded；其他独立目标继续。未知 Merge Commit 请求当前已有 correctness-first 的受限恢复：不能通过远端 label 找回原请求时，只允许在 PK/FIFO/闭合目标列证明重复写语义等价的边界内重放完全相同字节；否则保持 degraded/quarantine。它不是通用的远端事务对账协议，也不能替代 generation fence。
 
 ## 4. 状态放置与安全复用
 
