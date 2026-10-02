@@ -5512,6 +5512,14 @@ def validate_hot_catalog_plan(cfg, runtime, publish_result):
             base=stateful_task_plan.compile_ir(
                 manifest,cfg["mysql"]["database"],
                 scope["source_metadata"])
+            if str(base["kind"])!=str(old_item["kind"]):
+                return dict(
+                    status="rebuild_required",
+                    version=version,
+                    reason=(
+                        "online semantic rebuild does not yet change "
+                        "stateful operator kind: "+sink),
+                    stateful_changed_sinks=stateful_changed)
             inferred=stateful_catalog_runtime.infer_target_schema(
                 base["kind"],base["ir"])
             provisional=stateful_task_plan.compile_task(
