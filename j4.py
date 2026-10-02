@@ -1752,6 +1752,7 @@ def init_state(path):
             lane INTEGER NOT NULL,
             label TEXT NOT NULL,
             payload_sha256 TEXT NOT NULL,
+            replay_safe INTEGER NOT NULL DEFAULT 0,
             reason TEXT NOT NULL,
             created REAL NOT NULL,
             updated REAL NOT NULL,
@@ -1818,6 +1819,15 @@ def init_state(path):
             con.execute(
                 "ALTER TABLE table_state "
                 "ADD COLUMN staged_done INTEGER NOT NULL DEFAULT 0")
+    merge_uncertain_columns = {
+        row[1] for row in con.execute(
+            "PRAGMA table_info(merge_uncertain)").fetchall()}
+    if "replay_safe" not in merge_uncertain_columns:
+        with state_transaction(con):
+            con.execute(
+                "ALTER TABLE merge_uncertain "
+                "ADD COLUMN replay_safe INTEGER NOT NULL DEFAULT 0")
+
     snapshot_group_columns = {
         row[1] for row in con.execute(
             "PRAGMA table_info(snapshot_groups)").fetchall()}
@@ -7142,21 +7152,90 @@ def load_result_text(result):
     return text[:4000]
 
 
-def begin_merge_request(con, mapping, delivery, part, label, payload):
+def merge_payload_profile(mapping,payload):
+    target_sequence=bool(mapping.get("_target_sequence"))
+    raw=bytes(payload)
+    if raw[:2]==b"\x1f\x8b":
+        try:
+            raw=gzip.decompress(raw)
+        except (OSError,EOFError):
+            return dict(
+                known=False,rows=0,has_delete=True,
+                target_sequence=target_sequence,
+                sequence_min=None,sequence_max=None,
+                replay_safe=False)
+    rows=0
+    has_delete=False
+    sequence_min=None
+    sequence_max=None
+    try:
+        for line in raw.splitlines():
+            if not line.strip():
+                continue
+            item=orjson.loads(line)
+            if not isinstance(item,dict):
+                raise ValueError("merge payload row is not an object")
+            op=item.get("__op",0)
+            op_text=str(op).strip().lower()
+            if op is True or op==1 or op_text in {"1","delete"}:
+                has_delete=True
+            elif op is False or op==0 or op is None or op_text in {
+                    "0","upsert",""}:
+                pass
+            else:
+                raise ValueError("unknown merge payload operation")
+            if target_sequence:
+                if "_cdc_seq" not in item:
+                    raise ValueError("sequence target payload lacks _cdc_seq")
+                sequence=int(item["_cdc_seq"])
+                sequence_min=(
+                    sequence if sequence_min is None
+                    else min(sequence_min,sequence))
+                sequence_max=(
+                    sequence if sequence_max is None
+                    else max(sequence_max,sequence))
+            rows+=1
+    except (ValueError,TypeError,orjson.JSONDecodeError):
+        return dict(
+            known=False,rows=rows,has_delete=True,
+            target_sequence=target_sequence,
+            sequence_min=None,sequence_max=None,
+            replay_safe=False)
+    replay_safe=bool(
+        rows>0
+        and target_sequence
+        and sequence_min is not None
+        and not has_delete)
+    return dict(
+        known=True,rows=rows,has_delete=has_delete,
+        target_sequence=target_sequence,
+        sequence_min=sequence_min,sequence_max=sequence_max,
+        replay_safe=replay_safe)
+
+
+def begin_merge_request(
+        con,mapping,delivery,part,label,payload,profile=None
+):
     row = con.execute("SELECT lane FROM deliveries WHERE id=?",(delivery,)).fetchone()
     if not row:
         raise RuntimeError(f"delivery {delivery} disappeared before Merge Commit request")
     now = time.time()
     digest = hashlib.sha256(payload).hexdigest()
+    profile=(
+        merge_payload_profile(mapping,payload)
+        if profile is None else dict(profile))
+    replay_safe=int(bool(profile.get("replay_safe")))
     with state_transaction(con):
         con.execute("""
             INSERT INTO merge_uncertain(
-                delivery_id,part,table_name,lane,label,payload_sha256,reason,created,updated
-            ) VALUES(?,?,?,?,?,?,?,?,?)
+                delivery_id,part,table_name,lane,label,payload_sha256,
+                replay_safe,reason,created,updated
+            ) VALUES(?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(delivery_id,part) DO UPDATE SET
+                replay_safe=excluded.replay_safe,
                 reason=excluded.reason,updated=excluded.updated
         """,(delivery,part,mapping_key(mapping),int(row[0]),label,digest,
-             "request_inflight_no_txn_id",now,now))
+             replay_safe,"request_inflight_no_txn_id",now,now))
 
 
 def clear_merge_request(con, delivery, part):
@@ -7164,7 +7243,9 @@ def clear_merge_request(con, delivery, part):
         con.execute("DELETE FROM merge_uncertain WHERE delivery_id=? AND part=?",(delivery,part))
 
 
-def mark_merge_uncertain(con, mapping, delivery, part, reason):
+def mark_merge_uncertain(
+        con,mapping,delivery,part,reason,automatic_retry=False
+):
     now = time.time()
     with state_transaction(con):
         con.execute("""
@@ -7172,7 +7253,7 @@ def mark_merge_uncertain(con, mapping, delivery, part, reason):
             WHERE delivery_id=? AND part=?
         """,(str(reason)[:4000],now,delivery,part))
     log(f"MERGE UNCERTAIN table={mapping_key(mapping)} delivery={delivery} part={part} "
-        f"reason={str(reason)[:1000]} automatic_retry=0")
+        f"reason={str(reason)[:1000]} automatic_retry={int(bool(automatic_retry))}")
 
 
 def unresolved_merge_uncertain(con):
@@ -7208,11 +7289,25 @@ def quarantine_merge_table(con, table, runtime, reason):
 
 
 def quarantine_pending_merges(con, runtime):
-    # Run after legacy sink identity migration: block the actual sink identities,
-    # including draining old plans. Never delete or silently acknowledge markers.
-    tables = con.execute('SELECT DISTINCT table_name FROM merge_uncertain').fetchall()
-    for table, in tables:
-        quarantine_merge_table(con,table,runtime,'unresolved request restored from durable state')
+    # Sequence-guarded UPSERT-only requests are safe to replay because
+    # merge_condition prevents an older _cdc_seq from overwriting newer state.
+    # Any DELETE or unguarded request remains fail-closed.
+    tables=con.execute("""
+        SELECT table_name,COUNT(*),
+               SUM(CASE WHEN replay_safe=0 THEN 1 ELSE 0 END)
+        FROM merge_uncertain
+        GROUP BY table_name
+        ORDER BY table_name
+    """).fetchall()
+    for table,total,unsafe in tables:
+        if int(unsafe):
+            quarantine_merge_table(
+                con,table,runtime,
+                'unresolved request restored from durable state')
+            continue
+        log(
+            f"MERGE CONDITIONAL REPLAY RESTORED table={table} "
+            f"parts={int(total)} replay=1 sequence_guard=_cdc_seq")
     return len(tables)
 
 
@@ -7336,7 +7431,7 @@ def wait_visible(cfg, txn_id, stop):
 
 
 
-def merge_commit_headers(mapping, cfg):
+def merge_commit_headers(mapping, cfg, profile=None):
     columns = mapping["_output_columns"] + (["_cdc_seq"] if mapping["_target_sequence"] else []) + ["__op"]
     # Merge Commit assigns its own transaction label. A local request id is
     # durable diagnostic identity only and must never be treated as a remote
@@ -7350,6 +7445,8 @@ def merge_commit_headers(mapping, cfg):
                "enable_merge_commit":"true","merge_commit_async":"true",
                "merge_commit_interval_ms":str(cfg["merge_commit_interval_ms"]),
                "merge_commit_parallel":str(cfg["merge_commit_parallel"])}
+    if profile is not None and profile.get("replay_safe"):
+        headers["merge_condition"]="_cdc_seq"
     if cfg["compression"]:
         headers["compression"] = cfg["compression"]
     return headers
@@ -7374,17 +7471,20 @@ def submit_merge_async(handle, con, mapping, delivery, part, cfg, stop, runtime)
     if txn_id is not None:
         return int(txn_id),{"Status":"LOCAL_PENDING","TxnId":int(txn_id)}
 
+    profile=merge_payload_profile(mapping,payload)
     url = merge_stream_load_url(cfg,mapping)
-    headers = merge_commit_headers(mapping,cfg)
+    headers = merge_commit_headers(mapping,cfg,profile)
     last_error = None
     attempt = 0
     while not stop.is_set():
+        retry_mode="safe_pre_send"
         if stop.is_set():
             raise RuntimeError("stopped with a pending Merge Commit delivery")
         if version_recovery_active(runtime,mapping_key(mapping)):
             if not wait_version_recovery(runtime,mapping_key(mapping),stop):
                 raise RuntimeError("stopped during version recovery with a pending Merge Commit delivery")
-        begin_merge_request(con,mapping,delivery,part,label,payload)
+        begin_merge_request(
+            con,mapping,delivery,part,label,payload,profile)
         try:
             # Drain an already-started request on graceful shutdown so its TxnId can be saved.
             # HTTP's existing load_timeout+30 still bounds the wait; do not manufacture uncertainty
@@ -7423,6 +7523,7 @@ def submit_merge_async(handle, con, mapping, delivery, part, cfg, stop, runtime)
                     raise ValueError("Merge Commit request failed: "+load_result_text(result))
                 clear_merge_request(con,delivery,part)
                 last_error = load_result_text(result)
+                retry_mode="known_server_reject"
                 table = mapping_key(mapping)
                 if kind == "version":
                     enter_version_recovery(runtime,table,cfg,"request pressure: "+message)
@@ -7440,20 +7541,32 @@ def submit_merge_async(handle, con, mapping, delivery, part, cfg, stop, runtime)
                 clear_merge_request(con,delivery,part)
                 last_error = str(exc)
             else:
-                mark_merge_uncertain(con,mapping,delivery,part,exc)
+                replay_safe=bool(profile.get("replay_safe"))
+                mark_merge_uncertain(
+                    con,mapping,delivery,part,exc,
+                    automatic_retry=replay_safe)
+                if not replay_safe:
+                    raise RuntimeError(
+                        f"Merge Commit request outcome is uncertain for delivery={delivery} part={part}; "
+                        "journal retained and automatic replay disabled"
+                    ) from exc
+                retry_mode="sequence_guarded_replay"
+                last_error=str(exc)
+        except (RuntimeError,pymysql.err.OperationalError) as exc:
+            replay_safe=bool(profile.get("replay_safe"))
+            mark_merge_uncertain(
+                con,mapping,delivery,part,exc,
+                automatic_retry=replay_safe)
+            if not replay_safe:
                 raise RuntimeError(
                     f"Merge Commit request outcome is uncertain for delivery={delivery} part={part}; "
                     "journal retained and automatic replay disabled"
                 ) from exc
-        except (RuntimeError,pymysql.err.OperationalError) as exc:
-            mark_merge_uncertain(con,mapping,delivery,part,exc)
-            raise RuntimeError(
-                f"Merge Commit request outcome is uncertain for delivery={delivery} part={part}; "
-                "journal retained and automatic replay disabled"
-            ) from exc
+            retry_mode="sequence_guarded_replay"
+            last_error=str(exc)
         metric_increment(runtime,mapping_key(mapping),"merge_retries")
         log(f"MERGE RETRY table={mapping_key(mapping)} delivery={delivery} part={part} "
-            f"attempt={attempt+1} safe_pre_send=1 reason={last_error}")
+            f"attempt={attempt+1} mode={retry_mode} reason={last_error}")
         stop.wait(min(30,0.25*2**min(attempt,7)))
         attempt += 1
     raise RuntimeError(f"unresolved Merge Commit async request delivery={delivery} part={part}: "
