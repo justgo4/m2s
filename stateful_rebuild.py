@@ -44,6 +44,19 @@ def install(con):
             updated REAL NOT NULL);
         CREATE INDEX IF NOT EXISTS stateful_rebuilds_phase
             ON stateful_rebuilds(phase,updated);
+        CREATE TRIGGER IF NOT EXISTS stateful_rebuild_task_owner_insert
+        BEFORE INSERT ON stateful_rebuilds
+        WHEN EXISTS(
+            SELECT 1 FROM stateful_rebuilds
+            WHERE phase NOT IN ('complete','failed')
+              AND (
+                  old_task_id IN (NEW.old_task_id,NEW.new_task_id)
+                  OR new_task_id IN (NEW.old_task_id,NEW.new_task_id)
+              )
+        )
+        BEGIN
+            SELECT RAISE(IGNORE);
+        END;
     """)
     columns={
         str(row[1])
@@ -54,6 +67,27 @@ def install(con):
         con.execute(
             "ALTER TABLE stateful_rebuilds "
             "ADD COLUMN original_comment TEXT NOT NULL DEFAULT ''")
+    collision=con.execute("""
+        WITH owners AS (
+            SELECT sink_key,old_task_id AS task_id
+            FROM stateful_rebuilds
+            WHERE phase NOT IN ('complete','failed')
+            UNION ALL
+            SELECT sink_key,new_task_id AS task_id
+            FROM stateful_rebuilds
+            WHERE phase NOT IN ('complete','failed')
+        )
+        SELECT task_id,COUNT(*)
+        FROM owners
+        GROUP BY task_id
+        HAVING COUNT(*)>1
+        LIMIT 1
+    """).fetchone()
+    if collision is not None:
+        raise RuntimeError(
+            "stateful rebuild durable task ownership is ambiguous "
+            "task_id=%s owners=%d" % (
+                str(collision[0]),int(collision[1])))
 
 
 def _text(value,name):
@@ -234,17 +268,35 @@ def begin(
         return validate(current)
 
     collision=con.execute("""
-        SELECT sink_key,new_task_id,shadow_target
+        SELECT sink_key,old_task_id,new_task_id,shadow_target,phase
         FROM stateful_rebuilds
-        WHERE new_task_id=? OR shadow_target=?
-        ORDER BY created,sink_key
+        WHERE (
+            phase NOT IN ('complete','failed')
+            AND (
+                old_task_id IN (?,?)
+                OR new_task_id IN (?,?)
+            )
+        )
+        OR new_task_id=?
+        OR shadow_target=?
+        ORDER BY
+            CASE WHEN phase NOT IN ('complete','failed')
+                 THEN 0 ELSE 1 END,
+            created,sink_key
         LIMIT 1
-    """,(new_task_id,shadow)).fetchone()
+    """,(
+        old_task_id,new_task_id,
+        old_task_id,new_task_id,
+        new_task_id,shadow
+    )).fetchone()
     if collision is not None:
         raise RuntimeError(
             "stateful rebuild durable identity collision "
-            "owner=%s new_task_id=%s shadow_target=%s" % (
-                str(collision[0]),str(collision[1]),str(collision[2])))
+            "owner=%s old_task_id=%s new_task_id=%s "
+            "shadow_target=%s phase=%s" % (
+                str(collision[0]),str(collision[1]),
+                str(collision[2]),str(collision[3]),
+                str(collision[4])))
     raise RuntimeError(
         "stateful rebuild begin was not durably recorded")
 
