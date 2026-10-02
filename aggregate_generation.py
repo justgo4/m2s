@@ -88,7 +88,10 @@ def begin(con,sink_key,plan_version,ir,state_id):
                 +existing["status"])
         if existing["source_pin_released"]:
             state=aggregate_state.state_info(con,state_id)
-            if state["watermark"]<int(existing["fixed_w"]):
+            if (
+                not existing["imported"]
+                and state["watermark"]<int(existing["fixed_w"])
+            ):
                 raise RuntimeError(
                     "aggregate state is behind released generation fixed-W")
             return dict(
