@@ -523,6 +523,20 @@ def evaluate_workload(
         field_overflow_rows=_integer(
             debt.get("field_overflow_rows",0),
             "debt.field_overflow_rows")
+        merge_recovery=dict(
+            debt.get("merge_uncertain_recovery") or {})
+        merge_replays=_integer(
+            merge_recovery.get("replays",0),
+            "debt.merge_uncertain_recovery.replays")
+        merge_visible=_integer(
+            merge_recovery.get("visible",0),
+            "debt.merge_uncertain_recovery.visible")
+        merge_aborted=_integer(
+            merge_recovery.get("aborted",0),
+            "debt.merge_uncertain_recovery.aborted")
+        merge_blocked=_integer(
+            merge_recovery.get("blocked",0),
+            "debt.merge_uncertain_recovery.blocked")
         evidence["debt"]=dict(
             state_storage_bytes=state_storage_bytes,
             stateful_rows=stateful_rows,
@@ -537,6 +551,12 @@ def evaluate_workload(
             pending_bytes=pending_bytes,
             prepared_budget_used=prepared_budget_used,
             field_overflow_rows=field_overflow_rows,
+            merge_uncertain_recovery=dict(
+                replays=merge_replays,
+                visible=merge_visible,
+                aborted=merge_aborted,
+                blocked=merge_blocked,
+            ),
         )
         if state_storage_bytes<=0:
             failures.append("space_debt_unknown")
@@ -554,6 +574,9 @@ def evaluate_workload(
             failures.append("version_recovery_active")
         if field_overflow_rows:
             failures.append("field_overflow_rows")
+        if merge_visible+merge_aborted>merge_replays:
+            failures.append(
+                "merge_recovery_counters_invalid")
         if require_drained and (
             pending_bytes
             or prepared_budget_used
