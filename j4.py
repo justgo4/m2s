@@ -6731,11 +6731,33 @@ def retry_waiting_stateful_admission(
         version=int(item["plan_version"])
         if version!=latest_version:
             continue
-        result=queue_hot_catalog_plan(
-            cfg,runtime,dict(
-                version=version,
-                plan_hash=str(
-                    latest.get("plan_hash") or "")))
+        retry_additions=[
+            dict(task=dict(
+                task_id=task["task_id"],
+                sink_key=task["sink_key"]))
+            for task in waiting_tasks
+            if int(task["plan_version"])==version
+        ]
+        try:
+            result=queue_hot_catalog_plan(
+                cfg,runtime,dict(
+                    version=version,
+                    plan_hash=str(
+                        latest.get("plan_hash") or "")))
+        except BaseException as exc:
+            if retry_additions:
+                con=open_state(cfg["state"])
+                try:
+                    stateful_admission.queue_wait(
+                        con,retry_additions,version,
+                        reason=(
+                            "retry_error:"
+                            +type(exc).__name__),
+                        retry_seconds=cfg.get(
+                            "stateful_admission_retry_seconds",5))
+                finally:
+                    con.close()
+            raise
         outcomes.append(dict(result))
         # The wait queue is only for resource admission. Any result other than
         # resource_waiting means this retry crossed that gate; do not keep
@@ -6744,13 +6766,6 @@ def retry_waiting_stateful_admission(
         # no durable descriptor/rebuild intent owner. This covers the crash cut
         # admission-success -> process death -> validation changes on restart.
         if str(result.get("status",""))!="resource_waiting":
-            retry_additions=[
-                dict(task=dict(
-                    task_id=item["task_id"],
-                    sink_key=item["sink_key"]))
-                for item in waiting_tasks
-                if int(item["plan_version"])==version
-            ]
             if retry_additions:
                 rollback_stateful_admission(
                     cfg,retry_additions,
