@@ -449,7 +449,7 @@ def release_unregistered(
 
 def queue_wait(
         con,additions,plan_version,reason,
-        retry_seconds=5.0
+        retry_seconds=5.0,max_retry_seconds=300.0
 ):
     install(con)
     additions=list(additions or ())
@@ -458,8 +458,9 @@ def queue_wait(
         raise ValueError(
             "stateful admission wait plan_version must be positive")
     retry_seconds=max(0.0,float(retry_seconds))
+    max_retry_seconds=max(
+        retry_seconds,float(max_retry_seconds))
     now=time.time()
-    next_retry=now+retry_seconds
     queued=[]
     with _write_transaction(con):
         for item in additions:
@@ -469,21 +470,37 @@ def queue_wait(
             if not task_id or not sink:
                 raise ValueError(
                     "stateful admission waiting task identity is incomplete")
+            previous=con.execute("""
+                SELECT plan_version,retry_count
+                FROM stateful_admission_waiting
+                WHERE task_id=?
+            """,(task_id,)).fetchone()
+            retry_count=(
+                int(previous[1])+1
+                if previous is not None
+                and int(previous[0])==plan_version
+                else 0
+            )
+            exponent=min(retry_count,20)
+            delay=min(
+                max_retry_seconds,
+                retry_seconds*(2**exponent))
+            next_retry=now+delay
             con.execute("""
                 INSERT INTO stateful_admission_waiting(
                     task_id,plan_version,sink_key,reason,
                     retry_count,next_retry,created,updated)
-                VALUES(?,?,?,?,0,?,?,?)
+                VALUES(?,?,?,?,?,?,?,?)
                 ON CONFLICT(task_id) DO UPDATE SET
                     plan_version=excluded.plan_version,
                     sink_key=excluded.sink_key,
                     reason=excluded.reason,
-                    retry_count=stateful_admission_waiting.retry_count+1,
+                    retry_count=excluded.retry_count,
                     next_retry=excluded.next_retry,
                     updated=excluded.updated
             """,(
                 task_id,plan_version,sink,str(reason),
-                next_retry,now,now))
+                retry_count,next_retry,now,now))
             queued.append(task_id)
     return sorted(queued)
 
