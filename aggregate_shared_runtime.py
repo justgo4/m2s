@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
-"""Durable exact-semantics sharing for identical aggregate tasks.
+"""Durable sharing for exact and compatible aggregate subview tasks.
 
 One active aggregate task remains the compute owner. A follower keeps its own
-target/outbox/source-retention frontier but reuses the owner's current backing
-state and byte-exact output commits. If the owner is retired, followers are
-atomically promoted to private state at the owner's frozen watermark before the
-owner consumer is removed.
+target/outbox/source-retention frontier while reusing the owner's current
+backing state. Exact followers copy output commits byte-for-byte; subview
+followers project a strict subset of the owner's aggregate outputs. If the
+owner is retired, followers are atomically materialized into private state at
+the owner's frozen watermark before the owner consumer is removed.
 """
 import time
 
+import aggregate_ir
 import aggregate_job_bridge
 import aggregate_log_consumer
 import aggregate_outbox
@@ -112,18 +114,22 @@ def _leader_candidates(con,task):
          AND g.plan_version=d.plan_version
         WHERE d.task_id<>?
           AND d.status='active'
-          AND d.ir_id=?
+          AND d.source_relation=?
           AND g.status='ready'
           AND g.source_pin_released=1
         ORDER BY d.updated,d.task_id
-    """,(task["task_id"],task["ir_id"])).fetchall()
+    """,(task["task_id"],task["source_relation"])).fetchall()
     result=[]
     for row in rows:
         leader=aggregate_task_catalog.task_info(
             con,row[0])
-        # A follower may publish the same semantic result but is not a compute
-        # owner. Avoid follower chains; bind only to a task with its own state.
+        # Avoid follower chains. Only a task with its own maintained state can
+        # serve as a compute owner for exact or subview sharing.
         if maybe_binding(con,leader["task_id"]) is not None:
+            continue
+        plan=aggregate_ir.reuse_plan(
+            leader["ir"],task["ir"])
+        if plan is None:
             continue
         try:
             state=aggregate_state.state_info(
@@ -136,10 +142,10 @@ def _leader_candidates(con,task):
         except KeyError:
             continue
         requested=aggregate_physical_state.physical_spec(
-            con,task["ir"])
+            con,leader["ir"])
         if (
             not state["bootstrap_complete"]
-            or state["input_semantic_id"]!=task["ir_id"]
+            or state["input_semantic_id"]!=leader["ir_id"]
             or int(state["watermark"])!=int(consumer["watermark"])
             or not physical_state_catalog.semantic_compatible(
                 physical,requested)
@@ -151,12 +157,23 @@ def _leader_candidates(con,task):
                 "aggregate_state_id")!=leader["state_id"]
         ):
             continue
-        result.append((leader,state,consumer,physical))
-    return result
+        # Exact byte-copy is cheapest. For a subview, prefer the smallest
+        # already-maintained superset, then the oldest stable task identity.
+        result.append((
+            0 if plan["mode"]=="exact" else 1,
+            int(plan["surplus_aggregates"]),
+            leader["created"],leader["task_id"],
+            leader,state,consumer,physical,plan,
+        ))
+    result.sort(key=lambda item:item[:4])
+    return [
+        item[4:]
+        for item in result
+    ]
 
 
 def try_bind(con,task):
-    """Attach a candidate task to an exact active compute owner, if available."""
+    """Attach a candidate to an exact or compatible active compute owner."""
     task=aggregate_task_catalog.task_info(
         con,task["task_id"])
     if task["status"]!="candidate":
@@ -185,7 +202,7 @@ def try_bind(con,task):
             con,task)
         if not leaders:
             return None
-        leader,state,consumer,physical=leaders[0]
+        leader,state,consumer,physical,reuse=leaders[0]
         fixed_w=int(state["watermark"])
         if fixed_w!=int(consumer["watermark"]):
             return None
@@ -227,10 +244,16 @@ def try_bind(con,task):
             con,task["consumer_id"],leader["state_id"],
             task["plan_version"],generation["generation_id"],
             fixed_w)
-        aggregate_outbox.seed_bootstrap(
-            con,task["consumer_id"],leader["state_id"],
-            task["plan_version"],generation["generation_id"],
-            fixed_w)
+        if reuse["mode"]=="exact":
+            aggregate_outbox.seed_bootstrap(
+                con,task["consumer_id"],leader["state_id"],
+                task["plan_version"],generation["generation_id"],
+                fixed_w)
+        else:
+            aggregate_outbox.seed_bootstrap_projected(
+                con,task["consumer_id"],leader["state_id"],
+                task["plan_version"],generation["generation_id"],
+                fixed_w,aggregate_ir.state_spec(task["ir"]))
         physical_state_catalog.retain_state(
             con,physical["instance_id"],
             task["task_id"],"dependency")
@@ -247,9 +270,11 @@ def _validate_binding(con,task,binding):
     if leader["status"]!="active":
         raise RuntimeError(
             "aggregate shared leader is not active")
-    if leader["ir_id"]!=task["ir_id"]:
+    reuse=aggregate_ir.reuse_plan(
+        leader["ir"],task["ir"])
+    if reuse is None:
         raise RuntimeError(
-            "aggregate shared leader semantics changed")
+            "aggregate shared leader no longer covers follower semantics")
     if leader["state_id"]!=binding["shared_state_id"]:
         raise RuntimeError(
             "aggregate shared leader state identity changed")
@@ -271,14 +296,14 @@ def _validate_binding(con,task,binding):
     ):
         raise RuntimeError(
             "aggregate shared follower outbox binding changed")
-    return leader,follower,stream
+    return leader,follower,stream,reuse
 
 
 def step(con,task,mapping,cfg):
     """Advance one follower using the leader's already-computed output journal."""
     binding=binding_info(
         con,task["task_id"])
-    leader,follower,stream=_validate_binding(
+    leader,follower,stream,reuse=_validate_binding(
         con,task,binding)
     leader_consumer=source_state.consumer_info(
         con,leader["consumer_id"])
@@ -294,9 +319,15 @@ def step(con,task,mapping,cfg):
         leader_consumer["watermark"]
     ):
         next_seq=int(follower["watermark"])+1
-        aggregate_outbox.copy_commit(
-            con,leader["consumer_id"],
-            task["consumer_id"],next_seq)
+        if reuse["mode"]=="exact":
+            aggregate_outbox.copy_commit(
+                con,leader["consumer_id"],
+                task["consumer_id"],next_seq)
+        else:
+            aggregate_outbox.copy_commit_projected(
+                con,leader["consumer_id"],
+                task["consumer_id"],next_seq,
+                aggregate_ir.state_spec(task["ir"]))
         source_state.advance_consumer(
             con,task["consumer_id"],next_seq)
         follower=source_state.consumer_info(
@@ -330,18 +361,28 @@ def step(con,task,mapping,cfg):
         shared_physical=True,
         shared_leader_task_id=leader["task_id"],
         shared_state_id=leader["state_id"],
+        shared_reuse_mode=reuse["mode"],
     )
 
 
-def _copy_through(con,leader_consumer_id,follower_consumer_id,through_w):
+def _copy_through(
+        con,leader_consumer_id,follower_consumer_id,
+        through_w,reuse,target_ir
+):
     through_w=int(through_w)
     follower=source_state.consumer_info(
         con,follower_consumer_id)
     while int(follower["watermark"])<through_w:
         seq=int(follower["watermark"])+1
-        aggregate_outbox.copy_commit(
-            con,leader_consumer_id,
-            follower_consumer_id,seq)
+        if reuse["mode"]=="exact":
+            aggregate_outbox.copy_commit(
+                con,leader_consumer_id,
+                follower_consumer_id,seq)
+        else:
+            aggregate_outbox.copy_commit_projected(
+                con,leader_consumer_id,
+                follower_consumer_id,seq,
+                aggregate_ir.state_spec(target_ir))
         follower=source_state.advance_consumer(
             con,follower_consumer_id,seq)
     return follower
@@ -376,19 +417,33 @@ def promote_followers(con,leader_task):
                 con,binding["follower_task_id"])
             if follower_task["status"] in {"retired","failed"}:
                 continue
+            reuse=aggregate_ir.reuse_plan(
+                leader_task["ir"],follower_task["ir"])
+            if reuse is None:
+                raise RuntimeError(
+                    "cannot promote aggregate follower after reuse semantics changed")
             _copy_through(
                 con,leader_task["consumer_id"],
-                follower_task["consumer_id"],frontier)
+                follower_task["consumer_id"],frontier,
+                reuse,follower_task["ir"])
             try:
                 private=aggregate_state.state_info(
                     con,follower_task["state_id"])
             except KeyError:
-                private=aggregate_state.clone_complete_state(
-                    con,leader_task["state_id"],
-                    follower_task["state_id"],
-                    aggregate_state.validate_spec(
-                        leader_state["spec"]),
-                    follower_task["ir_id"],frontier)
+                if reuse["mode"]=="exact":
+                    private=aggregate_state.clone_complete_state(
+                        con,leader_task["state_id"],
+                        follower_task["state_id"],
+                        aggregate_state.validate_spec(
+                            leader_state["spec"]),
+                        follower_task["ir_id"],frontier)
+                else:
+                    private=aggregate_state.clone_projected_state(
+                        con,leader_task["state_id"],
+                        follower_task["state_id"],
+                        aggregate_ir.state_spec(
+                            follower_task["ir"]),
+                        follower_task["ir_id"],frontier)
             if int(private["watermark"])!=frontier:
                 raise RuntimeError(
                     "promoted aggregate follower private state has wrong W")
