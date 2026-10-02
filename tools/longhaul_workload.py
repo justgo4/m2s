@@ -74,6 +74,22 @@ def percentile(values,p):
     return values[index]
 
 
+
+def interval_overlap_seconds(start,end,window_start,window_end):
+    start=float(start)
+    end=float(end)
+    window_start=float(window_start)
+    window_end=float(window_end)
+    if end<start:
+        raise ValueError("interval end precedes start")
+    if window_end<window_start:
+        raise ValueError("window end precedes start")
+    return max(
+        0.0,
+        min(end,window_end)-max(start,window_start),
+    )
+
+
 def _resource_file(path):
     try:
         return Path(path).read_text(
@@ -984,6 +1000,7 @@ def run(args):
             recovery_latency=[]
             daemon_index=1
             faults=[]
+            fault_unavailable_seconds=0.0
             source_ready_at=None
             next_checkpoint=started
 
@@ -1189,13 +1206,12 @@ def run(args):
                         commit_times,
                         args.fault_recovery_timeout_seconds,
                         progress=fault_progress)
+                    fault_recovered_at=time.monotonic()
+                    fault_unavailable_seconds+=interval_overlap_seconds(
+                        fault_started,fault_recovered_at,
+                        started,deadline)
                     sample_daemon_resources(force=True)
                     recovery_latency.extend(
-                        recovered["latencies"])
-                    # Fault-period commits are still ordinary CDC latency
-                    # samples. Keep the dedicated recovery distribution, but
-                    # also include them in the end-to-end workload SLO sample.
-                    latency.extend(
                         recovered["latencies"])
                     faults.append(dict(
                         sequence=before,
@@ -1348,6 +1364,12 @@ def run(args):
                 duration_seconds=elapsed,
                 source_schedule_seconds=float(
                     args.duration_seconds),
+                healthy_observation_seconds=max(
+                    0.0,
+                    float(args.duration_seconds)
+                    -fault_unavailable_seconds),
+                fault_unavailable_seconds=float(
+                    fault_unavailable_seconds),
                 memory_mb=int(args.memory_mb),
                 work_directory_persistent=bool(
                     getattr(args,"work_directory",None)),

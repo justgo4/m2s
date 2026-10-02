@@ -83,6 +83,7 @@ def workload():
         rows_per_second=50,
         duration_seconds=elapsed,
         source_schedule_seconds=source_schedule,
+        healthy_observation_seconds=source_schedule,
         memory_mb=4096,
         resource_fingerprint=dict(
             architecture="x86_64",
@@ -386,6 +387,10 @@ def main():
         full["evidence"]["latency_samples_per_second"]
         ==1.0
     )
+    assert (
+        full["evidence"]["healthy_observation_seconds"]
+        ==workload()["source_schedule_seconds"]
+    )
     assert full["evidence"]["recovery_latency_samples"]==8
     assert full["evidence"]["debt"]["max_rowset"]==73
     assert full["evidence"]["resources"]["logical_cpus"]==8
@@ -583,6 +588,37 @@ def main():
         in full["failures"]
     )
 
+    coverage=workload()
+    coverage["healthy_observation_seconds"]=10
+    coverage["latency_samples"]=8
+    full=evaluate_workload(
+        coverage,
+        min_latency_samples_per_second=.5)
+    assert full["ok"],full
+    assert abs(
+        full["evidence"][
+            "latency_samples_per_second"]-.8
+    )<1e-12
+
+    bad=workload()
+    bad["healthy_observation_seconds"]=(
+        bad["source_schedule_seconds"]+2)
+    full=evaluate_workload(bad)
+    assert not full["ok"]
+    assert (
+        "healthy_observation_exceeds_source_schedule"
+        in full["failures"]
+    )
+
+    bad=workload()
+    bad["healthy_observation_seconds"]=0
+    full=evaluate_workload(bad)
+    assert not full["ok"]
+    assert (
+        "healthy_observation_seconds"
+        in full["failures"]
+    )
+
     bad=workload()
     bad["live_rows"]=100
     bad["latency_p99_seconds"]=10.01
@@ -612,7 +648,7 @@ def main():
         "rowset_recovery overflow_fail_closed reproducible_resource_fingerprint "
         "daemon_process_resource_evidence daemon_rss_budget source_sink_resource_evidence "
         "service_limit_drift_fail_closed scope_overlap_fail_closed exact_profile_gate "
-        "clean_worktree_gate software_fingerprint",
+        "clean_worktree_gate software_fingerprint healthy_observation_window",
         flush=True,
     )
 

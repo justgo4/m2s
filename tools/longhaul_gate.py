@@ -313,12 +313,33 @@ def evaluate_workload(
     observed_rate=(
         float(live_rows)/source_schedule
         if source_schedule>0 else 0.0)
+    healthy_observation_raw=report.get(
+        "healthy_observation_seconds")
+    healthy_observation=(
+        source_schedule
+        if healthy_observation_raw is None
+        else _number(
+            healthy_observation_raw,
+            "healthy_observation_seconds")
+    )
+    if healthy_observation<=0:
+        failures.append(
+            "healthy_observation_seconds")
+        healthy_observation=source_schedule
+    if (
+        source_schedule>0
+        and healthy_observation>source_schedule+1.0
+    ):
+        failures.append(
+            "healthy_observation_exceeds_source_schedule")
     samples=_integer(
         report.get("latency_samples"),
         "latency_samples")
+    # Healthy CDC latency excludes injected-fault recovery. Recovery latency is
+    # evaluated independently through recovery_latency_* below.
     sample_rate=(
-        float(samples)/source_schedule
-        if source_schedule>0 else 0.0)
+        float(samples)/healthy_observation
+        if healthy_observation>0 else 0.0)
     p95=_number(
         report.get("latency_p95_seconds"),
         "latency_p95_seconds")
@@ -354,6 +375,7 @@ def evaluate_workload(
     evidence.update(
         elapsed_seconds=elapsed,
         source_schedule_seconds=source_schedule,
+        healthy_observation_seconds=healthy_observation,
         initial_rows=initial_rows,
         live_rows=live_rows,
         configured_rows_per_second=configured_rate,

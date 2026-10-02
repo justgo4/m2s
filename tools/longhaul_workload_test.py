@@ -19,6 +19,19 @@ def main():
         [5,1,3,2,4],0.50)==3
     assert longhaul_workload.percentile(
         [5,1,3,2,4],0.99)==4
+    assert longhaul_workload.interval_overlap_seconds(
+        20,68,0,60)==40
+    assert longhaul_workload.interval_overlap_seconds(
+        70,80,0,60)==0
+    assert longhaul_workload.interval_overlap_seconds(
+        -10,10,0,60)==10
+    try:
+        longhaul_workload.interval_overlap_seconds(
+            2,1,0,60)
+        raise AssertionError(
+            "reversed interval was accepted")
+    except ValueError:
+        pass
 
     with patch.object(
         longhaul_workload.subprocess,
@@ -294,7 +307,7 @@ def main():
         ).exists()
 
     print(
-        "longhaul_workload_test ok percentile clean_worktree_probe source_ready "
+        "longhaul_workload_test ok percentile interval_overlap clean_worktree_probe source_ready "
         "per_transaction_sentinel continuous_source_during_fault crash_catchup aggregate_exactness "
         "work_directory_retention checkpoint_atomic_replace evidence_copy",
         flush=True,
