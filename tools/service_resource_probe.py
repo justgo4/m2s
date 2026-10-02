@@ -37,6 +37,39 @@ def _integer_file(path):
     return value if value>=0 else None
 
 
+def _memory_limit_bytes(cgroup):
+    text=_read_text(
+        Path(cgroup)/"memory.max")
+    if text is None:
+        return None
+    value=text.strip()
+    if value=="max":
+        return None
+    try:
+        value=int(value)
+    except ValueError:
+        return None
+    return value if value>0 else None
+
+
+def _cpu_quota_cores(cgroup):
+    text=_read_text(
+        Path(cgroup)/"cpu.max")
+    if text is None:
+        return None
+    parts=text.split()
+    if len(parts)<2 or parts[0]=="max":
+        return None
+    try:
+        quota=float(parts[0])
+        period=float(parts[1])
+    except ValueError:
+        return None
+    if quota<=0 or period<=0:
+        return None
+    return quota/period
+
+
 def _scope_fingerprint(value):
     return hashlib.sha256(
         str(value).encode("utf-8")).hexdigest()
@@ -127,7 +160,9 @@ def cgroup_v2_sample(
     relative=path.lstrip("/")
     cgroup=Path(cgroup_root)/relative
     memory=_integer_file(cgroup/"memory.current")
+    memory_limit=_memory_limit_bytes(cgroup)
     cpu=_cpu_usage_seconds(cgroup)
+    cpu_quota=_cpu_quota_cores(cgroup)
     io=_io_bytes(cgroup)
     if memory is None or cpu is None or io is None:
         return None
@@ -137,6 +172,8 @@ def cgroup_v2_sample(
             "cgroup-v2:"+path),
         memory_metric="cgroup_memory_current",
         memory_bytes=int(memory),
+        memory_limit_bytes=memory_limit,
+        cpu_quota_cores=cpu_quota,
         cpu_seconds=float(cpu),
         read_bytes=int(io[0]),
         write_bytes=int(io[1]),
@@ -287,6 +324,10 @@ def new_tracker(selection=None):
         samples=0,
         peak_memory_bytes=0,
         peak_processes=0,
+        limits_seen=False,
+        limits_stable=True,
+        cpu_quota_cores=None,
+        memory_limit_bytes=None,
         selection_source=str(
             selection.get("source") or ""),
         selection_reason=str(
@@ -323,6 +364,19 @@ def observe(tracker,sample):
         int(tracker["peak_processes"]),
         int(sample.get("process_count",0)))
     if mode=="cgroup_v2":
+        cpu_quota=sample.get(
+            "cpu_quota_cores")
+        memory_limit=sample.get(
+            "memory_limit_bytes")
+        if not tracker["limits_seen"]:
+            tracker["limits_seen"]=True
+            tracker["cpu_quota_cores"]=cpu_quota
+            tracker["memory_limit_bytes"]=memory_limit
+        elif (
+            tracker["cpu_quota_cores"]!=cpu_quota
+            or tracker["memory_limit_bytes"]!=memory_limit
+        ):
+            tracker["limits_stable"]=False
         current=dict(
             cpu_seconds=max(
                 0.0,float(
@@ -414,6 +468,16 @@ def report(tracker):
         supported=bool(tracker.get("supported")),
         scope_stable=bool(
             tracker.get("scope_stable",False)),
+        limits_stable=bool(
+            tracker.get("limits_stable",False)),
+        cpu_quota_cores=(
+            tracker.get("cpu_quota_cores")
+            if tracker.get("limits_seen")
+            else None),
+        memory_limit_bytes=(
+            tracker.get("memory_limit_bytes")
+            if tracker.get("limits_seen")
+            else None),
         mode=mode,
         scope_fingerprint=(
             str(tracker.get("identity") or "")
