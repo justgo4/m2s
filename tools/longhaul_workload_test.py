@@ -266,9 +266,39 @@ def main():
     assert checks["expected_digest"]==longhaul_workload._rows_digest(
         expected)
 
+    event_expected=[
+        (1,0,10,"a"),
+        (2,0,20,"b"),
+    ]
+    with patch.object(
+        longhaul_workload,
+        "_event_rows_source",
+        return_value=event_expected
+    ), patch.object(
+        longhaul_workload,
+        "_event_rows_target",
+        side_effect=[
+            list(event_expected),
+            [
+                (1,0,20,"a"),
+                (2,0,10,"b"),
+            ],
+        ]
+    ):
+        event_checks=longhaul_workload.event_exactness(
+            object(),{},["events","events_bad"],
+            partitions=[0])
+    assert event_checks["comparison"]=="partitioned_full_rows_v1"
+    assert event_checks["expected_rows"]==2
+    assert event_checks["tables"]["events"]["match"]
+    assert not event_checks["tables"]["events_bad"]["match"]
+    assert not event_checks["all_match"]
+
+    # Preserve source-pair identity in the JOIN oracle. Swapping v between two
+    # rows keeps COUNT/SUM/MIN/MAX unchanged but must fail full-row exactness.
     join_expected=[
-        (0,2,10,10,"dim-0000","dim-0000"),
-        (1,3,20,20,"dim-0001","dim-0001"),
+        (1,0,"dim-0000",10),
+        (2,0,"dim-0000",20),
     ]
     with patch.object(
         longhaul_workload,
@@ -280,16 +310,22 @@ def main():
         side_effect=[
             list(join_expected),
             [
-                (0,2,10,10,"dim-0000","dim-0000"),
-                (1,3,20,21,"dim-0001","dim-0001"),
+                (1,0,"dim-0000",20),
+                (2,0,"dim-0000",10),
             ],
         ]
     ):
         join_checks=longhaul_workload.join_exactness(
-            object(),{},["join_000","join_002"])
+            object(),{},["join_000","join_002"],
+            partitions=[0])
     assert join_checks["expected_rows"]==2
     assert join_checks["tables"]["join_000"]["match"]
     assert not join_checks["tables"]["join_002"]["match"]
+    assert join_checks["tables"]["join_002"]["mismatches"][0][
+        "expected_digest"
+    ]!=join_checks["tables"]["join_002"]["mismatches"][0][
+        "actual_digest"
+    ]
     assert not join_checks["all_match"]
 
     with tempfile.TemporaryDirectory(
