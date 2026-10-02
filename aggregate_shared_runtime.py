@@ -318,6 +318,7 @@ def step(con,task,mapping,cfg):
         raise RuntimeError(
             "aggregate shared leader state/consumer watermarks diverged")
 
+    copied_sequences=0
     if int(follower["watermark"])<int(
         leader_consumer["watermark"]
     ):
@@ -335,6 +336,7 @@ def step(con,task,mapping,cfg):
             con,task["consumer_id"],next_seq)
         follower=source_state.consumer_info(
             con,task["consumer_id"])
+        copied_sequences+=1
 
     aggregate_job_bridge.stage_pending(
         con,task["consumer_id"],mapping,cfg)
@@ -351,6 +353,12 @@ def step(con,task,mapping,cfg):
     ):
         generation=task_generation.mark_ready_if_exists(
             con,task["sink_key"],task["plan_version"])
+    stateful_share_policy.observe(
+        con,task["task_id"],
+        int(leader_consumer["watermark"]),
+        int(follower["watermark"]),
+        int(applied),int(visible),
+        copied_sequences=copied_sequences)
     return dict(
         generation=generation,
         consumer=follower,
