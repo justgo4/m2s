@@ -5,6 +5,7 @@ import sys
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 
+import p11_profile
 from tools.longhaul_gate import evaluate,evaluate_workload
 
 
@@ -72,6 +73,7 @@ def workload():
     return dict(
         format_version=1,
         kind="m2s_longhaul_workload",
+        workload_profile=p11_profile.NAME,
         protocol="merge_async",
         initial_rows=50_000_000,
         rows_per_second=50,
@@ -353,8 +355,14 @@ def main():
     )
     assert smoke["ok"]
 
-    full=evaluate_workload(workload())
+    full=evaluate_workload(
+        workload(),
+        require_profile=p11_profile.NAME)
     assert full["ok"],full
+    assert (
+        full["evidence"]["workload_profile"]
+        ==p11_profile.NAME
+    )
     assert full["evidence"]["faults"]["count"]==2
     assert full["evidence"]["faults"][
         "source_rows_during_fault"]==[200,250]
@@ -428,6 +436,13 @@ def main():
     full=evaluate_workload(bad)
     assert not full["ok"]
     assert "service_resource_scope_overlap" in full["failures"]
+
+    bad=workload()
+    bad["workload_profile"]="custom"
+    full=evaluate_workload(
+        bad,require_profile=p11_profile.NAME)
+    assert not full["ok"]
+    assert "workload_profile_mismatch" in full["failures"]
 
     compatibility=evaluate_workload(
         dict(workload(),service_resources=None),
@@ -560,7 +575,8 @@ def main():
         "healthy_recovery_latency drain stateful_health space_version_debt "
         "rowset_recovery overflow_fail_closed reproducible_resource_fingerprint "
         "daemon_process_resource_evidence daemon_rss_budget source_sink_resource_evidence "
-        "service_limit_drift_fail_closed scope_overlap_fail_closed software_fingerprint",
+        "service_limit_drift_fail_closed scope_overlap_fail_closed exact_profile_gate "
+        "software_fingerprint",
         flush=True,
     )
 
