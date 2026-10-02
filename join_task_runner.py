@@ -114,7 +114,7 @@ def step(
         con,task["task_id"])
     if binding is None and task["status"]=="candidate":
         binding=join_shared_runtime.try_bind(
-            con,task)
+            con,task,cfg=cfg)
     if binding is not None:
         try:
             result=join_shared_runtime.step(
