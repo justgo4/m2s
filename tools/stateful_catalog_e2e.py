@@ -412,6 +412,36 @@ def join_actual(cfg,table="joined"):
     ]
 
 
+def join_subview_expected(source):
+    with source.cursor() as cur:
+        cur.execute(
+            "SELECT c.name,o.amount "
+            "FROM "+DATABASE+".orders o "
+            "INNER JOIN "+DATABASE+".customers c "
+            "ON o.customer_id=c.id")
+        rows=cur.fetchall()
+    return sorted([
+        (str(row[0]),normalize_decimal(row[1]))
+        for row in rows
+    ])
+
+
+def join_subview_actual(cfg,table="joined_subview"):
+    rows,_=execute(
+        cfg,
+        "SELECT customer_name,amount,_j4_pair_id "
+        "FROM "+DATABASE+"."+str(table))
+    values=sorted([
+        (str(row[0]),normalize_decimal(row[1]))
+        for row in rows
+    ])
+    pair_ids=[str(row[2]) for row in rows]
+    if len(set(pair_ids))!=len(pair_ids):
+        raise AssertionError(
+            "JOIN subview pair identity collapsed duplicate bag members")
+    return values
+
+
 def equal_results(source,cfg):
     expected_agg=aggregate_expected(source)
     actual_agg=aggregate_actual(cfg)
@@ -574,6 +604,43 @@ def wait_hot_join_exact(
         % (state(directory/"state.sqlite3"),last))
 
 
+def wait_hot_join_subview_exact(
+        proc,log,directory,source,cfg,
+        sink="starrocks.joined_subview",table="joined_subview",
+        timeout=240,check_base=True
+):
+    deadline=time.monotonic()+timeout
+    last=None
+    while time.monotonic()<deadline:
+        live(proc,log)
+        current=state(directory/"state.sqlite3")
+        if current is not None:
+            tasks=dict(current.get("join_tasks",()))
+            if (
+                tasks.get(sink)=="active"
+                and current["pending"]==0
+                and current["deliveries"]==0
+            ):
+                expected=join_subview_expected(source)
+                actual=join_subview_actual(cfg,table)
+                base_ok=True
+                base_detail=None
+                if check_base:
+                    base_ok,base_detail=equal_results(
+                        source,cfg)
+                if expected==actual and base_ok:
+                    return current,dict(
+                        expected=expected,actual=actual,
+                        base=base_detail)
+                last=dict(
+                    expected=expected,actual=actual,
+                    base=base_detail)
+        time.sleep(.2)
+    raise AssertionError(
+        "hot JOIN subview did not become exact state=%r result=%r"
+        % (state(directory/"state.sqlite3"),last))
+
+
 def wait_stateful_retired(
         proc,log,directory,sink,kind="aggregate",timeout=180
 ):
@@ -667,6 +734,22 @@ def mutate_after_shared_promotion(source):
             cur.execute(
                 "INSERT INTO "+DATABASE+".orders "
                 "VALUES(8,'d',11,6.75)")
+        source.commit()
+    except BaseException:
+        source.rollback()
+        raise
+
+
+def mutate_after_join_promotion(source):
+    source.begin()
+    try:
+        with source.cursor() as cur:
+            cur.execute(
+                "UPDATE "+DATABASE+".customers "
+                "SET name='alice3' WHERE id=11")
+            cur.execute(
+                "UPDATE "+DATABASE+".orders "
+                "SET amount=amount+1.00 WHERE id=8")
         source.commit()
     except BaseException:
         source.rollback()
@@ -820,6 +903,40 @@ def main():
                     "identical hot JOIN did not attach to shared "
                     "compute state: "+repr(join_hot_state))
 
+            # Projection-only JOIN subview: reuse pair state and project the
+            # owner's durable journal while preserving pair identity.
+            result,response,activation=run_catalog_sql(
+                directory,env,"add-join-subview",
+                "CREATE TABLE starrocks.joined_subview AS "
+                "SELECT c.name AS customer_name,o.amount AS amount "
+                "FROM mysql.orders o INNER JOIN mysql.customers c "
+                "ON o.customer_id=c.id;")
+            if (
+                result.returncode!=0
+                or activation.get("status") not in {
+                    "hot_pending",
+                    "deferred_until_snapshot_done",
+                    "deferred_until_previous_plan_drained",
+                }
+            ):
+                raise AssertionError(
+                    "JOIN subview hot add was not accepted online: "
+                    +json.dumps(response,sort_keys=True))
+            join_subview_state,join_subview_before=wait_hot_join_subview_exact(
+                proc,log,directory,source,cfg)
+            if len(join_subview_state.get("join_shared",()))!=2:
+                raise AssertionError(
+                    "JOIN subview did not attach to shared superset "
+                    "state: "+repr(join_subview_state))
+            daemon_text=log.read_text(errors="replace")
+            if (
+                "sink=starrocks.joined_subview" not in daemon_text
+                or "mode=shared_subview" not in daemon_text
+            ):
+                raise AssertionError(
+                    "JOIN subview sharing mode was not observed in "
+                    "daemon diagnostics="+daemon_text[-8000:])
+
             # A strict aggregate subview reuses the existing superset state
             # (COUNT/SUM/AVG -> COUNT/SUM) and projects its durable output
             # journal instead of scanning or maintaining another accumulator.
@@ -859,6 +976,8 @@ def main():
             hot_live_state,hot_after=wait_hot_aggregate_exact(
                 proc,log,directory,source,cfg)
             join_hot_live_state,join_hot_after=wait_hot_join_exact(
+                proc,log,directory,source,cfg)
+            join_subview_live_state,join_subview_after=wait_hot_join_subview_exact(
                 proc,log,directory,source,cfg)
             subview_live_state,subview_after=wait_hot_aggregate_subview_exact(
                 proc,log,directory,source,cfg)
@@ -907,10 +1026,10 @@ def main():
             join_hot_retired=wait_stateful_retired(
                 proc,log,directory,"starrocks.joined_hot",
                 kind="inner_join")
-            if join_hot_retired.get("join_shared"):
+            if len(join_hot_retired.get("join_shared",()))!=1:
                 raise AssertionError(
-                    "retired shared JOIN follower binding leaked: "
-                    +repr(join_hot_retired))
+                    "retired exact JOIN follower disturbed remaining subview "
+                    "binding: "+repr(join_hot_retired))
             if join_actual(cfg,"joined_hot")!=join_expected(source):
                 raise AssertionError(
                     "retired hot JOIN target was not preserved exactly")
@@ -975,6 +1094,8 @@ def main():
             if join_expected(source)!=join_actual(cfg):
                 raise AssertionError(
                     "JOIN diverged while promoted aggregate subview advanced")
+            join_subview_promoted_input=wait_hot_join_subview_exact(
+                proc,log,directory,source,cfg,check_base=False)[1]
             if promoted_state.get("aggregate_shared"):
                 raise AssertionError(
                     "promoted aggregate subview retained shared binding: "
@@ -1005,9 +1126,8 @@ def main():
                     "promoted aggregate subview retirement leaked state: "
                     +repr(subview_retired))
 
-            # JOIN uses the same retirement journal/frontier protocol but a
-            # different pair-identity outbox. Retire it online too and preserve
-            # the exact final target at the cutover frontier.
+            # Retire the JOIN superset first. Its projection follower must be
+            # promoted to a private projected pair state at the exact frontier.
             join_before_drop=join_actual(cfg)
             join_expected_before_drop=join_expected(source)
             if join_before_drop!=join_expected_before_drop:
@@ -1034,12 +1154,51 @@ def main():
                 raise AssertionError(
                     "retired JOIN target changed after cutover")
             if (
-                join_retired["consumers"]!=0
-                or join_retired["retirements"]
+                join_retired["consumers"]!=1
+                or join_retired.get("join_shared")
+                or dict(join_retired["join_tasks"]).get(
+                    "starrocks.joined_subview")!="active"
             ):
                 raise AssertionError(
-                    "final stateful retirement leaked consumer/intent: "
+                    "JOIN subview promotion did not detach cleanly: "
                     +repr(join_retired))
+
+            mutate_after_join_promotion(source)
+            join_subview_promoted_state,join_subview_promoted_after=(
+                wait_hot_join_subview_exact(
+                    proc,log,directory,source,cfg,check_base=False))
+            if join_subview_promoted_state.get("join_shared"):
+                raise AssertionError(
+                    "promoted JOIN subview retained shared binding: "
+                    +repr(join_subview_promoted_state))
+            if join_actual(cfg)!=join_expected_before_drop:
+                raise AssertionError(
+                    "retired JOIN superset target changed after source advanced")
+
+            result,response,activation=run_catalog_sql(
+                directory,env,"drop-join-subview",
+                "DROP TABLE starrocks.joined_subview;")
+            if (
+                result.returncode!=0
+                or activation.get("status") not in {
+                    "hot_pending",
+                    "deferred_until_snapshot_done",
+                    "deferred_until_previous_plan_drained",
+                }
+            ):
+                raise AssertionError(
+                    "promoted JOIN subview drop was not accepted: "
+                    +json.dumps(response,sort_keys=True))
+            join_subview_retired=wait_stateful_retired(
+                proc,log,directory,"starrocks.joined_subview",
+                kind="join")
+            if (
+                join_subview_retired["consumers"]!=0
+                or join_subview_retired["retirements"]
+            ):
+                raise AssertionError(
+                    "final JOIN subview retirement leaked consumer/intent: "
+                    +repr(join_subview_retired))
 
             stop(proc,handle,kill=False)
             proc=handle=log=None
@@ -1055,6 +1214,8 @@ def main():
                 physical_state_reuse=True,
                 aggregate_subview_reuse=True,
                 aggregate_subview_owner_promotion=True,
+                join_subview_reuse=True,
+                join_subview_owner_promotion=True,
                 online_stateful_add_live_updates=True,
                 online_stateful_drop=True,
                 online_join_drop=True,
@@ -1073,8 +1234,13 @@ def main():
                 subview_before=subview_before,
                 subview_after=subview_after,
                 promoted_after=promoted_after,
+                join_subview_before=join_subview_before,
+                join_subview_after=join_subview_after,
+                join_subview_promoted_input=join_subview_promoted_input,
+                join_subview_promoted_after=join_subview_promoted_after,
                 retired_state=retired_state,
                 join_retired=join_retired,
+                join_subview_retired=join_subview_retired,
             )
             args.output.parent.mkdir(
                 parents=True,exist_ok=True)
@@ -1086,8 +1252,11 @@ def main():
                     if key not in {
                         "first","second","third",
                         "hot_before","hot_after","subview_before",
-                        "subview_after","promoted_after","retired_state",
-                        "join_retired"
+                        "subview_after","promoted_after",
+                        "join_subview_before","join_subview_after",
+                        "join_subview_promoted_input",
+                        "join_subview_promoted_after","retired_state",
+                        "join_retired","join_subview_retired"
                     }
                 },sort_keys=True),
                 flush=True)
