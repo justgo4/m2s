@@ -487,6 +487,21 @@ def _validate_commit_replay(con, seq, gtid, parts):
         "than the durable commit")
 
 
+def validate_commit_replay(con, source_epoch, position, gtid, parts):
+    """Require a stale/equal source position to match an existing durable commit."""
+    source_epoch=str(source_epoch)
+    source_file,source_pos=str(position[0]),int(position[1])
+    existing=con.execute("""
+        SELECT seq FROM source_commits
+        WHERE source_epoch=? AND source_file=? AND source_pos=?
+    """,(source_epoch,source_file,source_pos)).fetchone()
+    if existing is None:
+        raise RuntimeError(
+            "stale source position is absent from the durable source log")
+    return _validate_commit_replay(
+        con,int(existing[0]),gtid,parts)
+
+
 def log_commit_tx(con, source_epoch, position, gtid, parts):
     source_epoch = str(source_epoch)
     source_file, source_pos = str(position[0]), int(position[1])
