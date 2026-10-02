@@ -78,9 +78,9 @@ def main():
             con,plan_version=8)
         assert waits[0]["retry_count"]==0
 
-        # Once the exact plan is admitted, its wait row is consumed even
-        # before task activation. This prevents hot_pending/rebuild_pending
-        # installation from being retried as if resource pressure still held.
+        # Admission alone is not the crash boundary: retain the wait until
+        # the caller has durably registered the descriptor/rebuild intent.
+        # Otherwise a crash here could strand an unowned state reservation.
         stateful_admission.clear_wait(
             con,task_ids=["wait-a"])
         stateful_admission.queue_wait(
@@ -96,8 +96,10 @@ def main():
             ),
             retry_seconds=1)
         assert admitted["ok"]
-        assert not stateful_admission.waiting_tasks(
+        waits=stateful_admission.waiting_tasks(
             con,plan_version=7)
+        assert len(waits)==1
+        assert waits[0]["task_id"]=="wait-a"
 
         # Restore the original version-7 waiter for the independent
         # superseded-plan contract below.
@@ -267,7 +269,7 @@ def main():
         "stateful_admission_retry_test ok durable_defer "
         "superseded_plan_fence current_plan_retry "
         "control_plane_nonfatal_wait bounded_retry_backoff plan_retry_reset "
-        "immediate_superseded_cleanup admitted_wait_consumption "
+        "immediate_superseded_cleanup admission_wait_crash_fence "
         "pending_plan_not_retried",
         flush=True,
     )
