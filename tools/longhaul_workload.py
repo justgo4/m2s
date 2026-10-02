@@ -91,6 +91,181 @@ def interval_overlap_seconds(start,end,window_start,window_end):
     )
 
 
+def topology_resource_budget(
+        memory_mb,cpu_cap,dynamic_tasks,load_mode,
+        cpu_target=None,initial_sinks=3,
+        requested_writer_max=8,
+        requested_snapshot_workers=2,
+        requested_duckdb_mb=128
+):
+    """Model daemon startup + every planned hot-add before a long run starts."""
+    memory_mb=max(1,int(memory_mb))
+    cpu_cap=max(1,int(cpu_cap))
+    cpu_target=(
+        cpu_cap
+        if cpu_target is None
+        else max(1,min(cpu_cap,int(cpu_target))))
+    dynamic_tasks=max(0,int(dynamic_tasks))
+    initial_sinks=max(1,int(initial_sinks))
+    requested_writer_max=max(1,int(requested_writer_max))
+    requested_snapshot_workers=max(
+        0,int(requested_snapshot_workers))
+    requested_duckdb_bytes=max(
+        1,int(requested_duckdb_mb))*1024**2
+    if load_mode not in {"merge_async","transaction"}:
+        raise ValueError(
+            "unsupported longhaul load mode: "+str(load_mode))
+
+    snapshot_cap=max(
+        1,min(
+            2,
+            cpu_target//2
+            if cpu_target>1 else 1))
+    snapshot_workers=min(
+        requested_snapshot_workers,
+        snapshot_cap)
+    writer_max=min(
+        requested_writer_max,
+        max(1,cpu_cap//initial_sinks))
+    duckdb_budget=max(
+        1,memory_mb*1024**2//2)
+
+    if load_mode=="merge_async":
+        affordable_slots=max(
+            1,
+            duckdb_budget//requested_duckdb_bytes)
+        fixed_slots=1+snapshot_workers
+        memory_writer_cap=max(
+            1,
+            (affordable_slots-fixed_slots)
+            //max(1,2*initial_sinks))
+        writer_max=min(
+            writer_max,memory_writer_cap)
+    else:
+        memory_writer_cap=writer_max
+
+    startup_loader_slots=(
+        writer_max*initial_sinks
+        if load_mode=="merge_async"
+        else initial_sinks)
+    startup_engine_slots=max(
+        1,
+        1+snapshot_workers
+        +startup_loader_slots*2)
+    startup_cap=max(
+        1,
+        duckdb_budget//startup_engine_slots)
+    startup_ok=not (
+        requested_duckdb_bytes>startup_cap
+        and startup_cap<32*1024**2)
+    effective_duckdb_bytes=min(
+        requested_duckdb_bytes,startup_cap)
+
+    stages=[]
+    for physical_sinks in range(
+            initial_sinks,
+            initial_sinks+dynamic_tasks+1):
+        if load_mode=="merge_async":
+            per_sink_writers=max(
+                1,min(
+                    writer_max,
+                    cpu_target//physical_sinks))
+            loader_slots=(
+                per_sink_writers*physical_sinks)
+        else:
+            per_sink_writers=1
+            loader_slots=physical_sinks
+        engine_slots=max(
+            1,
+            1+snapshot_workers
+            +loader_slots*2)
+        per_engine_cap=max(
+            1,duckdb_budget//engine_slots)
+        admitted=(
+            startup_ok
+            if physical_sinks==initial_sinks
+            else effective_duckdb_bytes<=per_engine_cap)
+        stages.append(dict(
+            physical_sinks=physical_sinks,
+            writers_per_sink=per_sink_writers,
+            engine_slots=engine_slots,
+            per_engine_cap_mb=(
+                per_engine_cap//1024**2),
+            admitted=bool(admitted),
+        ))
+
+    failing=[
+        item["physical_sinks"]
+        for item in stages
+        if not item["admitted"]
+    ]
+    return dict(
+        ok=not failing,
+        memory_mb=memory_mb,
+        cpu_cap=cpu_cap,
+        cpu_target=cpu_target,
+        initial_physical_sinks=initial_sinks,
+        final_physical_sinks=(
+            initial_sinks+dynamic_tasks),
+        dynamic_tasks=dynamic_tasks,
+        load_mode=str(load_mode),
+        snapshot_workers=snapshot_workers,
+        writer_max=writer_max,
+        memory_writer_cap=memory_writer_cap,
+        requested_duckdb_mb=int(
+            requested_duckdb_mb),
+        effective_duckdb_mb=(
+            effective_duckdb_bytes//1024**2),
+        minimum_per_engine_cap_mb=min(
+            item["per_engine_cap_mb"]
+            for item in stages),
+        failing_physical_sinks=failing,
+        stages=stages,
+    )
+
+
+def runtime_topology_resource_preflight(args):
+    """Fail before the 50M seed if the planned online topology cannot fit."""
+    policy=j4.read_resource_policy()
+    memory=j4.system_memory_stats()
+    requested_memory=max(
+        1,int(args.memory_mb))
+    detected_memory=int(
+        memory.get("total_mb") or 0)
+    effective_memory=(
+        min(requested_memory,detected_memory)
+        if detected_memory>0
+        else requested_memory)
+    result=topology_resource_budget(
+        effective_memory,
+        int(policy["cpu_cap"]),
+        int(args.dynamic_tasks),
+        str(args.load_mode),
+        # Auto cpu_target can rise when host load falls. Prove the topology
+        # against the highest target allowed by the selected CPU cap.
+        cpu_target=int(policy["cpu_cap"]),
+    )
+    result["requested_memory_mb"]=requested_memory
+    result["detected_memory_mb"]=(
+        detected_memory
+        if detected_memory>0 else None)
+    result["cpu_target_assumption"]="cpu_cap_worst_case"
+    if (
+        detected_memory>0
+        and detected_memory<requested_memory
+    ):
+        result["ok"]=False
+        result["memory_budget_available"]=False
+    else:
+        result["memory_budget_available"]=True
+    if not result["ok"]:
+        raise RuntimeError(
+            "longhaul topology resource preflight failed before seed: "
+            +json.dumps(
+                result,sort_keys=True))
+    return result
+
+
 def _resource_file(path):
     try:
         return Path(path).read_text(
@@ -1054,6 +1229,14 @@ def run(args):
         source.close()
         raise RuntimeError(
             "formal P11 certification requires a clean git worktree")
+    topology_preflight=runtime_topology_resource_preflight(
+        args)
+    print(
+        "longhaul topology resource preflight "
+        +json.dumps(
+            topology_preflight,
+            sort_keys=True),
+        flush=True)
     proc=handle=log=None
     try:
         seed_seconds=setup_databases(
@@ -1247,6 +1430,7 @@ def run(args):
                     duration_seconds=max(
                         0.0,now-started),
                     memory_mb=int(args.memory_mb),
+                    topology_resource_preflight=topology_preflight,
                     work_directory_persistent=bool(
                         getattr(
                             args,"work_directory",None)),
@@ -1554,6 +1738,7 @@ def run(args):
                 fault_unavailable_seconds=float(
                     fault_unavailable_seconds),
                 memory_mb=int(args.memory_mb),
+                topology_resource_preflight=topology_preflight,
                 work_directory_persistent=bool(
                     getattr(args,"work_directory",None)),
                 resource_fingerprint=machine_resource_fingerprint(),
@@ -1569,6 +1754,13 @@ def run(args):
                 sample_seconds=float(args.sample_seconds),
                 fault_every_seconds=float(
                     args.fault_every_seconds),
+                fault_recovery_timeout_seconds=float(
+                    args.fault_recovery_timeout_seconds),
+                seed_chunk=int(args.seed_chunk),
+                drain_timeout_seconds=float(
+                    args.drain_timeout_seconds),
+                checkpoint_seconds=float(
+                    args.checkpoint_seconds),
                 seed_seconds=seed_seconds,
                 source_ready_seconds=source_ready_at,
                 live_rows=int(sequence),
