@@ -171,11 +171,11 @@ def begin(
     if logical_target==shadow:
         raise ValueError(
             "stateful rebuild shadow target must differ")
-    current=maybe_info(con,sink_key)
     expected=(
         kind,old_task_id,new_task_id,
         logical_target,shadow,original_comment)
-    if current is not None:
+
+    def validate(current):
         actual=(
             current["kind"],current["old_task_id"],
             current["new_task_id"],
@@ -191,9 +191,19 @@ def begin(
             raise RuntimeError(
                 "failed stateful rebuild must be explicitly cleared")
         return current
+
+    current=maybe_info(con,sink_key)
+    if current is not None:
+        return validate(current)
+
+    # Multiple catalog/control paths can discover the same replacement at the
+    # same time.  INSERT OR IGNORE makes an identical concurrent begin
+    # idempotent instead of leaking sqlite UNIQUE errors.  We always re-read
+    # and validate durable identity; collisions on new_task_id/shadow_target
+    # that belong to a different sink still fail closed below.
     now=time.time()
     con.execute("""
-        INSERT INTO stateful_rebuilds(
+        INSERT OR IGNORE INTO stateful_rebuilds(
             sink_key,kind,old_task_id,new_task_id,
             logical_target,shadow_target,original_comment,
             frontier,phase,error,created,updated)
@@ -201,7 +211,24 @@ def begin(
     """,(
         sink_key,kind,old_task_id,new_task_id,
         logical_target,shadow,original_comment,now,now))
-    return info(con,sink_key)
+    current=maybe_info(con,sink_key)
+    if current is not None:
+        return validate(current)
+
+    collision=con.execute("""
+        SELECT sink_key,new_task_id,shadow_target
+        FROM stateful_rebuilds
+        WHERE new_task_id=? OR shadow_target=?
+        ORDER BY created,sink_key
+        LIMIT 1
+    """,(new_task_id,shadow)).fetchone()
+    if collision is not None:
+        raise RuntimeError(
+            "stateful rebuild durable identity collision "
+            "owner=%s new_task_id=%s shadow_target=%s" % (
+                str(collision[0]),str(collision[1]),str(collision[2])))
+    raise RuntimeError(
+        "stateful rebuild begin was not durably recorded")
 
 
 def freeze_frontier(con,sink_key,frontier):
@@ -238,14 +265,23 @@ def _advance(con,sink_key,expected,new_phase):
         raise RuntimeError(
             "invalid stateful rebuild phase transition "
             +current["phase"]+" -> "+new_phase)
-    con.execute("""
+    changed=con.execute("""
         UPDATE stateful_rebuilds
         SET phase=?,updated=?
         WHERE sink_key=? AND phase=?
     """,(
         new_phase,time.time(),
-        current["sink_key"],expected))
-    return info(con,sink_key)
+        current["sink_key"],expected)).rowcount
+    durable=info(con,sink_key)
+    if durable["phase"]==new_phase:
+        return durable
+    if not changed:
+        raise RuntimeError(
+            "stateful rebuild phase changed concurrently "
+            +expected+" -> "+durable["phase"]
+            +" while requesting "+new_phase)
+    raise RuntimeError(
+        "stateful rebuild phase transition was not durable")
 
 
 def mark_ready_to_swap(con,sink_key):
@@ -278,12 +314,31 @@ def fail(con,sink_key,error):
         raise RuntimeError(
             "completed stateful rebuild cannot fail")
     error=_text(error,"error")
-    con.execute("""
+    if current["phase"]=="failed":
+        if current["error"]!=error:
+            raise RuntimeError(
+                "failed stateful rebuild error changed across retry")
+        return current
+    changed=con.execute("""
         UPDATE stateful_rebuilds
         SET phase='failed',error=?,updated=?
-        WHERE sink_key=?
-    """,(error,time.time(),current["sink_key"]))
-    return info(con,sink_key)
+        WHERE sink_key=? AND phase=?
+    """,(
+        error,time.time(),current["sink_key"],
+        current["phase"])).rowcount
+    durable=info(con,sink_key)
+    if durable["phase"]=="failed":
+        if durable["error"]!=error:
+            raise RuntimeError(
+                "stateful rebuild failed concurrently with a different error")
+        return durable
+    if not changed:
+        raise RuntimeError(
+            "stateful rebuild phase changed concurrently "
+            +current["phase"]+" -> "+durable["phase"]
+            +" while failing")
+    raise RuntimeError(
+        "stateful rebuild failure transition was not durable")
 
 
 def for_task(con,task_id):
