@@ -8330,7 +8330,12 @@ def merge_delivery_worker(mapping, worker_id, cfg, runtime):
             if merge_table_quarantined(runtime,table):
                 if engines:
                     close_plan_engines(engines)
-                if worker_id==0:
+                if (
+                    worker_id==0
+                    and cfg.get("sr")
+                    and cfg.get("merge_commit_interval_ms") is not None
+                    and cfg.get("load_timeout") is not None
+                ):
                     held=merge_recovery_lane_locks(
                         runtime,table,cfg)
                     if held is not None:
