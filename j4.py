@@ -5301,6 +5301,20 @@ def _catalog_plan_payload(cfg, publish_result):
         cfg["catalog"],int(publish_result["version"]))
 
 
+def catalog_plan_hash(cfg,publish_result,plan=None):
+    value=str(publish_result.get("plan_hash") or "").strip()
+    if value:
+        return value
+    if plan is None:
+        plan=_catalog_plan_payload(cfg,publish_result)
+    value=str((plan or {}).get("plan_hash") or "").strip()
+    if not value:
+        raise RuntimeError(
+            "catalog plan hash is missing for version "
+            +str(int(publish_result.get("version",0))))
+    return value
+
+
 def validate_stateful_catalog_plan(
         cfg,plan,prepared,create_missing=False,allow_missing=False
 ):
@@ -5736,9 +5750,8 @@ def validate_hot_catalog_plan(cfg, runtime, publish_result):
         with runtime["plan_lock"]:
             runtime.setdefault(
                 "validated_catalog_plans",{})[
-                    str(
-                        publish_result.get("plan_hash")
-                        or plan.get("plan_hash"))
+                    catalog_plan_hash(
+                        cfg,publish_result,plan)
                 ]=(candidate,dict(validation))
         return validation
 
@@ -5943,7 +5956,8 @@ def validate_hot_catalog_plan(cfg, runtime, publish_result):
             "use the new plan after cutover")
     with runtime["plan_lock"]:
         runtime.setdefault("validated_catalog_plans",{})[
-            str(publish_result.get("plan_hash") or plan.get("plan_hash"))] = (
+            catalog_plan_hash(
+                cfg,publish_result,plan)] = (
                 candidate,dict(validation))
     return validation
 
@@ -6512,7 +6526,8 @@ def install_hot_catalog_plan(cfg, runtime, publish_result, validation):
     if status in ("active","restart_required","rebuild_required"):
         return catalog_activation_record(runtime,validation)
 
-    plan_hash = str(publish_result.get("plan_hash",""))
+    plan_hash=catalog_plan_hash(
+        cfg,publish_result)
     with runtime["plan_lock"]:
         cached = runtime.setdefault("validated_catalog_plans",{}).pop(
             plan_hash,None)
