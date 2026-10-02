@@ -1053,6 +1053,9 @@ def main():
             directory=Path(td)
             catalog,env=setup_catalog(
                 directory,cfg,opts,args.load_mode)
+            rebuild_gate=directory/"release-stateful-rebuild"
+            env["M2S_TEST_STATEFUL_REBUILD_GATE"]=str(
+                rebuild_gate)
 
             proc,handle,log=start(directory,env,1)
             first_state,first=wait_ready_exact(
@@ -1363,8 +1366,26 @@ def main():
                 raise AssertionError(
                     "stateful semantic rebuild was not accepted online: "
                     +json.dumps(response,sort_keys=True))
+            held_state,held_rebuild=wait_rebuild_hold(
+                proc,log,directory,"starrocks.agg_subview")
+            if held_rebuild[3] is not None:
+                raise AssertionError(
+                    "rebuild frontier froze before deterministic crash hold: "
+                    +repr(held_rebuild))
+            stop(proc,handle,kill=True)
+            proc=handle=log=None
+            rebuild_gate.touch()
+            proc,handle,log=start(directory,env,3)
             rebuild_state,rebuild_before=wait_aggregate_rebuild_exact(
                 proc,log,directory,source,cfg)
+            restart_text=log.read_text(errors="replace")
+            if (
+                "STATEFUL REBUILD RESTART RESUME" not in restart_text
+                and "STATEFUL REBUILD RECOVERED CUTOVER" not in restart_text
+            ):
+                raise AssertionError(
+                    "semantic rebuild restart recovery was not observed: "
+                    +restart_text[-10000:])
             comments,_=execute(
                 cfg,
                 "SELECT TABLE_COMMENT FROM information_schema.TABLES "
