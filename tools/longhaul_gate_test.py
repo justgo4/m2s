@@ -268,14 +268,19 @@ def workload():
         source_totals=[62_960_000,12345],
         target_totals=[62_960_000,12345],
         event_checks=dict(
-            comparison="partitioned_full_rows_v1",
+            comparison="partitioned_full_rows_v2",
             partitions=1024,
             expected_rows=62_960_000,
+            source_total_rows=62_960_000,
+            source_uncovered_rows=0,
             expected_digest="source-event-digest",
+            coverage_complete=True,
             all_match=True,
             tables={
                 "events":dict(
                     rows=62_960_000,
+                    total_rows=62_960_000,
+                    uncovered_rows=0,
                     digest="source-event-digest",
                     match=True,
                     mismatches=[]),
@@ -332,34 +337,45 @@ def workload():
             },
         ),
         join_checks=dict(
-            expected_rows=1024,
+            comparison="partitioned_full_rows_v2",
+            partitions=1024,
+            expected_rows=62_960_000,
+            source_total_rows=62_960_000,
+            source_uncovered_rows=0,
             expected_digest="source-join-digest",
+            coverage_complete=True,
             all_match=True,
             tables={
                 "join_000":dict(
-                    rows=1024,
-                    digest="digest-join-000",
-                    match=True),
+                    rows=62_960_000,total_rows=62_960_000,
+                    uncovered_rows=0,
+                    digest="source-join-digest",
+                    match=True,mismatches=[]),
                 "join_002":dict(
-                    rows=1024,
-                    digest="digest-join-002",
-                    match=True),
+                    rows=62_960_000,total_rows=62_960_000,
+                    uncovered_rows=0,
+                    digest="source-join-digest",
+                    match=True,mismatches=[]),
                 "join_004":dict(
-                    rows=1024,
-                    digest="digest-join-004",
-                    match=True),
+                    rows=62_960_000,total_rows=62_960_000,
+                    uncovered_rows=0,
+                    digest="source-join-digest",
+                    match=True,mismatches=[]),
                 "join_006":dict(
-                    rows=1024,
-                    digest="digest-join-006",
-                    match=True),
+                    rows=62_960_000,total_rows=62_960_000,
+                    uncovered_rows=0,
+                    digest="source-join-digest",
+                    match=True,mismatches=[]),
                 "join_008":dict(
-                    rows=1024,
-                    digest="digest-join-008",
-                    match=True),
+                    rows=62_960_000,total_rows=62_960_000,
+                    uncovered_rows=0,
+                    digest="source-join-digest",
+                    match=True,mismatches=[]),
                 "join_010":dict(
-                    rows=1024,
-                    digest="digest-join-010",
-                    match=True),
+                    rows=62_960_000,total_rows=62_960_000,
+                    uncovered_rows=0,
+                    digest="source-join-digest",
+                    match=True,mismatches=[]),
             },
         ),
         share_mode="adaptive",
@@ -481,6 +497,84 @@ def main():
         bad,require_profile=p11_profile.NAME)
     assert not result["ok"]
     assert "source_target_mismatch" in result["failures"]
+
+    # Formal certification rejects stale summary-only or incomplete evidence
+    # even when all top-level boolean flags remain True.
+    bad=workload()
+    bad["event_checks"]["comparison"]="count_sum_summary_only"
+    result=evaluate_workload(
+        bad,require_profile=p11_profile.NAME)
+    assert not result["ok"]
+    assert "event_exactness_schema" in result["failures"]
+
+    bad=workload()
+    bad["event_checks"]["partitions"]=1
+    result=evaluate_workload(
+        bad,require_profile=p11_profile.NAME)
+    assert not result["ok"]
+    assert (
+        "event_exactness_partition_coverage"
+        in result["failures"]
+    )
+
+    bad=workload()
+    bad["event_checks"]["source_total_rows"]=(
+        bad["event_checks"]["expected_rows"]+1)
+    result=evaluate_workload(
+        bad,require_profile=p11_profile.NAME)
+    assert not result["ok"]
+    assert (
+        "event_exactness_source_coverage"
+        in result["failures"]
+    )
+
+    bad=workload()
+    bad["event_checks"]["tables"]["events"][
+        "total_rows"]+=1
+    bad["event_checks"]["tables"]["events"][
+        "uncovered_rows"]=1
+    result=evaluate_workload(
+        bad,require_profile=p11_profile.NAME)
+    assert not result["ok"]
+    assert "event_exactness_contract" in result["failures"]
+
+    bad=workload()
+    bad["join_checks"]["comparison"]="summary_v0"
+    result=evaluate_workload(
+        bad,require_profile=p11_profile.NAME)
+    assert not result["ok"]
+    assert "join_exactness_schema" in result["failures"]
+
+    bad=workload()
+    bad["join_checks"]["expected_rows"]-=1
+    bad["join_checks"]["source_total_rows"]-=1
+    for value in bad["join_checks"]["tables"].values():
+        value["rows"]-=1
+        value["total_rows"]-=1
+    result=evaluate_workload(
+        bad,require_profile=p11_profile.NAME)
+    assert not result["ok"]
+    assert (
+        "join_exactness_source_count_mismatch"
+        in result["failures"]
+    )
+
+    bad=workload()
+    bad["join_checks"]["tables"]["join_010"][
+        "digest"]="wrong"
+    result=evaluate_workload(
+        bad,require_profile=p11_profile.NAME)
+    assert not result["ok"]
+    assert "join_exactness_contract" in result["failures"]
+
+    bad=workload()
+    removed=bad["join_checks"]["tables"].pop(
+        "join_010")
+    bad["join_checks"]["tables"]["join_012"]=removed
+    result=evaluate_workload(
+        bad,require_profile=p11_profile.NAME)
+    assert not result["ok"]
+    assert "join_targets_missing" in result["failures"]
 
     assert full["evidence"]["dynamic_tasks"]["mix"]=="mixed"
     assert full["evidence"]["dynamic_tasks"]["aggregate_ready"]==5
