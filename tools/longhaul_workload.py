@@ -157,6 +157,27 @@ def code_revision():
     return ""
 
 
+def code_worktree_clean():
+    """Return clean/dirty without exposing repository paths or filenames."""
+    try:
+        result=subprocess.run(
+            [
+                "git","status","--porcelain",
+                "--untracked-files=all",
+            ],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            timeout=10,
+            check=False)
+    except (OSError,subprocess.SubprocessError):
+        return None
+    if result.returncode!=0:
+        return None
+    return not bool(
+        str(result.stdout or "").strip())
+
+
 def software_fingerprint(source,starrocks_version):
     """Capture versions/modes needed to reproduce one benchmark result."""
     with source.cursor() as cur:
@@ -170,6 +191,7 @@ def software_fingerprint(source,starrocks_version):
             "MySQL software fingerprint is incomplete")
     return dict(
         code_revision=code_revision(),
+        code_worktree_clean=code_worktree_clean(),
         mysql_version=str(row[0] or ""),
         mysql_gtid_mode=str(row[1] or "").upper(),
         mysql_binlog_format=str(row[2] or "").upper(),
@@ -855,6 +877,13 @@ def run(args):
     source=j4.pymysql.connect(**opts)
     software=software_fingerprint(
         source,starrocks_version)
+    if (
+        getattr(args,"certification_profile",False)
+        and software.get("code_worktree_clean") is not True
+    ):
+        source.close()
+        raise RuntimeError(
+            "formal P11 certification requires a clean git worktree")
     proc=handle=log=None
     try:
         seed_seconds=setup_databases(
