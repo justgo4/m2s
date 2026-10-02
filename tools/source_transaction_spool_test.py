@@ -24,9 +24,9 @@ def batch(ids,values):
     })
 
 
-def write_parts(spool):
+def write_parts(spool,first_value=None):
     for ids,values in (
-        ([1],["a"*2048]),
+        ([1],[first_value if first_value is not None else "a"*2048]),
         ([2],["b"*2048]),
     ):
         part=source_state.prepare_part(
@@ -146,6 +146,56 @@ def main():
         assert stats["event_rows"]==2,stats
         assert stats["payload_bytes"]>0,stats
 
+        # Cursor idempotence must not bypass source-log identity validation.
+        # A reconnect may redeliver the transaction at the exact durable
+        # position: identical bytes are accepted without creating a new seq,
+        # while changed content at the same source position fails closed.
+        before_pipeline=source_state.status(con)["pipeline_stats"]
+        with tempfile.SpooledTemporaryFile(
+            max_size=128,dir=directory
+        ) as source_spool, tempfile.SpooledTemporaryFile(
+            max_size=128,dir=directory
+        ) as target_spool:
+            write_parts(source_spool)
+            assert j4.commit_spool(
+                con,target_spool,
+                ("binlog.000001",120),
+                time.time(),{},
+                source_spool=source_spool,
+                source_epoch="source-epoch"
+            )==set()
+        assert source_state.log_durable_seq(con)==1
+        assert con.execute(
+            "SELECT COUNT(*) FROM source_commits"
+        ).fetchone()[0]==1
+        assert source_state.status(con)[
+            "pipeline_stats"]==before_pipeline
+
+        with tempfile.SpooledTemporaryFile(
+            max_size=128,dir=directory
+        ) as source_spool, tempfile.SpooledTemporaryFile(
+            max_size=128,dir=directory
+        ) as target_spool:
+            write_parts(source_spool,first_value="changed"*512)
+            try:
+                j4.commit_spool(
+                    con,target_spool,
+                    ("binlog.000001",120),
+                    time.time(),{},
+                    source_spool=source_spool,
+                    source_epoch="source-epoch")
+                raise AssertionError(
+                    "cursor idempotence bypassed source replay validation")
+            except RuntimeError as exc:
+                assert "differs from the durable commit" in str(exc)
+        assert j4.meta_get(
+            con,"read_position"
+        )==("binlog.000001",120)
+        assert source_state.log_durable_seq(con)==1
+        assert con.execute(
+            "SELECT COUNT(*) FROM source_commit_parts"
+        ).fetchone()[0]==2
+
         assert source_state.apply_pending(con)==1
         assert source_state.base_applied_seq(con)==1
         assert con.execute("""
@@ -159,7 +209,7 @@ def main():
     print(
         "source_transaction_spool_test ok "
         "disk_backed bounded atomic_cursor rollback_on_truncate "
-        "per_commit_stats apply",
+        "per_commit_stats replay_identity apply",
         flush=True,
     )
 
