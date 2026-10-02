@@ -179,6 +179,29 @@ def main():
         except Exception:
             raise
 
+        # The preferred-leader fence is durable. A daemon restart must not
+        # erase the graph decision and accidentally start a private bootstrap.
+        con.close()
+        con=j4.init_state(
+            os.path.join(td,"state.sqlite3"))
+        persisted=stateful_share_policy.preference_info(
+            con,"agg-narrow")
+        assert persisted["preferred_leader_task_id"]=="agg-wide"
+        narrow=aggregate_task_catalog.task_info(
+            con,"agg-narrow")
+        mapping=aggregate_target_mapping.mapping_from_descriptor(
+            narrow)
+        waiting=aggregate_task_runner.step(
+            con,narrow["task_id"],
+            dict(stateful_share_mode="compatible"),
+            mapping=mapping)
+        assert waiting["phase"]=="waiting_shared_leader"
+        assert con.execute(
+            "SELECT COUNT(*) FROM aggregate_states "
+            "WHERE state_id=?",
+            (narrow["state_id"],)
+        ).fetchone()[0]==0
+
         # Adaptive graph placement respects fanout caps without creating
         # follower chains. With max_followers=1, the wide aggregate owns only
         # one follower; the remaining narrow task must stay private rather
@@ -232,7 +255,7 @@ def main():
     print(
         "stateful_share_graph_test ok aggregate_superset "
         "join_projection whole_graph_no_chain adaptive_fanout "
-        "wait_before_private sharing_off",
+        "wait_before_private restart_persistence sharing_off",
         flush=True,
     )
 
