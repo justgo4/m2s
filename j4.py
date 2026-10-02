@@ -10807,21 +10807,31 @@ def recover_stateful_rebuilds_startup(
         if cohort is None:
             unowned_by_version.setdefault(
                 plan_version,[]).append(
-                    rebuild["sink_key"])
+                    rebuild)
         else:
             owned_by_version.setdefault(
                 plan_version,set()).add(
                     cohort["cohort_id"])
-    for plan_version,sinks in unowned_by_version.items():
+    for plan_version,unowned in unowned_by_version.items():
         owners=owned_by_version.get(
             plan_version,set())
         if owners:
             raise RuntimeError(
                 "stateful rebuild cohort membership is partial for plan "
                 +str(plan_version))
-        if len(sinks)>1:
+        # Only pre-fence legacy candidates can be upgraded into a cohort.
+        # Once any sink has independently entered cutover, inventing a cohort
+        # would require a member that can no longer report BUILDING readiness.
+        if (
+            len(unowned)>1
+            and all(
+                item["phase"]=="building_shadow"
+                for item in unowned)
+        ):
             stateful_rebuild_cohort.begin(
-                con,plan_version,sinks)
+                con,plan_version,[
+                    item["sink_key"]
+                    for item in unowned])
 
     if not records:
         cohorts=stateful_rebuild_cohort.active(
