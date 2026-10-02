@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Contract for asynchronous durable source capture -> base apply."""
 from pathlib import Path
+import pickle
 import sqlite3
 import sys
 import tempfile
