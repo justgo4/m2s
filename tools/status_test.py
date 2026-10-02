@@ -43,6 +43,17 @@ def main():
             plan_version=8,
             reason="max_state_bytes",
             retry_seconds=30)
+        con.execute("""
+            INSERT INTO merge_uncertain(
+                delivery_id,part,table_name,lane,label,
+                payload_sha256,reason,replay_attempts,last_replay,
+                created,updated)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?)
+        """,(
+            "uncertain-delivery",0,"starrocks.uncertain",3,
+            "local-only-request-id","a"*64,
+            "synthetic uncertain response",2,123.5,100.0,124.0,
+        ))
         con.close()
 
         status=j4.durable_status_snapshot(path)
@@ -72,10 +83,28 @@ def main():
         assert status["admission"]["waiting_plans"]==1
         assert status["admission"]["waiting"][0]["plan_version"]==8
         assert status["admission"]["waiting"][0]["retry_count"]==0
+        assert status["merge_uncertain"]["count"]==1
+        assert status["merge_uncertain"]["tables"]=={
+            "starrocks.uncertain":1}
+        assert status["merge_uncertain"]["truncated"]==0
+        assert status["merge_uncertain"]["requests"]==[
+            dict(
+                table_name="starrocks.uncertain",
+                delivery_id="uncertain-delivery",
+                part=0,
+                lane=3,
+                reason="synthetic uncertain response",
+                created=100.0,
+                updated=124.0,
+                replay_attempts=2,
+                last_replay=123.5,
+            )
+        ]
 
     print(
         "status_test ok missing_state read_only_snapshot "
-        "rebuild retirement source jobs sharing admission physical",
+        "rebuild retirement source jobs sharing admission "
+        "merge_uncertain physical",
         flush=True,
     )
 
