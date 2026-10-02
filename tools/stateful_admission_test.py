@@ -128,7 +128,9 @@ def main():
 
     status=stateful_admission.status(con)
     assert status==dict(
-        decisions=2,admitted=2,rejected=0)
+        decisions=2,admitted=2,rejected=0,
+        reserved_pending_tasks=2,
+        reserved_state_bytes=200)
     con.close()
 
     with tempfile.TemporaryDirectory(
@@ -143,13 +145,55 @@ def main():
             "file:"+path+"?mode=ro",uri=True)
         try:
             assert stateful_admission.status(ro)==dict(
-                decisions=0,admitted=0,rejected=0)
+                decisions=0,admitted=0,rejected=0,
+                reserved_pending_tasks=0,
+                reserved_state_bytes=0)
         finally:
             ro.close()
 
+    # Cross-connection reservations close the window between admission and
+    # descriptor registration. The second request must see the first request's
+    # durable headroom even though no task descriptor exists yet.
+    with tempfile.TemporaryDirectory(
+        prefix="m2s-admission-reserve-"
+    ) as td:
+        path=str(Path(td)/"state.sqlite3")
+        first=sqlite3.connect(
+            path,isolation_level=None,timeout=5)
+        second=sqlite3.connect(
+            path,isolation_level=None,timeout=5)
+        for db in (first,second):
+            db.execute("PRAGMA busy_timeout=5000")
+            stateful_admission.install(db)
+        cfg=dict(
+            stateful_admission_max_state_bytes=100,
+            stateful_admission_reserve_state_bytes=60,
+        )
+        one=stateful_admission.admit(
+            first,[item("reserve-a","starrocks.a")],cfg)
+        assert one["ok"],one
+        two=stateful_admission.admit(
+            second,[item("reserve-b","starrocks.b")],cfg)
+        assert not two["ok"],two
+        assert two["reasons"]==["max_state_bytes"]
+        assert two["metrics"]["reserved_state_bytes"]==60
+        assert two["metrics"]["projected_state_bytes"]==120
+        released=stateful_admission.release_unregistered(
+            first,[item("reserve-a","starrocks.a")],
+            reason="synthetic_failure")
+        assert released==["reserve-a"]
+        retry=stateful_admission.admit(
+            second,[item("reserve-b","starrocks.b")],cfg)
+        assert retry["ok"],retry
+        assert stateful_admission.decision_info(
+            first,"reserve-a")["reserved_state_bytes"]==0
+        first.close()
+        second.close()
+
     print(
         "stateful_admission_test ok tasks building state_bytes "
-        "pending_bytes source_lag durable_decision retry_idempotence",
+        "pending_bytes source_lag durable_decision retry_idempotence "
+        "atomic_reservation release",
         flush=True,
     )
 
