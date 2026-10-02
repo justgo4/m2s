@@ -6096,7 +6096,8 @@ def stateful_rebuild_remote_marker(cfg,table):
 
 
 def ensure_stateful_rebuild_shadow(
-        cfg,spec,existing_intent=False
+        cfg,spec,existing_intent=False,
+        recover_unmarked=False,original_comment=""
 ):
     item=spec["new"]
     task=item["task"]
@@ -6104,6 +6105,9 @@ def ensure_stateful_rebuild_shadow(
     shadow=str(spec["shadow_target"])
     marker=stateful_rebuild.remote_marker(
         task["task_id"])
+    original_comment=str(
+        original_comment or "")
+    needs_marker=False
     with mysql_connect(cfg,target=True) as target:
         with target.cursor() as cur:
             if not target_table_exists(
@@ -6129,11 +6133,7 @@ def ensure_stateful_rebuild_shadow(
                     raise RuntimeError(
                         "stateful rebuild shadow CREATE LIKE returned without "
                         "a visible table: "+shadow)
-                cur.execute(
-                    "ALTER TABLE "
-                    +sql_name(shadow,True)
-                    +" COMMENT = %s",
-                    (marker,))
+                needs_marker=True
             else:
                 cur.execute("""
                     SELECT TABLE_COMMENT
@@ -6145,15 +6145,34 @@ def ensure_stateful_rebuild_shadow(
                     "" if row is None
                     else str(row[0] or ""))
                 if actual_marker!=marker:
-                    raise RuntimeError(
-                        "durable stateful rebuild shadow marker differs: "
-                        +shadow)
+                    if not (
+                        recover_unmarked
+                        and actual_marker==original_comment
+                    ):
+                        raise RuntimeError(
+                            "durable stateful rebuild shadow marker differs: "
+                            +shadow)
+                    needs_marker=True
     actual=stateful_catalog_runtime.resolve_target_schema(
         cfg,item["kind"],task["ir"],shadow)
     if list(actual)!=list(task["target_schema"]):
         raise RuntimeError(
             "stateful rebuild shadow target schema differs from compiled "
             "generation: "+shadow)
+    if needs_marker:
+        with mysql_connect(cfg,target=True) as target:
+            with target.cursor() as cur:
+                cur.execute(
+                    "ALTER TABLE "
+                    +sql_name(shadow,True)
+                    +" COMMENT = %s",
+                    (marker,))
+        if stateful_rebuild_remote_marker(
+            cfg,shadow
+        )!=marker:
+            raise RuntimeError(
+                "stateful rebuild shadow marker was not published: "
+                +shadow)
     return shadow
 
 
@@ -6212,7 +6231,11 @@ def activate_stateful_rebuild_candidate(
                 +intent["phase"])
         ensure_stateful_rebuild_shadow(
             cfg,spec,
-            existing_intent=existing_intent)
+            existing_intent=existing_intent,
+            recover_unmarked=(
+                existing_intent
+                and intent["phase"]=="building_shadow"),
+            original_comment=intent["original_comment"])
         registered=stateful_catalog_runtime.register_compiled(
             con,[new])[0]
         if registered["task"]["descriptor_hash"]!=task[
