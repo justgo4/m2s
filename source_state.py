@@ -444,18 +444,24 @@ def log_commit_tx(con, source_epoch, position, gtid, parts):
             seq, int(part_no), part["table_name"],
             int(part["schema_epoch"]), payload,nrows,
         ))
-        con.execute("""
-            INSERT INTO source_log_stats(
-                table_name,commits,event_rows,payload_bytes)
-            VALUES(?,1,?,?)
-            ON CONFLICT(table_name) DO UPDATE SET
-                commits=source_log_stats.commits+1,
-                event_rows=source_log_stats.event_rows+excluded.event_rows,
-                payload_bytes=(
-                    source_log_stats.payload_bytes+excluded.payload_bytes)
-        """,(
-            str(part["table_name"]),nrows,len(payload),
-        ))
+    # One source transaction can be split into multiple durable parts for the
+    # same table. Aggregate by (seq, table) so "commits" keeps the same meaning
+    # as install()'s COUNT(DISTINCT seq) rebuild instead of counting parts.
+    con.execute("""
+        INSERT INTO source_log_stats(
+            table_name,commits,event_rows,payload_bytes)
+        SELECT table_name,1,
+               COALESCE(SUM(nrows),0),
+               COALESCE(SUM(length(payload)),0)
+        FROM source_commit_parts
+        WHERE seq=?
+        GROUP BY table_name
+        ON CONFLICT(table_name) DO UPDATE SET
+            commits=source_log_stats.commits+1,
+            event_rows=source_log_stats.event_rows+excluded.event_rows,
+            payload_bytes=(
+                source_log_stats.payload_bytes+excluded.payload_bytes)
+    """,(seq,))
     previous = log_durable_seq(con)
     if seq <= previous:
         raise RuntimeError("source commit sequence did not advance")

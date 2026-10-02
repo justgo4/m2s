@@ -140,6 +140,11 @@ def main():
         assert con.execute(
             "SELECT SUM(nrows) FROM source_commit_parts"
         ).fetchone()[0]==2
+        stats=source_state.status(con)[
+            "log_stats"]["mysql.events"]
+        assert stats["commits"]==1,stats
+        assert stats["event_rows"]==2,stats
+        assert stats["payload_bytes"]>0,stats
 
         assert source_state.apply_pending(con)==1
         assert source_state.base_applied_seq(con)==1
@@ -153,7 +158,8 @@ def main():
 
     print(
         "source_transaction_spool_test ok "
-        "disk_backed bounded atomic_cursor rollback_on_truncate apply",
+        "disk_backed bounded atomic_cursor rollback_on_truncate "
+        "per_commit_stats apply",
         flush=True,
     )
 
