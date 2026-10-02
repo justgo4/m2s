@@ -68,7 +68,9 @@ def write_cgroup(
         proc,cgroup_root,
         cpu_usec,memory,
         read_bytes,write_bytes,
-        path="/system.slice/mysql.service"):
+        path="/system.slice/mysql.service",
+        cpu_max="200000 100000",
+        memory_max=1_000_000):
     (proc/"100"/"cgroup").write_text(
         "0::"+path+"\n",
         encoding="utf-8")
@@ -84,6 +86,16 @@ def write_cgroup(
         encoding="utf-8")
     (directory/"memory.current").write_text(
         str(int(memory))+"\n",
+        encoding="utf-8")
+    (directory/"memory.max").write_text(
+        (
+            str(memory_max)
+            if memory_max=="max"
+            else str(int(memory_max))
+        )+"\n",
+        encoding="utf-8")
+    (directory/"cpu.max").write_text(
+        str(cpu_max)+"\n",
         encoding="utf-8")
     (directory/"io.stat").write_text(
         "8:0 rbytes=%d wbytes=%d rios=1 wios=2\n"
@@ -125,6 +137,8 @@ def main():
                 cgroup_root=cgroup))
         assert sample["mode"]=="cgroup_v2"
         assert sample["memory_bytes"]==10_000
+        assert sample["memory_limit_bytes"]==1_000_000
+        assert sample["cpu_quota_cores"]==2.0
         assert sample["cpu_seconds"]==5.0
         assert sample["read_bytes"]==1000
         assert sample["write_bytes"]==2000
@@ -154,6 +168,9 @@ def main():
             tracker)
         assert result["supported"]
         assert result["scope_stable"]
+        assert result["limits_stable"]
+        assert result["cpu_quota_cores"]==2.0
+        assert result["memory_limit_bytes"]==1_000_000
         assert result["mode"]=="cgroup_v2"
         assert result["samples"]==2
         assert result["peak_memory_bytes"]==20_000
@@ -177,6 +194,29 @@ def main():
         assert zero_io["mode"]=="cgroup_v2"
         assert zero_io["read_bytes"]==0
         assert zero_io["write_bytes"]==0
+        assert zero_io["cpu_quota_cores"]==2.0
+        assert zero_io["memory_limit_bytes"]==1_000_000
+
+        changing_tracker=(
+            service_resource_probe.new_tracker(
+                selection))
+        service_resource_probe.observe(
+            changing_tracker,sample)
+        write_cgroup(
+            proc,cgroup,
+            cpu_usec=9_000_000,
+            memory=21_000,
+            read_bytes=1700,
+            write_bytes=3000,
+            cpu_max="100000 100000",
+            memory_max=900_000)
+        service_resource_probe.observe(
+            changing_tracker,
+            service_resource_probe.service_sample(
+                100,proc_root=proc,
+                cgroup_root=cgroup))
+        assert not service_resource_probe.report(
+            changing_tracker)["limits_stable"]
 
         explicit=(
             service_resource_probe
@@ -292,7 +332,8 @@ def main():
 
     print(
         "service_resource_probe_test ok listener_pid explicit_pid "
-        "cgroup_v2_delta root_cgroup_rejected process_tree_fallback "
+        "cgroup_v2_delta cgroup_limits_stability "
+        "root_cgroup_rejected process_tree_fallback "
         "ambiguous_fail_closed privacy_scope_hash",
         flush=True,
     )
