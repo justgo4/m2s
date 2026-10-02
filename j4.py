@@ -9162,9 +9162,10 @@ def stateful_task_worker(item, cfg, runtime):
             if result.get("shared_physical"):
                 log(
                     "STATEFUL PHYSICAL REUSE task=%s sink=%s kind=%s "
-                    "mode=shared_incremental leader=%s state=%s"
+                    "mode=shared_%s leader=%s state=%s"
                     % (
                         task["task_id"],mapping_key(mapping),kind,
+                        result.get("shared_reuse_mode","exact"),
                         result.get("shared_leader_task_id"),
                         result.get("shared_state_id"),
                     ))
