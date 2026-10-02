@@ -78,6 +78,27 @@ def main():
             con,plan_version=8)
         assert waits[0]["retry_count"]==0
 
+        # Once the exact plan is admitted, its wait row is consumed even
+        # before task activation. This prevents hot_pending/rebuild_pending
+        # installation from being retried as if resource pressure still held.
+        stateful_admission.clear_wait(
+            con,task_ids=["wait-a"])
+        stateful_admission.queue_wait(
+            con,additions,7,
+            reason="max_state_bytes",
+            retry_seconds=0)
+        admitted=stateful_admission.admit_or_defer(
+            con,additions,7,
+            cfg=dict(
+                stateful_admission_max_tasks=10,
+                stateful_admission_max_state_bytes=1024,
+                stateful_admission_reserve_state_bytes=2,
+            ),
+            retry_seconds=1)
+        assert admitted["ok"]
+        assert not stateful_admission.waiting_tasks(
+            con,plan_version=7)
+
         # Restore the original version-7 waiter for the independent
         # superseded-plan contract below.
         stateful_admission.clear_wait(
@@ -186,6 +207,34 @@ def main():
         finally:
             con.close()
 
+        con=j4.open_state(state)
+        try:
+            stateful_admission.queue_wait(
+                con,[task("wait-pending","starrocks.wait_pending")],
+                plan_version=8,reason="max_tasks",
+                retry_seconds=0)
+        finally:
+            con.close()
+        with patch.object(
+            j4.cdc_catalog,"load_plan",
+            return_value=dict(
+                version=8,plan_hash="latest")
+        ), patch.object(
+            j4,"queue_hot_catalog_plan",
+            return_value=dict(
+                status="hot_pending",version=8)
+        ):
+            result=j4.retry_waiting_stateful_admission(
+                cfg,runtime,now=10**12)
+        assert result==[
+            dict(status="hot_pending",version=8)
+        ]
+        con=j4.open_state(state)
+        try:
+            assert not stateful_admission.waiting_tasks(con)
+        finally:
+            con.close()
+
         # Catalog install converts the typed deferred exception into a normal
         # control-plane status; it must not stop the running data plane.
         deferred=stateful_admission.AdmissionDeferred(
@@ -218,7 +267,8 @@ def main():
         "stateful_admission_retry_test ok durable_defer "
         "superseded_plan_fence current_plan_retry "
         "control_plane_nonfatal_wait bounded_retry_backoff plan_retry_reset "
-        "immediate_superseded_cleanup",
+        "immediate_superseded_cleanup admitted_wait_consumption "
+        "pending_plan_not_retried",
         flush=True,
     )
 
