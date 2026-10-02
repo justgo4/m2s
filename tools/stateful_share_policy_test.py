@@ -2,6 +2,7 @@
 from pathlib import Path
 import os
 import tempfile
+from unittest.mock import patch
 import sys
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -117,6 +118,28 @@ def main():
         assert "surplus" in (
             decision["metrics"]["rejected"][0]["reasons"])
 
+        with patch.object(
+            stateful_share_policy,"_state_stats",
+            return_value=dict(
+                rows=5000,payload_bytes=8*1024*1024)
+        ):
+            rejected=stateful_share_policy.choose(
+                con,"aggregate",task,[subview],
+                cfg=dict(
+                    stateful_share_mode="adaptive",
+                    stateful_share_max_lag=10,
+                    stateful_share_max_followers=10,
+                    stateful_share_max_surplus=2,
+                    stateful_share_max_state_rows=1000,
+                    stateful_share_max_state_bytes=1024*1024,
+                ))
+        assert rejected is None
+        decision=stateful_share_policy.decision_info(
+            con,"follower")
+        reasons=decision["metrics"]["rejected"][0]["reasons"]
+        assert "state_rows" in reasons
+        assert "state_bytes" in reasons
+
         stateful_share_policy.observe(
             con,"existing",10,10,10,7,
             copied_sequences=0)
@@ -164,7 +187,8 @@ def main():
 
     print(
         "stateful_share_policy_test ok off compatible adaptive "
-        "lag fanout surplus observed_visible_lag durable_decision runtime_feedback",
+        "lag fanout surplus state_size observed_visible_lag "
+        "durable_decision runtime_feedback",
         flush=True,
     )
 
