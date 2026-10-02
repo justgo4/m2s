@@ -10492,6 +10492,18 @@ def run_cdc(
             for spec in startup_rebuild_specs
         }
         if compiled_stateful:
+            startup_admission=stateful_admission.admit_or_raise(
+                con,compiled_stateful,cfg)
+            if startup_admission["metrics"]["requested_tasks"]:
+                log(
+                    "STATEFUL STARTUP ADMISSION requested=%d state_bytes=%d "
+                    "pending_bytes=%d source_lag=%d"
+                    % (
+                        startup_admission["metrics"]["requested_tasks"],
+                        startup_admission["metrics"]["state_bytes"],
+                        startup_admission["metrics"]["pending_bytes"],
+                        startup_admission["metrics"]["source_lag"],
+                    ))
             registration_safe=[
                 item for item in compiled_stateful
                 if item["task"]["task_id"]
