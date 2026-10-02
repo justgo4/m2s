@@ -999,190 +999,165 @@ def _rows_digest(rows):
     return hashlib.sha256(payload).hexdigest()
 
 
-def _partition_digest_update(hasher,partition,rows):
-    digest=_rows_digest(rows)
-    hasher.update(
-        ("%d:%d:%s\n" % (
-            int(partition),len(rows),digest
-        )).encode("ascii"))
-    return digest
+def _full_row_multiset_digest(rows):
+    """Order-independent full-row fingerprint with duplicate sensitivity."""
+    mask=(1<<256)-1
+    total=0
+    square_total=0
+    xor_total=0
+    count=0
+    for row in rows:
+        payload=j4.orjson.dumps(row)
+        value=int.from_bytes(
+            hashlib.sha256(payload).digest(),
+            "big")
+        total=(total+value)&mask
+        square_total=(
+            square_total+value*value)&mask
+        xor_total^=value
+        count+=1
+    payload=(
+        int(count).to_bytes(16,"big")
+        +int(total).to_bytes(32,"big")
+        +int(square_total).to_bytes(32,"big")
+        +int(xor_total).to_bytes(32,"big")
+    )
+    return int(count),hashlib.sha256(
+        payload).hexdigest()
 
 
-def _partitioned_exactness(
-        source,cfg,tables,source_rows,target_rows,
-        source_total_rows,target_total_rows,
-        partitions=None
+def _streamed_exactness(
+        source,cfg,tables,source_rows,target_rows
 ):
-    """Compare full projected rows and prove the partition scan covered all rows."""
-    partitions=list(
-        range(1024)
-        if partitions is None
-        else partitions
-    )
-    partitions=[
-        int(value) for value in partitions
-    ]
-    if not partitions:
-        raise ValueError(
-            "exactness partitions cannot be empty")
-    if len(partitions)!=len(set(partitions)):
-        raise ValueError(
-            "exactness partitions must be unique")
-
-    expected_hasher=hashlib.sha256()
-    expected_rows=0
-    checks={
-        str(table):dict(
-            rows=0,
-            hasher=hashlib.sha256(),
-            mismatches=[],
+    started=time.monotonic()
+    expected_rows,expected_digest=(
+        _full_row_multiset_digest(
+            source_rows(source)))
+    source_seconds=time.monotonic()-started
+    checks={}
+    for table in tables:
+        target_started=time.monotonic()
+        rows,digest=_full_row_multiset_digest(
+            target_rows(cfg,table))
+        scan_seconds=(
+            time.monotonic()-target_started)
+        match=(
+            rows==expected_rows
+            and digest==expected_digest
         )
-        for table in tables
-    }
-    for partition in partitions:
-        expected=list(
-            source_rows(source,partition))
-        expected_digest=_partition_digest_update(
-            expected_hasher,partition,expected)
-        expected_rows+=len(expected)
-        for table in tables:
-            key=str(table)
-            actual=list(
-                target_rows(
-                    cfg,table,partition))
-            actual_digest=_partition_digest_update(
-                checks[key]["hasher"],
-                partition,actual)
-            checks[key]["rows"]+=len(actual)
-            if actual!=expected and len(
-                checks[key]["mismatches"]
-            )<8:
-                checks[key]["mismatches"].append(
-                    dict(
-                        partition=partition,
-                        expected_rows=len(expected),
-                        actual_rows=len(actual),
-                        expected_digest=expected_digest,
-                        actual_digest=actual_digest,
-                        expected_sample=expected[:3],
-                        actual_sample=actual[:3],
-                    ))
-
-    expected_digest=expected_hasher.hexdigest()
-    source_total=int(
-        source_total_rows(source))
-    source_uncovered=(
-        source_total-int(expected_rows))
-    tables_out={}
-    for table,value in checks.items():
-        digest=value["hasher"].hexdigest()
-        total_rows=int(
-            target_total_rows(cfg,table))
-        uncovered_rows=(
-            total_rows-int(value["rows"]))
-        tables_out[table]=dict(
-            rows=int(value["rows"]),
-            total_rows=total_rows,
-            uncovered_rows=uncovered_rows,
+        checks[str(table)]=dict(
+            rows=int(rows),
+            total_rows=int(rows),
+            uncovered_rows=0,
             digest=digest,
-            match=(
-                source_uncovered==0
-                and uncovered_rows==0
-                and not value["mismatches"]
-                and int(value["rows"])==expected_rows
-                and digest==expected_digest
+            scan_seconds=scan_seconds,
+            match=match,
+            mismatches=(
+                []
+                if match
+                else [dict(
+                    kind="full_table_digest",
+                    expected_rows=int(expected_rows),
+                    actual_rows=int(rows),
+                    expected_digest=expected_digest,
+                    actual_digest=digest,
+                )]
             ),
-            mismatches=value["mismatches"],
         )
-    coverage_complete=(
-        source_uncovered==0
-        and bool(tables_out)
-        and all(
-            int(item["uncovered_rows"])==0
-            for item in tables_out.values()
-        )
-    )
     return dict(
-        comparison="partitioned_full_rows_v2",
-        partitions=len(partitions),
+        comparison="streamed_full_rows_v3",
+        scan_mode="full_table_unbuffered",
+        digest_algorithm="sha256_multiset_v1",
+        scan_passes=1+len(checks),
         expected_rows=int(expected_rows),
-        source_total_rows=source_total,
-        source_uncovered_rows=source_uncovered,
+        source_total_rows=int(expected_rows),
+        source_uncovered_rows=0,
+        source_scan_seconds=source_seconds,
         expected_digest=expected_digest,
-        coverage_complete=coverage_complete,
-        tables=tables_out,
+        coverage_complete=bool(checks),
+        tables=checks,
         all_match=(
-            coverage_complete
+            bool(checks)
             and all(
-                item["match"]
-                for item in tables_out.values()
+                value["match"]
+                for value in checks.values()
             )
         ),
     )
 
 
-def _event_rows_source(source,bucket):
-    with source.cursor() as cur:
+def _event_rows_source_stream(source):
+    with source.cursor(
+        j4.pymysql.cursors.SSCursor
+    ) as cur:
         cur.execute(
             "SELECT id,bucket,v,payload "
-            "FROM "+DATABASE+".events "
-            "WHERE bucket=%s ORDER BY id",
-            (int(bucket),))
-        return [
-            (
-                int(row[0]),int(row[1]),
-                int(row[2]),
-                None if row[3] is None else str(row[3]),
-            )
-            for row in cur.fetchall()
-        ]
+            "FROM "+DATABASE+".events")
+        while True:
+            rows=cur.fetchmany(4096)
+            if not rows:
+                return
+            for row in rows:
+                yield (
+                    int(row[0]),int(row[1]),
+                    int(row[2]),
+                    None
+                    if row[3] is None
+                    else str(row[3]),
+                )
 
 
-def _event_rows_target(cfg,table,bucket):
-    rows,_=execute(
-        cfg,
-        "SELECT id,bucket,v,payload FROM "
-        +DATABASE+"."+str(table)
-        +" WHERE bucket="+str(int(bucket))
-        +" ORDER BY id")
-    return [
-        (
-            int(row[0]),int(row[1]),
-            int(row[2]),
-            None if row[3] is None else str(row[3]),
-        )
-        for row in rows
-    ]
+def _target_stream_connection(cfg):
+    stream_cfg=dict(cfg)
+    stream_cfg["query_timeout"]=max(
+        3600,int(cfg.get("query_timeout",30)))
+    return j4.mysql_connect(
+        stream_cfg,target=True)
 
 
-def _event_source_total_rows(source):
-    with source.cursor() as cur:
-        cur.execute(
-            "SELECT COUNT(*) FROM "
-            +DATABASE+".events")
-        return int(cur.fetchone()[0])
-
-
-def _target_total_rows(cfg,table):
-    rows,_=execute(
-        cfg,
-        "SELECT COUNT(*) FROM "
-        +DATABASE+"."+str(table))
-    if len(rows)!=1:
-        raise RuntimeError(
-            "exactness target count returned "
-            +str(len(rows))+" rows")
-    return int(rows[0][0])
+def _event_rows_target_stream(cfg,table):
+    con=_target_stream_connection(cfg)
+    try:
+        with con.cursor(
+            j4.pymysql.cursors.SSCursor
+        ) as cur:
+            cur.execute(
+                "SELECT id,bucket,v,payload FROM "
+                +DATABASE+"."+str(table))
+            while True:
+                rows=cur.fetchmany(4096)
+                if not rows:
+                    return
+                for row in rows:
+                    yield (
+                        None
+                        if row[0] is None
+                        else int(row[0]),
+                        None
+                        if row[1] is None
+                        else int(row[1]),
+                        None
+                        if row[2] is None
+                        else int(row[2]),
+                        None
+                        if row[3] is None
+                        else str(row[3]),
+                    )
+    finally:
+        con.close()
 
 
 def event_exactness(
         source,cfg,tables=("events",),partitions=None
 ):
-    return _partitioned_exactness(
+    if partitions is not None:
+        raise ValueError(
+            "streamed exactness scans the full table; "
+            "partitions are unsupported")
+    return _streamed_exactness(
         source,cfg,tables,
-        _event_rows_source,_event_rows_target,
-        _event_source_total_rows,_target_total_rows,
-        partitions=partitions)
+        _event_rows_source_stream,
+        _event_rows_target_stream)
 
 
 def aggregate_exactness(source,cfg,tables):
@@ -1212,58 +1187,69 @@ def aggregate_exactness(source,cfg,tables):
     )
 
 
-def _join_rows_source(source,bucket):
-    with source.cursor() as cur:
+def _join_rows_source_stream(source):
+    with source.cursor(
+        j4.pymysql.cursors.SSCursor
+    ) as cur:
         cur.execute(
             "SELECT e.id,e.bucket,d.label,e.v "
             "FROM "+DATABASE+".events e "
             "INNER JOIN "+DATABASE+".dimensions d "
-            "ON e.bucket=d.bucket "
-            "WHERE e.bucket=%s ORDER BY e.id",
-            (int(bucket),))
-        return [
-            (
-                int(row[0]),int(row[1]),
-                str(row[2]),int(row[3]),
-            )
-            for row in cur.fetchall()
-        ]
-
-
-def _join_rows_target(cfg,table,bucket):
-    rows,_=execute(
-        cfg,
-        "SELECT event_id,bucket,label,v FROM "
-        +DATABASE+"."+str(table)
-        +" WHERE bucket="+str(int(bucket))
-        +" ORDER BY event_id")
-    return [
-        (
-            int(row[0]),int(row[1]),
-            str(row[2]),int(row[3]),
-        )
-        for row in rows
-    ]
-
-
-def _join_source_total_rows(source):
-    with source.cursor() as cur:
-        cur.execute(
-            "SELECT COUNT(*) "
-            "FROM "+DATABASE+".events e "
-            "INNER JOIN "+DATABASE+".dimensions d "
             "ON e.bucket=d.bucket")
-        return int(cur.fetchone()[0])
+        while True:
+            rows=cur.fetchmany(4096)
+            if not rows:
+                return
+            for row in rows:
+                yield (
+                    int(row[0]),int(row[1]),
+                    str(row[2]),int(row[3]),
+                )
+
+
+def _join_rows_target_stream(cfg,table):
+    con=_target_stream_connection(cfg)
+    try:
+        with con.cursor(
+            j4.pymysql.cursors.SSCursor
+        ) as cur:
+            cur.execute(
+                "SELECT event_id,bucket,label,v FROM "
+                +DATABASE+"."+str(table))
+            while True:
+                rows=cur.fetchmany(4096)
+                if not rows:
+                    return
+                for row in rows:
+                    yield (
+                        None
+                        if row[0] is None
+                        else int(row[0]),
+                        None
+                        if row[1] is None
+                        else int(row[1]),
+                        None
+                        if row[2] is None
+                        else str(row[2]),
+                        None
+                        if row[3] is None
+                        else int(row[3]),
+                    )
+    finally:
+        con.close()
 
 
 def join_exactness(
         source,cfg,tables,partitions=None
 ):
-    return _partitioned_exactness(
+    if partitions is not None:
+        raise ValueError(
+            "streamed exactness scans the full table; "
+            "partitions are unsupported")
+    return _streamed_exactness(
         source,cfg,tables,
-        _join_rows_source,_join_rows_target,
-        _join_source_total_rows,_target_total_rows,
-        partitions=partitions)
+        _join_rows_source_stream,
+        _join_rows_target_stream)
 
 
 def collect_final_debt(state_path):
