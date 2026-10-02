@@ -11481,11 +11481,22 @@ def durable_status_snapshot(state_path):
                 "SELECT COUNT(*) FROM load_parts WHERE visible=0"
             ).fetchone()[0])
 
-        physical=dict(states=0,refs=0,pins=0)
+        physical=dict(
+            states=0,refs=0,pins=0,
+            health={},sizes={})
         if _status_table_exists(con,"physical_states"):
             physical["states"]=int(con.execute(
                 "SELECT COUNT(*) FROM physical_states"
             ).fetchone()[0])
+            physical["health"]={
+                str(row[0]):int(row[1])
+                for row in con.execute("""
+                    SELECT health,COUNT(*)
+                    FROM physical_states
+                    GROUP BY health
+                    ORDER BY health
+                """).fetchall()
+            }
         if _status_table_exists(con,"physical_state_refs"):
             physical["refs"]=int(con.execute(
                 "SELECT COUNT(*) FROM physical_state_refs"
@@ -11494,6 +11505,19 @@ def durable_status_snapshot(state_path):
             physical["pins"]=int(con.execute(
                 "SELECT COUNT(*) FROM physical_state_pins"
             ).fetchone()[0])
+        if _status_table_exists(con,"stateful_state_sizes"):
+            physical["sizes"]={
+                str(row[0]):dict(
+                    rows=int(row[1]),
+                    payload_bytes=int(row[2]))
+                for row in con.execute("""
+                    SELECT kind,COALESCE(SUM(rows),0),
+                           COALESCE(SUM(payload_bytes),0)
+                    FROM stateful_state_sizes
+                    GROUP BY kind
+                    ORDER BY kind
+                """).fetchall()
+            }
 
         return dict(
             format_version=1,
