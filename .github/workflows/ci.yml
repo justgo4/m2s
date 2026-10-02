@@ -69,6 +69,7 @@ jobs:
           python tools/catalog_config_test.py
           python tools/catalog_explain_test.py
           python tools/catalog_preview_test.py
+          python tools/control_command_test.py
           python tools/catalog_plan_cache_test.py
           python tools/catalog_stateful_manifest_test.py
           python tools/stateful_task_plan_test.py
