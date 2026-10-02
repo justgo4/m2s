@@ -563,6 +563,7 @@ def multi_validation_contract():
     cfg=dict(
         catalog="catalog.sqlite3",
         catalog_config_revision=0,
+        state="state.sqlite3",
         mysql=dict(database="demo"),
     )
 
