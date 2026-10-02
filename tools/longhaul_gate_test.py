@@ -267,6 +267,20 @@ def workload():
         ),
         source_totals=[62_960_000,12345],
         target_totals=[62_960_000,12345],
+        event_checks=dict(
+            comparison="partitioned_full_rows_v1",
+            partitions=1024,
+            expected_rows=62_960_000,
+            expected_digest="source-event-digest",
+            all_match=True,
+            tables={
+                "events":dict(
+                    rows=62_960_000,
+                    digest="source-event-digest",
+                    match=True,
+                    mismatches=[]),
+            },
+        ),
         debt=dict(
             state_storage_bytes=512*1024*1024,
             stateful_rows=1024,
@@ -447,6 +461,27 @@ def main():
             dict(bucket=1,revision=2),
         ]
     assert full["evidence"]["dynamic_tasks"]["ready"]==10
+    assert full["evidence"]["source_target_exact"]
+    assert full["evidence"]["event_exactness"]["all_match"]
+
+    bad=workload()
+    bad["event_checks"]["all_match"]=False
+    bad["event_checks"]["tables"]["events"]["match"]=False
+    bad["event_checks"]["tables"]["events"]["mismatches"]=[
+        dict(
+            partition=0,
+            expected_rows=2,
+            actual_rows=2,
+            expected_digest="a",
+            actual_digest="b",
+        )
+    ]
+    # Totals remain identical: full-row exactness must still reject the run.
+    result=evaluate_workload(
+        bad,require_profile=p11_profile.NAME)
+    assert not result["ok"]
+    assert "source_target_mismatch" in result["failures"]
+
     assert full["evidence"]["dynamic_tasks"]["mix"]=="mixed"
     assert full["evidence"]["dynamic_tasks"]["aggregate_ready"]==5
     assert full["evidence"]["dynamic_tasks"]["join_ready"]==5
