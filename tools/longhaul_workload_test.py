@@ -88,6 +88,31 @@ def main():
     assert len(recovered["latencies"])==2
     assert recovered["state"]["base_applied_seq"]==7
 
+    expected=[
+        (0,2,10),
+        (1,3,20),
+    ]
+    with patch.object(
+        longhaul_workload,
+        "_aggregate_rows_source",
+        return_value=expected
+    ), patch.object(
+        longhaul_workload,
+        "_aggregate_rows_target",
+        side_effect=[
+            list(expected),
+            [(0,2,10),(1,3,21)],
+        ]
+    ):
+        checks=longhaul_workload.aggregate_exactness(
+            object(),{},["agg_000","agg_001"])
+    assert checks["expected_rows"]==2
+    assert checks["tables"]["agg_000"]["match"]
+    assert not checks["tables"]["agg_001"]["match"]
+    assert not checks["all_match"]
+    assert checks["expected_digest"]==longhaul_workload._rows_digest(
+        expected)
+
     with tempfile.TemporaryDirectory(
         prefix="m2s-longhaul-helper-"
     ) as td:
@@ -117,7 +142,8 @@ def main():
 
     print(
         "longhaul_workload_test ok percentile source_ready "
-        "per_transaction_sentinel crash_catchup evidence_copy",
+        "per_transaction_sentinel crash_catchup aggregate_exactness "
+        "evidence_copy",
         flush=True,
     )
 
