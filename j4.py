@@ -9628,7 +9628,10 @@ def stateful_rebuild_freeze_if_ready(
     consumer=result.get("consumer")
     if consumer is None:
         return rebuild
-    frontier=int(consumer["watermark"])
+    frontier=int(source_state.base_applied_seq(con))
+    if int(consumer["watermark"])>frontier:
+        raise RuntimeError(
+            "stateful rebuild candidate consumer is ahead of source base")
     rebuild=stateful_rebuild.freeze_frontier(
         con,rebuild["sink_key"],frontier)
     log(
