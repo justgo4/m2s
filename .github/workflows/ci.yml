@@ -74,6 +74,7 @@ jobs:
           python tools/stateful_hot_add_test.py
           python tools/stateful_physical_registry_test.py
           python tools/metric_slo_test.py
+          python tools/p11_profile_test.py
           python tools/longhaul_gate_test.py
           python tools/longhaul_workload_test.py
           python tools/process_resource_probe_test.py
