@@ -45,7 +45,8 @@ def main():
         assert status["jobs"]==dict(
             active=0,deliveries=0,invisible_parts=0)
         assert status["physical"]==dict(
-            states=0,refs=0,pins=0)
+            states=0,refs=0,pins=0,
+            health={},sizes={})
         assert len(status["rebuilds"])==1
         assert status["rebuilds"][0]["sink_key"]=="starrocks.agg"
         assert status["rebuilds"][0]["phase"]=="building_shadow"
