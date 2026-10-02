@@ -283,8 +283,8 @@ def new_tracker(selection=None):
             selection.get("reason") or ""),
         cgroup_first=None,
         cgroup_last=None,
-        process_tracker=
-            process_resource_probe.new_tracker(),
+        process_first={},
+        process_last={},
     )
 
 
@@ -326,9 +326,33 @@ def observe(tracker,sample):
             tracker["cgroup_first"]=current
         tracker["cgroup_last"]=current
     elif mode=="process_tree":
-        process_resource_probe.observe(
-            tracker["process_tracker"],
-            sample.get("process_sample"))
+        tree=sample.get("process_sample") or {}
+        first=tracker["process_first"]
+        last=tracker["process_last"]
+        for item in tree.get("processes",()):
+            key=str(item["identity"])
+            current=dict(
+                cpu_seconds=max(
+                    0.0,float(
+                        item.get("cpu_seconds",0))),
+                read_bytes=max(
+                    0,int(item.get("read_bytes",0))),
+                write_bytes=max(
+                    0,int(item.get("write_bytes",0))),
+            )
+            if key not in first:
+                first[key]=dict(current)
+            previous=last.get(key)
+            if previous is not None and (
+                current["cpu_seconds"]
+                    <previous["cpu_seconds"]
+                or current["read_bytes"]
+                    <previous["read_bytes"]
+                or current["write_bytes"]
+                    <previous["write_bytes"]
+            ):
+                tracker["scope_stable"]=False
+            last[key]=current
     else:
         tracker["scope_stable"]=False
     return tracker
@@ -356,16 +380,26 @@ def report(tracker):
             -int(first.get("write_bytes",0)))
         identities=1 if tracker.get("identity") else 0
     elif mode=="process_tree":
-        value=process_resource_probe.report(
-            tracker["process_tracker"])
-        cpu=float(value.get("cpu_seconds",0))
-        read_bytes=int(value.get("read_bytes",0))
-        write_bytes=int(value.get("write_bytes",0))
-        identities=int(
-            value.get("process_identities_seen",0))
-        peak_processes=max(
-            peak_processes,
-            int(value.get("peak_processes",0)))
+        first=tracker.get("process_first",{})
+        last=tracker.get("process_last",{})
+        identities=len(last)
+        for key,current in last.items():
+            baseline=first.get(key,{})
+            cpu+=max(
+                0.0,float(
+                    current.get("cpu_seconds",0))
+                -float(
+                    baseline.get("cpu_seconds",0)))
+            read_bytes+=max(
+                0,int(
+                    current.get("read_bytes",0))
+                -int(
+                    baseline.get("read_bytes",0)))
+            write_bytes+=max(
+                0,int(
+                    current.get("write_bytes",0))
+                -int(
+                    baseline.get("write_bytes",0)))
     return dict(
         supported=bool(tracker.get("supported")),
         scope_stable=bool(
