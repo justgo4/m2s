@@ -8,6 +8,7 @@ restart the StarRocks target is re-read before writes resume; callers may pass
 an already verified mapping while repeatedly stepping the same task.
 """
 import aggregate_runtime
+import aggregate_shared_runtime
 import aggregate_target_mapping
 import aggregate_task_catalog
 import j4
@@ -77,10 +78,19 @@ def step(
             cfg,task)
     mapping=_validate_mapping(task,mapping)
 
-    result=aggregate_runtime.step(
-        con,task["sink_key"],task["plan_version"],
-        task["consumer_id"],task["ir"],task["state_id"],
-        mapping,cfg,bootstrap_limit=bootstrap_limit)
+    binding=aggregate_shared_runtime.maybe_binding(
+        con,task["task_id"])
+    if binding is None and task["status"]=="candidate":
+        binding=aggregate_shared_runtime.try_bind(
+            con,task)
+    if binding is not None:
+        result=aggregate_shared_runtime.step(
+            con,task,mapping,cfg)
+    else:
+        result=aggregate_runtime.step(
+            con,task["sink_key"],task["plan_version"],
+            task["consumer_id"],task["ir"],task["state_id"],
+            mapping,cfg,bootstrap_limit=bootstrap_limit)
     generation=result["generation"]
     if generation["generation_id"]!=task["generation_id"]:
         raise RuntimeError(
