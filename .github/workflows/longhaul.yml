@@ -107,6 +107,7 @@ jobs:
             --mysql-resource-pid "$MYSQL_RESOURCE_PID" \
             --starrocks-fe-resource-pid "$STARROCKS_RESOURCE_PID" \
             --starrocks-be-resource-pid "$STARROCKS_RESOURCE_PID" \
+            --work-directory benchmark-results/longhaul-workdir \
             --output benchmark-results/longhaul-workload.json
       - name: Evaluate smoke evidence with production SLO latency thresholds
         run: |
@@ -129,6 +130,10 @@ jobs:
             benchmark-results/longhaul-daemon-summary.json
             benchmark-results/longhaul-daemon-metrics.jsonl
             benchmark-results/longhaul-gate.json
+            benchmark-results/longhaul-workdir/daemon-*.log
+            benchmark-results/longhaul-workdir/*.sql
+            benchmark-results/longhaul-workdir/state.sqlite3.summary.json
+            benchmark-results/longhaul-workdir/state.sqlite3.metrics.jsonl
           if-no-files-found: warn
           retention-days: 14
       - name: Remove disposable services
