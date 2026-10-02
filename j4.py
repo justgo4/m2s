@@ -3774,6 +3774,20 @@ def journal_columns(mapping):
         "_sync_op","_sync_order","_sync_key","_sync_lane"]
 
 
+def journal_schema(mapping):
+    fields=[
+        pa.field(name,dtype)
+        for name,dtype in mapping["_schema"]
+    ]
+    fields.extend([
+        pa.field("_sync_op",pa.int8()),
+        pa.field("_sync_order",pa.int64()),
+        pa.field("_sync_key",pa.string()),
+        pa.field("_sync_lane",pa.uint16()),
+    ])
+    return pa.schema(fields)
+
+
 def arrow_table_payload(table):
     sink = pa.BufferOutputStream()
     sink.write(ARROW_JOB_MAGIC)
@@ -3805,6 +3819,15 @@ def arrow_job_table(mapping, payload):
        not pa.types.is_string(table.schema.field("_sync_key").type) or \
        not pa.types.is_integer(table.schema.field("_sync_lane").type):
         raise RuntimeError(f"{mapping['src_table']}: invalid Arrow routing metadata types")
+    expected=journal_schema(mapping)
+    if table.schema!=expected:
+        try:
+            table=table.cast(expected,safe=True)
+        except (pa.ArrowInvalid,pa.ArrowNotImplementedError) as exc:
+            raise RuntimeError(
+                f"{mapping['src_table']}: Arrow journal schema differs from "
+                "the checked canonical schema and cannot be safely cast: "
+                f"{table.schema} vs {expected}") from exc
     return table
 
 
