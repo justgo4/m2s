@@ -23,7 +23,7 @@
 | 历史批次候选 | PR #12/#19 仍未合并，原严格 small 失败证据保留；不复用旧正确性绿色替代新组合的性能验收 |
 | 正式 P11 | `p11-50m-50rps-72h-v4` 尚无认证；未配置持久隔离主机或云身份。原 P95≤5s/P99≤10s 与 50M/72h 标准不变 |
 
-下一候选单独调整有预算的 CDC 分区合并宽度，并结合 JOIN 受影响行优化重新测试。严格 small 的延迟样本目前测量 raw events，不能替代每个 stateful target 的延迟验收。可选事务计时捕捉到 follower 绑定持锁 6.407s，后续仍须限制共享 bootstrap/promotion 成本。性能候选必须通过门禁才合并；随后推进 million、低磁盘/资源及升级恢复验证，最后在持久固定资源主机运行原规格认证。详细命令、固定 SHA 和 artifacts 保存于 PROGRESS。
+CDC 分区批次候选 PR #31 通过全部合同与 smoke，但严格 small 在强退恢复中因跨快照 leader 水位读数退出，没有最终 gate/oracle。PR #32 单独修复一致读取；下一组合还减少已有私有状态的空写锁获取，再运行严格验收。严格 small 的延迟样本目前测量 raw events，不能替代每个 stateful target 的延迟验收。可选事务计时捕捉到 follower 绑定持锁 6.407s，后续仍须限制共享 bootstrap/promotion 成本。性能候选必须通过门禁才合并；随后推进 million、低磁盘/资源及升级恢复验证，最后在持久固定资源主机运行原规格认证。详细命令、固定 SHA 和 artifacts 保存于 PROGRESS。
 
 ## 1. 场景与待验证假说
 
