@@ -153,8 +153,13 @@ Separate correctness fix draft: `tools/source_apply_contention_test.py` and
 stop-aware and rate-limited. Resync physical catalog after a committed apply
 prefix even without new input; corruption/FULL/active transaction errors stay
 fatal. Four real-connection regressions prepared (full imports need CI).
-Submit independent branch `codex/v1-source-apply-busy-20261003` from current main,
-without carrying unmerged PR #9 runtime changes.
+Independent [PR #10](https://github.com/justgo4/m2s/pull/10), branch
+`codex/v1-source-apply-busy-20261003`, head `ea913d532e251d7660940a6ffc1f27b3c89fbc45`,
+base `2023a519ff82f04aeb08718190eea1898955d083` submitted. It does not carry PR #9
+changes. Required CI pending; inspect both PRs before continuing. On green,
+merge the correctness fix first, then reconcile PR #9 with main (preserve retry
+and snapshot/bundle behavior together). Current local j4 includes both drafts;
+use the individual remote branch/tree as authoritative when resuming.
 
 ## Ordered backlog and exit gates
 
