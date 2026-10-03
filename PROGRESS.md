@@ -13,8 +13,10 @@ the goals and evidence boundaries. Read AGENTS.md before continuing.
 - V1-01 merged as `719159d60c54ce510fb5ffabfcc847b068e4bc51` (PR #5).
 - Active branch: `codex/v1-cdc-bundle-20261003`, [PR #9](https://github.com/justgo4/m2s/pull/9).
 - Candidate head `ea8b2cd7642db856da4b8ca6884775bebdc812d2`: baseline `37086484043`,
-  native `37086484091`, source-state `37086484038` passed. E2E `37086484049` and
-  staged smoke/small `37086484023` pending.
+  native `37086484091`, source-state `37086484038` passed. all eight E2E `37086484049` and supervised smoke passed. Small `37086484023`
+  failed only latency: P95=9.10/P99=11.10, density=.975, all oracles/dynamic/recovery
+  passed; artifact `11260204343`. Actual tested PR merge SHA `ee10ce8ee1bc56d44fcf4f75f5bc7183e811a216`
+  has exactly the same tree as head `ea8b2cd7`, verified by compare.
 - Operations [PR #8](https://github.com/justgo4/m2s/pull/8) merged as `448f618babc28ec2be71b291c5ea0572b2e1cba0`.
 - Operations head `9de0453b28181b59e1b0443bdf735f01a9dd6194`: baseline `37085918376`
   and native `37085918360` passed, including ten new operating/backup tests.
@@ -138,8 +140,13 @@ write contention currently terminates the daemon. Exact competing lock holder
 not proven. Code inspection finds JOIN bootstrap/follower output staging builds
 all pairs/identities under one outer transaction; this is a scale risk and needs
 bounded consistent staging or measured set-wise improvement plus crash/fixed-W
-proof. Do not merely raise timeouts or mark million passed. CPU-only snapshot
-starvation is a separate measured symptom, not yet fixed.
+proof. Do not merely raise timeouts or mark million passed. CPU snapshot-pause is a legacy-worker flag; shared snapshot worker does not use
+it. Its effect on shared backfill was not proven. Do not repeat that causal claim.
+Latest local follow-up (not pushed): byte-limited streaming source snapshot read,
+shared worker respects configured row cap (was fixed 4096) and detects budget
+truncation separately from EOF; `tools/source_snapshot_budget_test.py` covers
+cursor/pin/restart/full coverage/singleton. Core CI pins actual PR head SHA.
+Update PR #9 and require new same-head checks; do not merge on old green jobs.
 
 ## Ordered backlog and exit gates
 
