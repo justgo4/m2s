@@ -11,8 +11,10 @@ the goals and evidence boundaries. Read AGENTS.md before continuing.
 - Starting main: `017285bafd1978cdf129ba2beb9a592d4c63ce48`.
 - Active milestone: **V1-02, runner inventory and safe operating procedures**.
 - V1-01 merged as `719159d60c54ce510fb5ffabfcc847b068e4bc51` (PR #5).
-- Active branch: `codex/v1-profile-budget-20261003`, [PR #7](https://github.com/justgo4/m2s/pull/7).
-- Active profile fix SHA: `52bb1f3686b771f8b4cf3d5683bac26ef375fec1` (CI pending).
+- Active branch: `codex/v1-operations-20261003` (preparing).
+- Profile budget [PR #7](https://github.com/justgo4/m2s/pull/7) merged as `7dc814ab4d7e5a6b9e93a701c8ebeab0bfdb5dd6`.
+- Profile fix SHA: `52bb1f3686b771f8b4cf3d5683bac26ef375fec1`; baseline `37085454135`,
+  native `37085454170` and supervised smoke `37085454133` passed.
 - Runner inventory [PR #6](https://github.com/justgo4/m2s/pull/6) merged as `af67f2e3a4b14d32b969ed8ec7ac6d4c1d2f3d05`.
 - Previous validated implementation: [PR #5](https://github.com/justgo4/m2s/pull/5).
 - Implementation checkpoint: `2837773a2018ffcb3e7a70db4abf099edeabf099`;
@@ -45,14 +47,18 @@ pass independently; do not merge by combining old and new green runs.
   its revision or declare the local snapshot formal evidence.
 - Next action: inspect [hosted small/million](https://github.com/justgo4/m2s/actions/runs/37084867442)
   on merge SHA `719159d60c54ce510fb5ffabfcc847b068e4bc51`; preserve artifacts and
-  inspect actual performance. Fix the million development topology, then continue operating procedures and
-  consistent state backup. Initial million rejected before seed: six hot-adds
+  inspect actual performance. Inspect fresh small/million on the profile-fix merge, then complete operations PR.
+  Implemented drafts: `OPERATIONS.md`, `tools/state_backup*.py`,
+  `tools/operational_check*.py`, `.github/workflows/ci.yml`; five real SQLite backup
+  tests plus five health/CLI tests pass, privacy PASS. Add README operating link,
+  submit focused PR, verify its baseline/native, merge. No cross-version rollback
+  or production fault drill has been claimed. Initial million rejected before seed: six hot-adds
   exceed 4GiB at two-core cap; run `37084867442`, artifact `11259906985` retained.
   Draft changes: million uses four hot-adds like small, workflow fixes CPU cap=2,
   real topology-budget regression covers every named plan at cap=2. Local runner
   nine tests/P11/AST-loaded real topology calculation pass. Full workload test uses CI.
   Backup drafts: `tools/state_backup.py`, `tools/state_backup_test.py`; five real
-  SQLite WAL/timeout/tamper/interruption tests pass. Not committed or merged yet.
+  SQLite WAL/timeout/tamper/interruption tests pass. Operations drafts not committed or merged yet.
   Inventory implementation: `tools/runner_inventory.py`, `tools/runner_inventory_test.py`,
   `.github/workflows/runner-inventory.yml`; four sanitized inventory tests pass.
   Actual inventory [run 37084999017](https://github.com/justgo4/m2s/actions/runs/37084999017)
@@ -85,7 +91,7 @@ Latest exact-head evidence: [baseline](https://github.com/justgo4/m2s/actions/ru
 passed. Merge differs from tested PR head only in PROGRESS.md, verified by GitHub
 compare; runtime/workflow trees are unchanged. Main small/million run `37084867442` failed: million topology preflight before
 seed; small full-row/dynamic/recovery correctness passed but P95=21.25s,
-P99=41.99s and density failed. Small artifact `11260627960` retained; exact
+P99=41.99s failed. Density=0.899 passed; only latency gates failed. Small artifact `11260627960` retained; exact
 performance root cause still under investigation. No performance pass exists.
 
 ## Completed evidence to preserve
