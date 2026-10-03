@@ -10,20 +10,23 @@
 
 ## 当前进度评审（2026-10-03）
 
-已核对主线 `8ccf21e8b33f93183faf17d2df1b7f43630b1aed` 与各 PR 的实际测试头。**受限 v1 的功能与恢复基线已形成，JOIN 主构建与 job 发布已完成有界协议改造；严格端到端延迟、剩余共享状态大事务及正式规模验收仍未完成。** 下文历史记录保留当时语境，最新状态以本节及 [PROGRESS.md](PROGRESS.md) 为准。
+已核对主线 `335bf1d35300ba57d5947162955115ff8b82f45f`、各最终测试头及真实 small/million artifacts。**受限 v1 的功能与恢复基线已形成；主 JOIN 构建和 job 发布已有有界协议。剩余重点是可变 leader 的 follower 初始化/owner promotion 大事务，以及严格延迟、资源和正式规模验收。当前尚未全部完成。** 历史记录保留当时语境，最新状态以本节及 [PROGRESS.md](PROGRESS.md) 为准。
 
 | 工作 | 当前证据与边界 |
 |---|---|
-| 固定 W JOIN 主构建、durable job 发布 | PR #21/#22 已合并：可恢复 unpublished chunks、游标、pin、封口及可见性合同。可变 leader 的 follower bootstrap/owner promotion 与真实双边高 fan-out 增量仍需独立限制成本，不能声称所有 JOIN 写事务都有界 |
-| Merge Commit 本地恢复 | [PR #26](https://github.com/justgo4/m2s/pull/26) 已合并：提交 HTTP 前 durable intent 的 BEGIN BUSY 可取消重试；事务体/COMMIT 和未知远端结果不重放。测试头 `b8e6d7ab` 的全部合同、八格真实 E2E、smoke 通过 |
-| SQLite 写事务测量 | [PR #27](https://github.com/justgo4/m2s/pull/27) 已合并：可选采集 BEGIN 等待与持锁时间，静态操作名、容量上限与隐私合同。测试头 `1218c28f` 全部 CI 通过；测量本身有开销，不把启用/关闭的运行当作受控性能比较 |
-| 恢复测试证据一致性 | [PR #28](https://github.com/justgo4/m2s/pull/28) 已合并：只读 WAL 快照并等待 retired JOIN binding 完成 GC。测试头 `fca66009` 的 baseline/native/八格 E2E 通过；没有改变运行时退役或放宽超时 |
-| 主线严格 small | SHA `436a6f6b`，[run 37138133724](https://github.com/justgo4/m2s/actions/runs/37138133724)，artifact `11279537301`：raw/三 aggregate/三 JOIN 全行 oracle、四动态任务、强退恢复与排空通过；P95=26.107s、P99=32.453s，严格门禁失败 |
-| JOIN 受影响行读取候选 | [PR #29](https://github.com/justgo4/m2s/pull/29)，头 `dc6500e1`：根据 changed PK 只读需要的同侧行，保留完整对侧匹配。150 个随机事务、回滚重试及完整结果通过；百万源行合成结果一致，范围读取 977000→0（仍有 changed PK 点查）、十事务时间 2.487→0.034s。这是合成证据；真实 smoke 已通过，严格 small 与完整 E2E 尚在运行，未合并 |
-| 历史批次候选 | PR #12/#19 仍未合并，原严格 small 失败证据保留；不复用旧正确性绿色替代新组合的性能验收 |
-| 正式 P11 | `p11-50m-50rps-72h-v4` 尚无认证；未配置持久隔离主机或云身份。原 P95≤5s/P99≤10s 与 50M/72h 标准不变 |
+| 固定 W JOIN 主构建、durable job 发布 | PR #21/#22 已合并，保留游标/pin/封口及不可见中间结果合同。follower bootstrap/promotion 和真正双边高 fan-out 增量仍需独立限制成本 |
+| Merge Commit 本地恢复 | [PR #26](https://github.com/justgo4/m2s/pull/26) 已合并：HTTP 前 intent BEGIN BUSY 可取消重试；事务体/COMMIT 与未知远端结果不重放。头 `b8e6d7ab` 全部合同、八格 E2E、smoke 通过 |
+| SQLite 写事务测量 | [PR #27](https://github.com/justgo4/m2s/pull/27) 已合并：可选容量/隐私受限的等待与持锁采集，头 `1218c28f` 全部 CI 通过。覆盖显式 Connection.execute 写事务，测量有开销 |
+| 退役测试与一致读取 | [PR #28](https://github.com/justgo4/m2s/pull/28) 修复 retirement/GC 轮询证据竞态；[PR #32](https://github.com/justgo4/m2s/pull/32) 在短只读 WAL 快照中检查 shared leader state/consumer，避免跨提交的假损坏，同时仍拒绝真实水位不一致。各最终头完整所需 CI 通过并合并 |
+| 真实百万源行主线 | SHA `436a6f6b`，[run 37138133724](https://github.com/justgo4/m2s/actions/runs/37138133724)，artifact `11279748960`：最终109万行、raw/三个 aggregate/三个 JOIN 全行 oracle、四动态任务、强退与右侧变化恢复、排空通过；严格 P95/P99=73.716/116.725s，失败 |
+| 最接近 small 门槛的组合 | [PR #33](https://github.com/justgo4/m2s/pull/33)，头 `02355671`：预算约束的 CDC lane 合并、JOIN changed-PK 读取、私有 owner 只读检查。所有合同、八格 E2E、smoke、完整结果/恢复通过；严格 small P95/P99=7.088/8.104s，仅 P95 未达标，未合并 |
+| JOIN 批量登记实验 | [PR #34](https://github.com/justgo4/m2s/pull/34)，最终头 `ac3ba30f`：有行/字节预算的身份验证和输出登记，保留默认调用者 TEMP 配置。七项新测试及所有 CI/完整结果/恢复通过；严格 small P95/P99=9.112/13.112s 仍失败，未合并。合成 SQL 成本改善不能作为端到端达标证据 |
+| 其余性能候选 | PR #12/#19/#29/#31 仍未合并，历史失败记录保留。不沿用不同提交的绿色检查，不扩大超时或放宽原门槛 |
+| 正式 P11 | 原 `p11-50m-50rps-72h-v4` 未认证；未配置持久隔离主机/云身份。5/10秒与5000万行/72小时目标不变 |
 
-下一步先检查 PR #29 同一头的严格 small 与全合同结果，再利用主线可选事务计时区分状态计算、SQLite 写锁和下游提交等待。性能候选必须通过门禁才合并；随后推进 million、低磁盘/资源及升级恢复验证，最后在持久固定资源主机运行原规格认证。详细命令、固定 SHA 和 artifacts 保存于 PROGRESS。
+最新 profiler 在 follower 绑定中观察到长写事务，主线恢复修复已让真实百万负载完成正确性验证，但延迟仍未通过。下一项应实现 **durable frozen-W 的 follower 输出分块构建及 owner promotion**：保留可重启的输入/游标，未封口结果不可 claim/ready/visible，并覆盖独立 writer、强退续建、投影子视图、drop/GC/ref 与 ownership 交接。不能在分块之间继续读取不断变化的 leader 状态而假定它仍是同一个 W。
+
+严格 small 的 sentinel 目前测量 raw events 查询可见延迟，不能替代每个 stateful target 的 SLO；其他任务也保存各自可见/源龄指标与完整 oracle。不同 hosted runner、启用/关闭测量的运行不是受控 A/B。后续继续分层验证规模、低空间/升级恢复和固定资源，在持久主机上才运行正式认证。
 
 ## 1. 场景与待验证假说
 
