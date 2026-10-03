@@ -8,29 +8,22 @@
 
 **当前已是可运行的 CDC + shared fixed-W 动态 SQL 基线；COUNT/SUM/AVG 与受限双源 INNER equi-join 已接入用户 catalog/daemon，支持无需重启的 stateful hot-add/drop，并持续用真实 MySQL→StarRocks 合同验证。** shared 模式已经接入 authoritative source log/base、generation 生命周期、drop/drain，以及 correctness-first 的跨任务状态复用：相同 aggregate/JOIN 可只维护一个 compute state；aggregate 的聚合输出子集与 JOIN 的投影子集可复用 superset state，保留独立 target/outbox/frontier；owner 退役时 follower 可在固定 frontier 提升为私有投影状态。当前还加入 durable sharing decision/telemetry、compatible/off/adaptive 准入和确定性的整图 leader preference。legacy 模式仍保留 MySQL snapshot 路径。本文区分已有证据、待实现协议和研究候选；不宣称已达到物理极限、生产就绪或全面超过其他引擎。
 
-## 当前进度评审（2026-10-03，Asia/Taipei）
+## 当前进度评审（2026-10-03）
 
-本次核对主线 `612253709ff0e1119e24b431ed7eea10c970e11b`、[PROGRESS.md](PROGRESS.md)、开放 PR 与最新主线验证。**判断：受限 v1 的功能与恢复基线已经形成，当前主线任务应收敛到有界构建、写锁成本和端到端验收；最终规模与延迟目标尚未达到。** 下文历史记录保留其当时语境，最新状态以本节及 PROGRESS 为准。
+已核对主线 `8ccf21e8b33f93183faf17d2df1b7f43630b1aed` 与各 PR 的实际测试头。**受限 v1 的功能与恢复基线已形成，JOIN 主构建与 job 发布已完成有界协议改造；严格端到端延迟、剩余共享状态大事务及正式规模验收仍未完成。** 下文历史记录保留当时语境，最新状态以本节及 [PROGRESS.md](PROGRESS.md) 为准。
 
-| 工作 | 核对结果 | 我的评价 |
-|---|---|---|
-| 共享源状态、fixed-W、动态增删/重建、聚合与受限 JOIN、exact/subview sharing | 已接入 daemon，已有真实下游合同与故障恢复证据 | 功能闭环有实质进展；短测与 100-task 合同不能推导 50M 生产容量 |
-| JOIN 流式出口与测量 | [PR #16](https://github.com/justgo4/m2s/pull/16) 已合并；[PR #18](https://github.com/justgo4/m2s/pull/18) 已合并生产拓扑参数化测量 | 内存改善已被合成全行摘要验证，但初始化及 job 登记的总写锁仍随输出规模增长 |
-| 本地 delivery preparation 写锁恢复 | [PR #20](https://github.com/justgo4/m2s/pull/20) 已合并为 `146499d2`；测试头 `7819653e` 的 baseline/native/state、八格 daemon E2E、supervised smoke 均通过 | 只重试尚未进入事务的 BEGIN BUSY，属于恢复修复；不能据此宣布吞吐或 SLO 达标 |
-| 批次候选 | [PR #12](https://github.com/justgo4/m2s/pull/12)、[PR #19](https://github.com/justgo4/m2s/pull/19) 仍开放；#19 的严格 small P95/P99 为 28.651/36.650 秒，完整结果与恢复正确 | 正确性绿色不足以合并性能候选；保留 P95≤5 秒、P99≤10 秒门禁 |
-| 最新主线综合验证 | [run 37103497183](https://github.com/justgo4/m2s/actions/runs/37103497183)，实际运行 SHA `146499d2`，已结束；small 与 million 均在 “Supervised workload and full evidence gate” 步骤失败 | 之前“正在运行”的交接状态已过时。本次快审未重新解析失败 artifacts，不能把旧版锁错误或候选延迟直接当作本次根因 |
-| 正式 P11 | `p11-50m-50rps-72h-v4` 尚无完成认证；交接记录中持久隔离测试机仍未配置 | 最终验收仍开放，不给出无依据的完成百分比或日期 |
+| 工作 | 当前证据与边界 |
+|---|---|
+| 固定 W JOIN 主构建、durable job 发布 | PR #21/#22 已合并：可恢复 unpublished chunks、游标、pin、封口及可见性合同。可变 leader 的 follower bootstrap/owner promotion 与真实双边高 fan-out 增量仍需独立限制成本，不能声称所有 JOIN 写事务都有界 |
+| Merge Commit 本地恢复 | [PR #26](https://github.com/justgo4/m2s/pull/26) 已合并：提交 HTTP 前 durable intent 的 BEGIN BUSY 可取消重试；事务体/COMMIT 和未知远端结果不重放。测试头 `b8e6d7ab` 的全部合同、八格真实 E2E、smoke 通过 |
+| SQLite 写事务测量 | [PR #27](https://github.com/justgo4/m2s/pull/27) 已合并：可选采集 BEGIN 等待与持锁时间，静态操作名、容量上限与隐私合同。测试头 `1218c28f` 全部 CI 通过；测量本身有开销，不把启用/关闭的运行当作受控性能比较 |
+| 恢复测试证据一致性 | [PR #28](https://github.com/justgo4/m2s/pull/28) 已合并：只读 WAL 快照并等待 retired JOIN binding 完成 GC。测试头 `fca66009` 的 baseline/native/八格 E2E 通过；没有改变运行时退役或放宽超时 |
+| 主线严格 small | SHA `436a6f6b`，[run 37138133724](https://github.com/justgo4/m2s/actions/runs/37138133724)，artifact `11279537301`：raw/三 aggregate/三 JOIN 全行 oracle、四动态任务、强退恢复与排空通过；P95=26.107s、P99=32.453s，严格门禁失败 |
+| JOIN 受影响行读取候选 | [PR #29](https://github.com/justgo4/m2s/pull/29)，头 `dc6500e1`：根据 changed PK 只读需要的同侧行，保留完整对侧匹配。150 个随机事务、回滚重试及完整结果通过；百万源行合成结果一致，范围读取 977000→0（仍有 changed PK 点查）、十事务时间 2.487→0.034s。这是合成证据；真实 smoke 已通过，严格 small 与完整 E2E 尚在运行，未合并 |
+| 历史批次候选 | PR #12/#19 仍未合并，原严格 small 失败证据保留；不复用旧正确性绿色替代新组合的性能验收 |
+| 正式 P11 | `p11-50m-50rps-72h-v4` 尚无认证；未配置持久隔离主机或云身份。原 P95≤5s/P99≤10s 与 50M/72h 标准不变 |
 
-测量口径必须保持清楚：[生产拓扑合成报告](reports/join-production-topology-local-20261003.json) 的 **100 万输出行**中，当前流式方案为 3920 jobs、峰值 RSS 252,301,312 bytes；配置批次候选为 320 jobs、368,746,496 bytes，完整行袋摘要一致。这说明批次大小存在内存与 job 数量的取舍，不能等同于百万源行 daemon 测试通过，也不能把不同 hosted runner 的结果当作受控 A/B。
-
-**建议按以下顺序继续：**
-
-1. **先补齐最新失败证据。** 下载并核对上述主线 small/million 的报告 SHA、首个失败边界、oracle、延迟与锁等待，把结论记入 PROGRESS；不要继续沿用前一轮错误推断当前根因。
-2. **优先完成可恢复的分块构建与有界发布。** JOIN bootstrap 与 enqueue 需要 durable `building/sealed` 状态；每块限制扫描工作量、输出行数和字节，游标同时记录左右主键以恢复高 fan-out。固定 W 的 pin 保留到最终激活；jobs、links、游标和计费原子提交。未完成结果不得进入 claim、ready 或 visible，最终发布也不能重新复制全量数据形成另一个大事务。
-3. **用竞争与崩溃证据证明边界。** 覆盖每块提交/封口后的强退续建、旧游标重试、drop/GC、owner promotion、最后 ack、旧状态升级，并让真实并发 writer 能在块间前进。同步测量写锁等待与持有时间、TEMP/WAL/GC、capture/apply/writer 各阶段成本。逐处 BUSY 重试可以防止退出，但不能替代这项结构改造。
-4. **保持受限 v1 范围，分层验收。** 先在固定资源下通过严格 small，再推进 million、资源/低磁盘/升级恢复演练，最后运行原规格 50M/72h。主机准备可并行推进，代码改造无需因此停摆；在 profile 证明收益前，不优先更换 SQLite/Python 或扩大 SQL、通用优化器与 MCP 范围。未知 Merge Commit 请求继续隔离，禁止为通过测试盲目重放。
-
-本次仅更新进度判断与建议，未修改运行时代码、验收阈值或候选 PR 状态。后续每个里程碑继续把精确 SHA、证据和下一步写入仓库，避免会话中断后重复试验或把未完成工作标为完成。
+下一步先检查 PR #29 同一头的严格 small 与全合同结果，再利用主线可选事务计时区分状态计算、SQLite 写锁和下游提交等待。性能候选必须通过门禁才合并；随后推进 million、低磁盘/资源及升级恢复验证，最后在持久固定资源主机运行原规格认证。详细命令、固定 SHA 和 artifacts 保存于 PROGRESS。
 
 ## 1. 场景与待验证假说
 
