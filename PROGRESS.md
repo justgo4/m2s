@@ -9,7 +9,7 @@ authorized by the owner without expiry, subject to actual configured access.
 
 1. Main includes production-topology measurement PR18, merged e18c543283f16f0ab686187504bd0d7866bc5bf4. Tested ef613a90882b62627fb2fe964cb638c6b8128b59: baseline37102418772/native37102418792/state37102418768 all PASS. Reports retain independent exact100k/1M output bags.
 2. PR19 `codex/join-configured-batches-20261003`, head0d3ffd80a82e9a93764dae33631972ffce98e98c: honor configured JOIN rows up to50000, retain byte cap/atomic spool/last ack. Baseline37102524135/native37102524124/state37102524127/eight E2E37102524140 PASS; staged37102524134 smoke PASS, strict small FAILED P95=28.651179791/P99=36.649820225s; artifact11266063957 report identity verified0d3ffd80, all seven full output oracles/dynamic4/recovery/drain exact,pending0,density=.9137. Keep candidate unmerged; do not relax thresholds. Original4096 regression fails, fixed five tests and100follower contracts pass.
-3. PR20 `codex/prepare-begin-busy-20261003`, head7819653e154dee131f19901d75e4f07e7ba635b7: optional runtime stop for local preparation BEGIN retry only, including reservation/overflow/final parts. Five actual SQLite/Arrow tests PASS; all three original preparation regressions fail with SQLITE_BUSY in actual j4 globals. Capture4/known-visible3 PASS. Full same-SHA baseline37103061827/native37103061774/state37103061855/eight E2E37103061762/smoke37103061767 in progress; no HTTP/body/COMMIT replay.
+3. PR20 `codex/prepare-begin-busy-20261003`, head7819653e154dee131f19901d75e4f07e7ba635b7: optional runtime stop for local preparation BEGIN retry only, including reservation/overflow/final parts. Five actual SQLite/Arrow tests PASS; all three original preparation regressions fail with SQLITE_BUSY in actual j4 globals. Capture4/known-visible3 PASS. Full same-SHA baseline37103061827/native37103061774/state37103061855/eight E2E37103061762/smoke37103061767 ALL PASS. Merged146499d2e2093076b22936baaf17055d31ee6def; code is validated, no HTTP/body/COMMIT replay. Fresh main small/million runs must be reviewed as separate evidence.
 4. Fresh main5a0f staged37101481261: small artifact11265808134 full seven-target oracle/dynamic4/recovery/drain exact, pending0, P95/P9944.431475206/55.121011750s FAIL. Million artifact11266297740 stops at prepare_delivery->persist_field_overflows->BEGIN before HTTP. Root writer not proven; PR20 addresses recovery, not lock duration or SLO.
 5. Structural next milestone remains resumable unpublished JOIN bootstrap/output chunks plus bounded enqueue. Larger batches reduce jobs (1M3920->320,252MB->369MB RSS,17.424->14.976s) but do not bound total atomic writer duration. Preserve fixed-W, consumer, hidden partial output, generation/drop/GC/follower promotion and last-ack contracts.
 6. PR12 remains unmerged after failed strict-small. Formal unchanged p11-50m-50rps-72h-v4 requires a persistent isolated host not currently configured; no final certification claimed. Workspace full selftest is blocked by AF_UNIX/proc restrictions; use hosted evidence. Active local workspace /workspace/scratch/0dcac6ca5553/m2s, authoritative checkpoints are remote branches/PRs.
@@ -417,3 +417,39 @@ all three initial/overflow/final regressions fail with SQLITE_BUSY, fixed passes
 Direct cdc_selftest reaches process-resource assertion then fails because this
 workspace cannot inspect /proc; AF_UNIX and /proc checks remain hosted evidence.
 Next preserve fixed SHA CI without repeated pushes cancelling runs.
+
+
+## 2026-10-03 validated local preparation recovery and structural handoff
+
+PR20 tested7819653e154dee131f19901d75e4f07e7ba635b7 passed all five workflow
+families: baseline37103061827, native37103061774, state37103061855,
+all eight real daemon E2E37103061762, supervised smoke37103061767.
+Merged146499d2e2093076b22936baaf17055d31ee6def. Compare tested head with
+merge: only PROGRESS.md differs; runtime/test/workflow bytes unchanged.
+Local/remote j4 blob bec0f29ee31fdb9d6cd3d3adbd8410b5e9eb3fb3 matches.
+Fresh main push starts development small/million automatically; its result is
+NOT supplied by prior smoke. The recorded main5a0f million failure is preserved.
+
+Immediate coding continuation: implement resumable unpublished JOIN output
+building and bounded job publication, not another generic transaction retry.
+Current activate_catchup wraps ensure_consumer/seed_bootstrap with generation
+finalize and pin release; simply inserting commits per chunk would expose a
+partial bootstrap. Introduce durable building/sealed state, retain the fixed-W
+pin until final activation, and hide incomplete output from pending_commits/
+job claims/readiness/visibility. A cursor must preserve BOTH left and right PK
+positions to resume high fan-out. LIMIT on output alone does not bound scans
+through unmatched left rows; cap scan work and serialized bytes too.
+Job chunk registration must commit jobs/links/cursor/accounting together and
+publish without copying all staged payloads in one final write transaction.
+The existing _already_staged path must distinguish incomplete versus sealed,
+and acknowledge_delivery must never mark a partially staged commit visible.
+Include crash after each chunk/seal, concurrent stale cursor retry, drop/GC,
+owner promotion, independent target frontiers, full bag/retract and real writer
+interleaving tests. Legacy completed commits need explicit upgrade compatibility.
+This protocol is a pending design/implementation milestone, not a claimed feature.
+
+PR19 remains unmerged after strict-small latency failure28.651/36.650s despite
+exact results; no gate thresholds changed. Formal50M72h and final stable-v1
+acceptance still require configured persistent isolated resources. Chat/session
+loss stops AI reasoning; repository checkpoints and Actions do not claim automatic
+continuation or final certification.
