@@ -247,3 +247,10 @@ sandbox socket EPERM; full CI remains required, no claim of full selftest pass.
 Main million artifact11261727031 proves NEW fatal stateful_task_worker SQLite
 lock timeout (not source apply worker); investigate separately. Next: fresh
 PR9 CI/small; then focused stateful retry / bounded JOIN staging work.
+
+
+## 2026-10-03 checkpoint: remeasure bounded batching with validated runtime fixes
+
+- Original #12 head0660e327 passed all correctness checks but strict small latency failed10.107533/14.107730s; do not merge or alter thresholds.
+- Integrate latest validated main `efd9a049` (streamed JOIN bootstrap, idle pacing and known-visible local persistence) while preserving only the candidate's CDC lane cap, bounded cross-page snapshot prefixes and byte-budgeted source snapshot. Keep latest workflows/docs/tests, actual PR head checkout, and fresh smoke+strict small matrix.
+- PR #16 bridge streaming is independently under exact-head CI at4e2328a8; it is not in this performance combination yet. Later integration requires new exact-head evidence. Preserve old report SHAs/artifacts; no controlled same-host A/B or SLO improvement claimed in advance.
