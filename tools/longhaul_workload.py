@@ -2050,6 +2050,12 @@ def certification_mismatches(args):
     return mismatch
 
 
+def cancellation_signal(signum,frame):
+    # The daemon has its own process group. Unwind run() so its finally block
+    # stops that group rather than leaving it alive when the supervisor exits.
+    raise KeyboardInterrupt("longhaul cancelled by signal %d" % signum)
+
+
 def main():
     parser=argparse.ArgumentParser(
         description=__doc__)
@@ -2178,7 +2184,11 @@ def main():
                 "--certification-profile requirements differ: "
                 +json.dumps(
                     mismatch,sort_keys=True))
-    run(args)
+    previous=signal.signal(signal.SIGTERM,cancellation_signal)
+    try:
+        run(args)
+    finally:
+        signal.signal(signal.SIGTERM,previous)
 
 
 if __name__=="__main__":

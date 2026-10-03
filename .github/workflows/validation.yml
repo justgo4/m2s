@@ -1,0 +1,132 @@
+name: Staged isolated validation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'validation_profiles.py'
+      - 'tools/validation_run*.py'
+      - 'tools/longhaul_workload.py'
+      - 'tools/longhaul_gate.py'
+      - '.github/workflows/validation.yml'
+  pull_request:
+    paths:
+      - 'validation_profiles.py'
+      - 'tools/validation_run*.py'
+      - 'tools/longhaul_workload.py'
+      - 'tools/longhaul_gate.py'
+      - '.github/workflows/validation.yml'
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: Development evidence only; 24h/72h needs a persistent host
+        type: choice
+        options: [smoke, small, million, medium]
+        default: million
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: staged-validation-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  isolated:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: ${{ fromJSON(github.event_name == 'pull_request' && '["smoke"]' || github.event_name == 'workflow_dispatch' && format('["{0}"]', inputs.profile) || '["small","million"]') }}
+    env:
+      PYTHONUNBUFFERED: '1'
+      VALIDATION_PROFILE: ${{ matrix.profile }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.14'
+          cache: pip
+      - name: Protocol tests and hosted profile guard
+        run: |
+          python tools/privacy_check.py
+          python tools/validation_run_test.py
+          python - <<'PY'
+          import os, validation_profiles
+          name = os.environ['VALIDATION_PROFILE']
+          if not validation_profiles.hosted_compatible(name):
+              raise SystemExit('profile needs a persistent host, not hosted Actions')
+          PY
+      - run: python -m pip install -r requirements.txt
+      - name: Build native decoder
+        run: |
+          cmake -S native -B build/native -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/native --parallel 2
+      - name: Release hosted-runner disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+      - name: Start disposable database services
+        run: |
+          docker run --detach --name m2s-validation-mysql -p 127.0.0.1:3306:3306 \
+            -e MYSQL_ALLOW_EMPTY_PASSWORD=yes mysql:8.4.6 \
+            --server-id=1 --log-bin=mysql-bin --gtid-mode=ON \
+            --enforce-gtid-consistency=ON --binlog-format=ROW \
+            --binlog-row-image=FULL --binlog-row-metadata=FULL
+          docker run --detach --network host --name m2s-validation-starrocks \
+            starrocks/allin1-ubuntu:4.1.1
+          python - <<'PY'
+          import time,pymysql
+          for _ in range(180):
+              try:
+                  con=pymysql.connect(host='127.0.0.1',user='root',connect_timeout=2)
+                  con.close()
+                  break
+              except pymysql.MySQLError:
+                  time.sleep(1)
+          else:
+              raise RuntimeError('isolated MySQL did not become ready')
+          PY
+      - name: Supervised workload and full evidence gate
+        run: |
+          MYSQL_RESOURCE_PID="$(docker inspect --format '{{.State.Pid}}' m2s-validation-mysql)"
+          STARROCKS_RESOURCE_PID="$(docker inspect --format '{{.State.Pid}}' m2s-validation-starrocks)"
+          test "$MYSQL_RESOURCE_PID" -gt 0
+          test "$STARROCKS_RESOURCE_PID" -gt 0
+          python tools/validation_run.py run --isolated \
+            --profile "$VALIDATION_PROFILE" \
+            --run-directory benchmark-results/validation \
+            --mysql-resource-pid "$MYSQL_RESOURCE_PID" \
+            --starrocks-fe-resource-pid "$STARROCKS_RESOURCE_PID" \
+            --starrocks-be-resource-pid "$STARROCKS_RESOURCE_PID"
+      - name: Record terminal status even after failure
+        if: always()
+        run: |
+          if test -f benchmark-results/validation/status.json; then
+            python tools/validation_run.py status --run-directory benchmark-results/validation
+          fi
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: validation-${{ matrix.profile }}-${{ github.sha }}
+          path: |
+            benchmark-results/validation/plan.json
+            benchmark-results/validation/status.json
+            benchmark-results/validation/*.log
+            benchmark-results/validation/workload.json
+            benchmark-results/validation/workload-checkpoint.json
+            benchmark-results/validation/gate.json
+            benchmark-results/validation/longhaul-daemon-summary.json
+            benchmark-results/validation/longhaul-daemon-metrics.jsonl
+            benchmark-results/validation/work/daemon-*.log
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Remove disposable services
+        if: always()
+        run: |
+          docker rm --force m2s-validation-mysql || true
+          docker rm --force m2s-validation-starrocks || true
