@@ -7,12 +7,11 @@ authorized by the owner without expiry, subject to actual configured access.
 
 ## Immediate next action
 
-1. Main `efd9a0498de5cf8afa8816015b1ccf8db96aac79` includes validated PR #10 source BUSY, #11 stateful BUSY, #13 streamed JOIN bootstrap, #14 idle-worker pacing and #15 known-visible local persistence retry. Exact CI/merge SHAs and limitations are recorded in the latest dated checkpoints below. Main staged small/million on each revision is separate evidence; do not mix green checks or assume performance passed.
-2. PR #15 MERGED after exact `330005b4` baseline/native/state/eight real daemon/smoke PASS. Merge `efd9a049` has identical tree. Keep the known-visible transaction retry distinct from unknown-HTTP-result quarantine; fresh main staged scale evidence is separate.
-3. `codex/v1-join-bridge-stream-20261003`: bounded cursor/Arrow batches + disk spool; four real pipeline tests and independent 100k/1M full-output A/B pass locally. Submit focused candidate, require exact-head CI, preserve main changes on integration. Total enqueue/write lock and follower journal copy remain scale limitations.
-4. Performance PR #12 (replaces closed #9) NOT merged. `0660e327` all correctness CI/smoke pass but strict small run37097752817/artifact11264873012 latency FAIL (10.107533/14.107730s); full raw/aggregate/JOIN exactness, dynamic readiness, recovery, final drain all pass. Integrate validated fixes before any fresh performance attempt; preserve gates.
-5. Main #13 stream revision `914c163a`: staged37098826117 small all exactness/recovery/drain pass but latency fails; million capture_binlog_native BEGIN IMMEDIATE times out (artifact11265542421). Main `ef6ea539` earlier failed merge-visible local write (artifact11264953117). Lock owner still not proven. Next structural scale work is resumable bounded JOIN output construction/publication and atomic job staging, with pin/consumer/visibility/GC/crash proofs, rather than blindly retrying HTTP.
-6. Formal unchanged `p11-50m-50rps-72h-v4` still requires an independently configured persistent fixed-resource host; runner inventory HTTP403 means UNKNOWN. No host/cloud identity is configured. Unsupported SQL and unknown merge outcomes stay fail-closed. Current work is development evidence, not final v1/P11 certification.
+1. Main `5a0f22f300d0d9afbfaa141dfe19df4d6b75d193` includes validated PR #11/#13/#14/#15/#16/#17. Inspect fresh main small/million runs; native capture now retries only safe BEGIN acquisition, not transaction bodies or COMMIT.
+2. PR #12 head `c509d5ae58dbf4829e38a0685b1e692e912d8b53` has green correctness/smoke but strict small FAILED: P95=19.065292522s/P99=21.066043648s (run37100671707, artifact11266017029). All seven full output oracles, four dynamic tasks, recovery/drain exact; pending0. Do not merge or relax thresholds.
+3. Next measurement: JOIN bridge4096 row cap creates many small IPC jobs. Benchmark configurable production topology (16 partitions,16MiB,50000 configured rows), retaining independent full-bag oracle and isolated processes. Current historical benchmark used4 partitions/1MiB/4096 rows. Different hosted revisions/runs are not controlled A/B.
+4. Structural remaining work: resumable unpublished JOIN output chunks and bounded atomic enqueue, proving fixed-W pin/consumer/visibility/GC/crash contracts. Current streaming bounds memory, not total write-lock duration. Follower promotion/copy must remain safe.
+5. Formal unchanged `p11-50m-50rps-72h-v4` lacks persistent configured resources; inventory403 means UNKNOWN. No SLO/P11/final certification claimed.
 
 ## Current implementation boundaries
 
@@ -42,8 +41,8 @@ PR #9 changes:
 - `tools/cdc_bundle_test.py` (four real SQLite regressions),
   `tools/source_snapshot_budget_test.py` (three Arrow/SQLite regressions),
   baseline invocations, curated old small numeric report and README.
-- JOIN bootstrap/follower still enumerates/caches all pairs/identities under
-  outer transaction: no bounded JOIN staging or scale proof yet.
+- Historical PR #9 cache behavior was superseded by merged #13/#16 streaming.
+  Full seed and enqueue transactions still have output-proportional write locks.
 
 ## Completed milestones and evidence
 
@@ -329,3 +328,11 @@ in37097752817 artifact11264873012; retain original report and inspect numbers.
 - j4.state_transaction optional stop retries ONLY BEGIN IMMEDIATE BUSY with no open transaction; default remains immediate error after original SQLite timeout. Native capture opts in at commit_spool and non-transaction-event cursor. Transaction body/COMMIT execute once, body error rolls back and is fatal; source spool is not read before successful BEGIN. Production timeout remains30s, so cancellation during SQLite's own BEGIN wait is still bounded by that timeout; subsequent0.2s backoff is interruptible.
 - `python tools/capture_begin_contention_test.py`: four PASS with real writer lock/rolled disk source spool: release consumes sealed parts byte-exact once and source seq/cursor atomically; cancel consumes zero parts and leaves old cursor; default BUSY stays fatal; body/COMMIT/FULL/CORRUPT/LOCKED/BUSY-active never retry. Original BEGIN behavior via AST plus optional-keyword adapter fails both real-lock regressions with actual SQLITE_BUSY (not TypeError).
 - Existing source_transaction_spool/source_apply_contention/stateful_worker_contention/merge identity/quarantine plus compile/diff checks PASS locally. Fresh same-SHA baseline/native/state/eight daemon/supervised smoke required. Current source lock contention remains a performance limitation; no SLO, bounded-lock or 1M pass claimed.
+
+
+## 2026-10-03 validated integration and next measurement checkpoint
+
+- PR #16 tested4e2328a859aa71c233de653e511f3d048e49a5e6: baseline37100123569/native37100123462/state37100123544/eight E2E37100123514/smoke37100123576 PASS; mergedf586798c8624d8f53ed96a326c2928e6288037c4, identical tree.
+- PR #17 tested6ce77149b55ac0eaa70c1f1afda92e893093c41c: baseline37101089222/native37101089228/state37101089260/eight E2E37101089263/smoke37101089198 PASS; merged5a0f22f300d0d9afbfaa141dfe19df4d6b75d193, identical tree.
+- PR #12 c509d5ae correctness baseline37100671711/native37100671748/state37100671721/eight E2E37100671701 PASS; staged37100671707 smokePASS/strict smallFAIL. Artifact11266017029 actual report SHA verifiedc509: P95=19.065292522/P99=21.066043648s, CPU245.33s/RSS475729920; all output/recovery/drain exact. Earlier7052 artifact11266365888 separately P95=6.147336155/P99=9.118501335s, stillFAIL P95. Neither is certified or controlled A/B.
+- Next executable measurement edits tools/join_bridge_stream_benchmark.py to parameterize partition/row/byte budgets; compare current stream and independent cached baseline at production topology with full output bag. No runtime cap change before measured evidence. Then pursue bounded durable staging protocol with crash/last-ack/GC tests. Continue saving before and after milestones.
