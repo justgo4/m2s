@@ -185,6 +185,15 @@ def try_bind(con,task,cfg=None):
     if existing is not None:
         return existing
 
+    # A private owner awaiting target visibility cannot become a follower.
+    # Avoid acquiring the writer just to return None on every catch-up poll.
+    try:
+        aggregate_state.state_info(con,task["state_id"])
+    except KeyError:
+        pass
+    else:
+        return None
+
     with aggregate_state.transaction(con):
         # Recheck after taking the SQLite writer lock; owner state cannot move
         # while the bootstrap output is copied.
