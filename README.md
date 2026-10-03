@@ -19,11 +19,11 @@
 | SQLite 写事务测量 | [PR #27](https://github.com/justgo4/m2s/pull/27) 已合并：可选采集 BEGIN 等待与持锁时间，静态操作名、容量上限与隐私合同。测试头 `1218c28f` 全部 CI 通过；测量本身有开销，不把启用/关闭的运行当作受控性能比较 |
 | 恢复测试证据一致性 | [PR #28](https://github.com/justgo4/m2s/pull/28) 已合并：只读 WAL 快照并等待 retired JOIN binding 完成 GC。测试头 `fca66009` 的 baseline/native/八格 E2E 通过；没有改变运行时退役或放宽超时 |
 | 主线严格 small | SHA `436a6f6b`，[run 37138133724](https://github.com/justgo4/m2s/actions/runs/37138133724)，artifact `11279537301`：raw/三 aggregate/三 JOIN 全行 oracle、四动态任务、强退恢复与排空通过；P95=26.107s、P99=32.453s，严格门禁失败 |
-| JOIN 受影响行读取候选 | [PR #29](https://github.com/justgo4/m2s/pull/29)，头 `dc6500e1`：根据 changed PK 只读需要的同侧行，保留完整对侧匹配。150 个随机事务、回滚重试及完整结果通过；百万源行合成结果一致，范围读取 977000→0（仍有 changed PK 点查）、十事务时间 2.487→0.034s。这是合成证据；真实 smoke 已通过，严格 small 与完整 E2E 尚在运行，未合并 |
+| JOIN 受影响行读取候选 | [PR #29](https://github.com/justgo4/m2s/pull/29)，头 `dc6500e1`：根据 changed PK 只读需要的同侧行，保留完整对侧匹配。150 个随机事务、回滚重试及完整结果通过；百万源行合成结果一致，范围读取 977000→0（仍有 changed PK 点查）、十事务时间 2.487→0.034s。这是合成证据；真实 smoke 与八格 E2E 已通过；严格 small P95/P99=27.130/37.835s，失败并保留未合并 |
 | 历史批次候选 | PR #12/#19 仍未合并，原严格 small 失败证据保留；不复用旧正确性绿色替代新组合的性能验收 |
 | 正式 P11 | `p11-50m-50rps-72h-v4` 尚无认证；未配置持久隔离主机或云身份。原 P95≤5s/P99≤10s 与 50M/72h 标准不变 |
 
-下一步先检查 PR #29 同一头的严格 small 与全合同结果，再利用主线可选事务计时区分状态计算、SQLite 写锁和下游提交等待。性能候选必须通过门禁才合并；随后推进 million、低磁盘/资源及升级恢复验证，最后在持久固定资源主机运行原规格认证。详细命令、固定 SHA 和 artifacts 保存于 PROGRESS。
+下一候选单独调整有预算的 CDC 分区合并宽度，并结合 JOIN 受影响行优化重新测试。严格 small 的延迟样本目前测量 raw events，不能替代每个 stateful target 的延迟验收。可选事务计时捕捉到 follower 绑定持锁 6.407s，后续仍须限制共享 bootstrap/promotion 成本。性能候选必须通过门禁才合并；随后推进 million、低磁盘/资源及升级恢复验证，最后在持久固定资源主机运行原规格认证。详细命令、固定 SHA 和 artifacts 保存于 PROGRESS。
 
 ## 1. 场景与待验证假说
 
