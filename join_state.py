@@ -755,6 +755,34 @@ def apply_transaction(
         """,(source_seq,digest,time.time(),state_id))
     return dict(applied=True,deltas=deltas)
 
+def iter_pairs(con,state_id):
+    """Stream pair projections with indexed equality probes and bounded rows.
+
+    Callers that write from this cursor must hold the existing state transaction
+    for the full iteration. This does not invent a fixed-W view of mutable state.
+    Pair order is unspecified; outbox digest order comes from its durable PK.
+    """
+    current=state_info(con,state_id)
+    if not current["bootstrap_complete"]:
+        raise RuntimeError("cannot read incomplete JOIN bootstrap state")
+    cursor=con.execute("""
+        SELECT l.pk_blob,l.row_payload,r.pk_blob,r.row_payload
+        FROM join_rows AS l
+        CROSS JOIN join_rows AS r INDEXED BY join_rows_by_key
+        WHERE l.state_id=? AND l.side='left' AND l.join_blob IS NOT NULL
+          AND r.state_id=l.state_id AND r.side='right'
+          AND r.join_blob=l.join_blob
+    """,(str(state_id),))
+    try:
+        for left_pk,left_payload,right_pk,right_payload in cursor:
+            yield dict(
+                pair_id=_pair_id(left_pk,right_pk),
+                row=_project(current["spec"],pickle.loads(left_payload),
+                             pickle.loads(right_payload)))
+    finally:
+        cursor.close()
+
+
 def read_pairs(con,state_id):
     current=state_info(con,state_id)
     if not current["bootstrap_complete"]:

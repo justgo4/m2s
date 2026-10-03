@@ -278,10 +278,42 @@ stream~140–142MiB. CPU/wall~2.0–2.45s versus2.27–2.36s: no throughput clai
 1M-pair synthetic A/B pending. Keep atomic seed; total writer duration unbounded.
 Do not confuse bounded Python pair memory with resumable chunked outbox/jobs.
 
+## Streamed atomic JOIN seed implemented
 
-## 2026-10-03 checkpoint: stateful idle-loop investigation (not certified)
+Branch codex/v1-stream-join-bootstrap-20261003 now integrates maincb153909a979200d246fb516117758ebdb221d41.
+join_state.iter_pairs uses indexed left scan/right equality probes, yields one
+pair projection at a time. join_outbox seeds full/projected bootstrap directly
+into atomic durable rows and hashes canonical ordered durable PK cursor. Existing
+commits verify each source payload/count/digest on exact retry. Rechecks immutable
+state identity/spec/bootstrap/W under the write lock. No schema change, no partial
+bootstrap publication, no output protocol/consumer/pin/frontier change.
+Five real WAL/full-oracle tests PASS; original generation/runtime/job bridge/
+shared/subview/100 follower/GC/2000transaction randomized oracle PASS locally.
+reports/join-stream-local-20261003.json retains raw synthetic A/B and SHA256 of
+algorithm sources. 1M exact pair/digest: cache824152064 RSS/25.751s versus
+stream148361216 RSS/28.469s (82.0% less peak process RSS,10.6% slower wall).
+100k3 repeats similar CPU/wall and~30% lower RSS. Do not declare faster/lock
+resolved: total atomic seed writer time and full job staging remain unbounded.
+A 1M output pair ≠ 1M source rows or true daemon performance evidence.
+Next: fresh full same-SHA CI before merge; bounded durable seeding/job staging
+protocol and real1M/SLO after prior gates. Formal50M72h still absent.
 
-- Main remains `cb153909` after validated PR #11 BUSY recovery; PR #12 snapshot batching is NOT merged: exact-head small run 37097752817 passed all full-output oracles but failed unchanged P95/P99 gates (10.107533s/14.107730s).
-- Artifact 11264873012 contains 6,689 unchanged shared reuse log lines in daemon-001 and 22,609 in daemon-002; peak 151/354 lines per second. Worker only waits when caught AND target active_jobs is empty AND ready. Pending downstream jobs therefore permit repeated runner/registry writes and logging without a new source prefix; catchup can also wait on leader/output visibility with no progress.
-- Next branch `codex/v1-stateful-idle-20261003`: pace workers that made no durable compute progress, retain timely source/visibility/retirement rechecks and loader wakeups, log physical reuse on binding transitions. Verify against original hot-loop implementation and real SQLite worker lifecycle before hosted CI/SLO. No latency gate changes, no claim this alone explains all tails.
-- PR #13 exact head `0a73f0a` streaming JOIN bootstrap: baseline/native/state/supervised smoke pass, eight-case daemon E2E still running. Local isolated 1M output-pair A/B reduced peak RSS 824,152,064 to 148,361,216 bytes, wall 25.751s to 28.469s; total atomic write lock remains a limitation.
+## JOIN candidate CI trigger coverage correction
+
+PR13 runtime head37860bf4 started baseline/native/eight E2E; state/validation
+were excluded by existing path filters even though JOIN seed affects real mixed
+workloads. Extend validation to source/aggregate/JOIN/stateful runtime changes;
+state workflow triggers JOIN and executes stream contract + bounded100k-pair
+A/B2 repeats, with explicit actual-head checkout. Require fresh same-head complete
+CI after this workflow correction rather than mixing prior SHA passes.
+Snapshot PR12 head0660e327 all correctness/smoke passed but strict small failed
+in37097752817 artifact11264873012; retain original report and inspect numbers.
+
+
+## 2026-10-03 checkpoint: JOIN stream merged; measured worker spin fixed locally
+
+- PR #13 exact tested head `0a73f0a0419af765f613d8ee06b358e1fcdae5f5` passed baseline 37098321912, native 37098321871, state 37098321923 (stream contract/A-B included), supervised smoke 37098321907 and all eight real daemon cases 37098321915. Merged as `914c163a46eac2804f8c31925f20706a02add155`; compare tested head to merge has zero changed files. This is a bounded memory change, NOT 50M/72h/SLO certification.
+- PR #12 small run 37097752817/artifact 11264873012: all full oracles/recovery/drain pass, latency FAIL P95=10.107533s/P99=14.107730s against unchanged 5s/10s. Do not merge this performance candidate as a success. Reuse logs peaked at 151/354 lines per second, 6,689 and 22,609 duplicates in two daemon logs.
+- `codex/v1-stateful-idle-20261003` checkpoint 4c7ca7b records the investigation. Worker now waits 50ms when caught up (including pending target jobs/catchup visibility), or when a lagging follower's consumer watermark did not advance. Bootstrap chunks and progressing CDC prefixes continue immediately. Loader wakeups, stop, retirement, membership and visibility rechecks remain in the loop. Reuse logs emit on binding transitions only.
+- Three real SQLite/actual aggregate runner regressions PASS: unacknowledged bootstrap/catchup, ready with pending CDC, shared follower waiting on leader then copying three commits without per-commit waits; output commit counts/frontiers/log transition/wakeups checked. All three FAIL against original `cb153909` worker loaded via AST in actual j4 globals. Existing BUSY4, aggregate runtime/shared/physical registry/rebuild tests and compile/diff checks pass locally. Hosted exact-head checks pending; no SLO improvement claimed yet.
+- New main million run 37098049769 (`ef6ea539`, artifact 11264953117) failed later at merge_delivery_worker -> process_merge_lane -> merge_async_delivery -> BEGIN IMMEDIATE (30s SQLite BUSY), not stateful_task_worker. Source log/base reached 66; join retained state ~1,001,724 rows; lock owner not identified. Still requires bounded output staging/write transactions and exact remote-unknown recovery; do not blindly replay HTTP or raise timeout to claim success.
