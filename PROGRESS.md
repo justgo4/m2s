@@ -12,7 +12,8 @@ the goals and evidence boundaries. Read AGENTS.md before continuing.
 - Active milestone: **V1-02, runner inventory and safe operating procedures**.
 - V1-01 merged as `719159d60c54ce510fb5ffabfcc847b068e4bc51` (PR #5).
 - Active branch: `codex/v1-cdc-bundle-20261003`, [PR #9](https://github.com/justgo4/m2s/pull/9).
-- Candidate head `ea8b2cd7642db856da4b8ca6884775bebdc812d2`: baseline `37086484043`,
+- Current candidate head `5b382ef4c648809c717d71113cdec5db8a83b937`: new checks pending.
+- Previous candidate `ea8b2cd7642db856da4b8ca6884775bebdc812d2`: baseline `37086484043`,
   native `37086484091`, source-state `37086484038` passed. all eight E2E `37086484049` and supervised smoke passed. Small `37086484023`
   failed only latency: P95=9.10/P99=11.10, density=.975, all oracles/dynamic/recovery
   passed; artifact `11260204343`. Actual tested PR merge SHA `ee10ce8ee1bc56d44fcf4f75f5bc7183e811a216`
@@ -142,11 +143,18 @@ all pairs/identities under one outer transaction; this is a scale risk and needs
 bounded consistent staging or measured set-wise improvement plus crash/fixed-W
 proof. Do not merely raise timeouts or mark million passed. CPU snapshot-pause is a legacy-worker flag; shared snapshot worker does not use
 it. Its effect on shared backfill was not proven. Do not repeat that causal claim.
-Latest local follow-up (not pushed): byte-limited streaming source snapshot read,
+Follow-up pushed at `5b382ef4c648809c717d71113cdec5db8a83b937`: byte-limited streaming source snapshot read,
 shared worker respects configured row cap (was fixed 4096) and detects budget
 truncation separately from EOF; `tools/source_snapshot_budget_test.py` covers
 cursor/pin/restart/full coverage/singleton. Core CI pins actual PR head SHA.
-Update PR #9 and require new same-head checks; do not merge on old green jobs.
+Require new same-head PR #9 checks; do not merge on old green jobs.
+Separate correctness fix draft: `tools/source_apply_contention_test.py` and
+`source_state_apply_worker` retry only SQLITE_BUSY after rollback/no open txn,
+stop-aware and rate-limited. Resync physical catalog after a committed apply
+prefix even without new input; corruption/FULL/active transaction errors stay
+fatal. Four real-connection regressions prepared (full imports need CI).
+Submit independent branch `codex/v1-source-apply-busy-20261003` from current main,
+without carrying unmerged PR #9 runtime changes.
 
 ## Ordered backlog and exit gates
 
