@@ -504,3 +504,18 @@ Direct cdc_selftest still blocked at resource_tree_stats /proc assertion locally
 required hosted baseline/native/state/eight E2E/smoke must validate full change.
 Next commit focused job-publication PR and preserve its exact SHA while CI runs;
 continue fixed-W bootstrap staging on a separate branch.
+
+
+## Active resumable fixed-W JOIN output build
+
+PR21 https://github.com/justgo4/m2s/pull/21 tests cb181e3cd0c2fb0d47e714574963711a81a03c62;
+all five workflow families running37114618420/37114618497/37114618465/37114618445/37114618424.
+Do not rewrite that head during CI. Branch codex/join-output-build-20261003 starts
+at cb181e3 for the separate bootstrap milestone. Implement bounded unpublished
+primary-generation pair enumeration with left+right durable cursors, input scan
+and byte caps, output commit sealed state, canonical digest outside write lock,
+and fixed-W pin retained until atomic consumer/generation activation. Shared
+follower initialization still uses its existing atomic path until its mutable
+leader frontier can be safely frozen; do not pretend primary chunks bound it.
+Next files join_output_build.py/join_outbox.py/join_generation.py/
+join_log_consumer.py/join_runtime.py and real WAL/high-fanout/pin/crash tests.
