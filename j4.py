@@ -9864,12 +9864,32 @@ def source_state_apply_worker(cfg, runtime):
     con=open_state(cfg["state"])
     stop=runtime["stop"]
     wake=runtime["source_apply_event"]
+    needs_sync=False
+    last_busy_log=-float("inf")
     try:
         while not stop.is_set():
-            applied=source_state.apply_pending(
-                con,max_commits=16)
-            if applied:
-                sync_source_base_catalog(con)
+            try:
+                applied=source_state.apply_pending(con,max_commits=16)
+                needs_sync=needs_sync or bool(applied)
+                if needs_sync:
+                    sync_source_base_catalog(con)
+                    needs_sync=False
+                if applied:
+                    continue
+            except sqlite3.OperationalError as exc:
+                # Only retry another writer's BUSY after transaction rollback.
+                # Earlier apply commits may already be durable; recompute the
+                # physical catalog even when there is no new source commit.
+                if con.in_transaction or (getattr(exc,"sqlite_errorcode",0)&255)!=sqlite3.SQLITE_BUSY:
+                    raise
+                needs_sync=True
+                runtime["source_apply_busy_retries"]=int(runtime.get("source_apply_busy_retries",0))+1
+                now=time.monotonic()
+                if now-last_busy_log>=30:
+                    log("SOURCE APPLY BUSY retry journal_retained=1 retries=%d"
+                        % runtime["source_apply_busy_retries"])
+                    last_busy_log=now
+                stop.wait(0.2)
                 continue
             wake.wait(0.2)
             wake.clear()
@@ -12967,4 +12987,3 @@ if __name__ == "__main__":
         log(f"FAILED: {error}")
         traceback.print_exc(file=sys.stdout)
         sys.exit(1)
-

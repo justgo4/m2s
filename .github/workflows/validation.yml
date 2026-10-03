@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
     paths:
+      - 'j4.py'
+      - 'tools/source_apply_contention_test.py'
       - 'validation_profiles.py'
       - 'tools/validation_run*.py'
       - 'tools/longhaul_workload.py'
@@ -11,6 +13,8 @@ on:
       - '.github/workflows/validation.yml'
   pull_request:
     paths:
+      - 'j4.py'
+      - 'tools/source_apply_contention_test.py'
       - 'validation_profiles.py'
       - 'tools/validation_run*.py'
       - 'tools/longhaul_workload.py'
@@ -48,6 +52,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: '3.14'
