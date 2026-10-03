@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 from pathlib import Path
 import json
+import os
+import subprocess
 import sys
 import tempfile
 from types import SimpleNamespace
@@ -15,6 +17,32 @@ import validation_profiles
 
 
 def main():
+    # Real Git HEAD must win over both an event merge SHA and a stale override.
+    with tempfile.TemporaryDirectory() as directory:
+        def git(*args):
+            return subprocess.run(["git", *args], cwd=directory, text=True,
+                                  capture_output=True, check=True).stdout.strip()
+        git("init", "--quiet")
+        git("-c", "user.name=test", "-c", "user.email=test@example.invalid",
+            "commit", "--quiet", "--allow-empty", "-m", "identity fixture")
+        revision = git("rev-parse", "HEAD")
+        with patch.object(longhaul_workload, "ROOT", Path(directory)), \
+             patch.dict(os.environ, {"GITHUB_SHA": "a" * 40,
+                                     "M2S_CODE_REVISION": "b" * 40}):
+            assert longhaul_workload.code_revision() == revision
+    # Archive identity is explicit; an ambient event SHA alone is never enough.
+    with patch.object(longhaul_workload.subprocess, "run",
+                      return_value=SimpleNamespace(returncode=128, stdout="")), \
+         patch.dict(os.environ, {"GITHUB_SHA": "a" * 40,
+                                 "M2S_CODE_REVISION": ""}):
+        assert longhaul_workload.code_revision() == ""
+        os.environ["M2S_CODE_REVISION"] = "b" * 40
+        assert longhaul_workload.code_revision() == "b" * 40
+        os.environ["M2S_CODE_REVISION"] = "not-a-revision"
+        assert longhaul_workload.code_revision() == ""
+    with patch.object(longhaul_workload.subprocess, "run", side_effect=OSError), \
+         patch.dict(os.environ, {"M2S_CODE_REVISION": "c" * 40}):
+        assert longhaul_workload.code_revision() == "c" * 40
     # Named plans must fit every planned hot-add at the hosted two-core cap.
     # A six-task/4GiB million plan previously failed before its first seed row.
     for name in validation_profiles.NAMES:

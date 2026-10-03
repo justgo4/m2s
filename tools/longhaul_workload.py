@@ -318,15 +318,6 @@ def machine_resource_fingerprint():
 
 def code_revision():
     """Return a reproducible code identity without exposing checkout paths."""
-    for name in ("M2S_CODE_REVISION","GITHUB_SHA"):
-        value=str(os.environ.get(name,"") or "").strip().lower()
-        if (
-            7<=len(value)<=64
-            and all(
-                char in "0123456789abcdef"
-                for char in value)
-        ):
-            return value
     try:
         result=subprocess.run(
             ["git","rev-parse","HEAD"],
@@ -336,15 +327,20 @@ def code_revision():
             timeout=5,
             check=False)
     except (OSError,subprocess.SubprocessError):
-        return ""
-    value=str(result.stdout or "").strip().lower()
+        result=None
+    value=str(result.stdout or "").strip().lower() if result else ""
     if (
-        result.returncode==0
+        result is not None and result.returncode==0
         and 7<=len(value)<=64
         and all(
             char in "0123456789abcdef"
             for char in value)
     ):
+        return value
+    # An explicitly identified source archive may lack Git metadata. The CI
+    # event SHA is not proof of the checked-out code (PR merge vs PR head).
+    value=str(os.environ.get("M2S_CODE_REVISION","") or "").strip().lower()
+    if 7<=len(value)<=64 and all(char in "0123456789abcdef" for char in value):
         return value
     return ""
 
