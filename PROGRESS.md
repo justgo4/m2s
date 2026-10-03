@@ -10,14 +10,41 @@ the goals and evidence boundaries. Read AGENTS.md before continuing.
   validated merges are authorized without a new confirmation.
 - Starting main: `017285bafd1978cdf129ba2beb9a592d4c63ce48`.
 - Active milestone: **V1-01, staged validation and independent run supervision**.
-- Active branch: not yet created. Next create a focused branch from current main.
-- Local workspace: `/workspace/m2s-work`; a connector-fetched snapshot, not yet a
-  complete Git checkout. Local network checkout did not complete. Reconstruct
-  missing tracked files from GitHub if needed; do not infer a clean revision from
-  this local copy. GitHub remains the source of truth.
-- Next action: inspect longhaul/workflow contracts; implement dependency-free
-  named development profiles and a durable launcher/status/cancel protocol,
-  preserving canonical P11 and existing workload/gate evidence.
+- Active branch: `codex/v1-staged-validation-20261003`, [PR #5](https://github.com/justgo4/m2s/pull/5).
+- Implementation checkpoint: `db96c9193fd04236a040e5ac47f6a77f24f408da`;
+  base `ffad2701181a475d44622a16c89539a30b675b3c`. Nine local protocol tests,
+  canonical P11/gate contracts, syntax and privacy checks pass. Remote CI pending.
+- Working files: `validation_profiles.py`, `tools/validation_run.py`,
+  `tools/validation_run_test.py`, `tools/longhaul_workload.py`,
+  `tools/longhaul_workload_test.py`, `.github/workflows/validation.yml`,
+  `.github/workflows/ci.yml`, README.
+- Local workspace: `/workspace/m2s-work`; all 174 original tracked blobs were
+  checked against GitHub SHA-1 and permissions. A Git index exists for privacy
+  checks, but its historical HEAD could not be materialized; it is not a clean
+  live-test checkout. Python runtime lacks Arrow/database dependencies. Full
+  imports/live database contracts use the real GitHub checkout. Never fabricate
+  its revision or declare the local snapshot formal evidence.
+- Next action: inspect PR #5 workflow results/logs, fix any failures, and merge
+  when required checks pass. Merge automatically starts hosted small/million
+  runs. Preserve run IDs/artifacts and inspect real performance before changing
+  state layout. Meanwhile continue V1-02 operating procedures.
+
+Local commands completed:
+
+```bash
+python tools/validation_run_test.py
+python tools/p11_profile_test.py
+python tools/longhaul_gate_test.py
+python -m compileall -q validation_profiles.py tools/validation_run.py tools/validation_run_test.py tools/longhaul_workload.py tools/longhaul_workload_test.py
+python tools/privacy_check.py
+```
+
+V1-01 implementation provides named development/P11 plans, new-only private run
+directories, atomic status and logs, clean revision and finished-report identity,
+PIDFD cancel, real child cleanup, and gate-only resume without reinitialization.
+SIGTERM now unwinds the workload's independent daemon group. It does not support
+resuming an incomplete workload or surviving host loss. PR runs real hosted smoke;
+main runs small/million; no shortened result is called formal P11 certification.
 
 ## Completed evidence to preserve
 
@@ -58,9 +85,14 @@ must be split into explicit acceptance criteria before coding.
 
 ## External dependencies / known limits
 
-- No dedicated persistent Linux test machine/self-hosted runner or database
-  credentials are configured in this session. Owner has been asked for runner
-  availability/labels; do not invent them or queue a 72h run on an unknown host.
+- Owner does not know whether a self-hosted runner exists and authorized checking
+  and creating needed infrastructure, including freely using public hosted Actions.
+  Existing workflows use standard hosted runners. The connector rejected the
+  runner-list endpoint (`GET actions/runners`: unsupported URL), so no definitive
+  registration list is available. No cloud identity/host credentials are bound.
+  Use configured standard hosted resources now; do not repeatedly ask permission
+  or assume public free minutes imply a persistent/unlimited machine. Creating a
+  real host/self-hosted registration remains blocked by actual management access.
 - Hosted E2E is small smoke, not the formal long-run environment.
 - No formal 50M/72h report exists. No CI success implies that certification.
 - Existing workload initializes isolated fixture databases, requires an empty
