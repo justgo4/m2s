@@ -619,29 +619,37 @@ shared initialization/owner promotion and high fan-out transactions still need
 bounded/versioned protocols if profile establishes material cost.
 
 
-## Active retirement evidence polling correction (2026-10-03)
+## Active SQLite write timing (2026-10-03)
 
-Base05e8f168396179d74427bbe663877201ce158d67; branch
-codex/retired-follower-gc-wait-20261003. PR26 E2E37132902430 failed
-transaction/ON/ON at wait_stateful_retired: retired descriptor observed while
-JOIN shared binding awaited background GC. Artifact11277780160 retained.
-Runtime intentionally leaves binding until outbox/consumer drain is verified by
-GC; immediate binding-count assertion raced that boundary. Keep exact remaining
-subview assertions and timeout. Require binding cleanup as part of the existing
-retirement wait and read each multi-table observation in one SQLite snapshot.
-Next real WAL regressions for retired-before-GC, exact task IDs, owner references,
-consistent snapshot and bounded timeout; then hosted E2E on focused test PR.
-PR26 remains frozen; PR27 telemetry head eb3bb3a is independently submitted.
+Base05e8f168396179d74427bbe663877201ce158d67; independent branch
+codex/sqlite-write-timing-20261003. PR26 request-intent recovery head
+b8e6d7ab19c4eea6abd1ff5bbaee2effe2e3e96b stays frozen while required
+CI37132902557/37132902485/37132902475/37132902430/37132902472 runs.
+Remaining lock owner is unproven. Add opt-in bounded in-process transaction
+timing for explicit BEGIN IMMEDIATE acquisition/COMMIT-or-rollback residence,
+with operation names only (no SQL, paths, values). Preserve original connection
+when disabled; report coverage boundaries and open transactions separately.
+Next real WAL contention, rollback/fatal/commit boundaries and privacy tests.
 
-Polling implementation complete: each state() observation starts a read-only
-SQLite transaction; wait_stateful_retired also requires no binding whose exact
-follower/leader task ID matches a retired sink descriptor. Existing timeout,
-drain/intent checks, remaining-subview assertions and full-row oracles unchanged.
-PYTHONPATH=/workspace/m2s-deps python tools/stateful_retirement_poll_test.py:
-5 PASS actual WAL fixtures (both operator kinds retired-before-GC, owner
-promotion references, unrelated exact IDs, stuck-binding timeout, concurrent
-writer committing between two reads). Original helper fails delayed-GC and
-snapshot consistency regressions. Next focused PR and real eight E2E required.
+Timing implementation: optional TimingConnection records explicit writer acquisition
+and transaction residence, cumulative count/total/max per operation, bounded128
+buckets and128 active descriptions; scripts/deferred/cursor/implicit coverage is
+explicitly excluded. Original connection when flag disabled. Periodic/final daemon
+reports include diagnostics when enabled; staged development enables the flag.
+9 real SQLite/module tests PASS, with WAL busy/writer interleaving, rollback and
+failed COMMIT, automatic rollback, script exclusion, bounds/privacy and original
+connection defaults. Instrumented accepted-response6/output-build11/publication15
+contracts PASS; privacy/diff PASS. No throughput or lock-owner conclusion yet.
+
+PR26 baseline/native/state/smoke PASS atb8e6d7a. E2E transaction/ON/ON failed
+37132902430 job111231406263 artifact11277780160: retirement status observed
+before asynchronous follower-binding GC. Retire removes consumer/status/intent
+atomically but binding row intentionally remains for gc_retired_followers.
+wait_stateful_retired currently waits only status/drain/intent then immediately
+asserts binding count; no binding-GC predicate. Unchanged transaction path cannot
+execute this PR's Merge Commit change. Retrying that isolated job on the same SHA
+after diagnosing evidence; independently fix the test polling boundary rather
+than weaken the remaining-subview assertion or modify runtime retirement.
 ## Active request-intent lock recovery (2026-10-03)
 
 Owner renewed repository authorization in this session. Reconciled main
@@ -667,8 +675,44 @@ BEGIN. Original pre-request path cannot retry acquisition; no claim of bounded
 lock duration or improved SLO. Next submit focused PR and require same-head CI.
 
 
-PR28 db1eea2ae7a042f535b4def161ebc042297fe194 passed baseline37137663125,
-native37137663110 and all eight E2E37137663128. Integrated validated main
-436a6f6 (PR26) with both checkpoint histories; test/runtime bytes merge without
-conflicts. Fresh exact-head checks required before merge. PR27 independently
-integrated at1218c28fc35a8f2d14919007d262ae776d50efb1.
+### Integrated recovery and timing verification
+
+PR26 headb8e6d7a passed baseline37132902557/native37132902485/
+state37132902475/smoke37132902472 and eight E2E37132902430 after
+isolated re-run of known retirement polling race; merged436a6f6b0fe332c21cddb630521e3cff697ec9b2.
+PR27 eb3bb3a passed all five workflow families37137479058/37137479027/
+37137479025/37137479082/37137479054. Integrate latest main without
+changing either behavior, preserve both PROGRESS histories and require fresh
+exact-head checks. PR28 db1eea passed baseline37137663125/native37137663110/
+eight E2E37137663128; its main integration is separate.
+Synthetic100k inserts/100 FULL WAL commits: diagnostic off0.1369s/on0.2553s
+with exact digest equality. Explicit profiling adds overhead, especially short
+per-row calls; no fair SLO comparison to uninstrumented runs is claimed.
+
+
+## Active retirement evidence polling correction (2026-10-03)
+
+Base05e8f168396179d74427bbe663877201ce158d67; branch
+codex/retired-follower-gc-wait-20261003. PR26 E2E37132902430 failed
+transaction/ON/ON at wait_stateful_retired: retired descriptor observed while
+JOIN shared binding awaited background GC. Artifact11277780160 retained.
+Runtime intentionally leaves binding until outbox/consumer drain is verified by
+GC; immediate binding-count assertion raced that boundary. Keep exact remaining
+subview assertions and timeout. Require binding cleanup as part of the existing
+retirement wait and read each multi-table observation in one SQLite snapshot.
+Next real WAL regressions for retired-before-GC, exact task IDs, owner references,
+consistent snapshot and bounded timeout; then hosted E2E on focused test PR.
+PR26 remains frozen; PR27 telemetry head eb3bb3a is independently submitted.
+
+Polling implementation complete: each state() observation starts a read-only
+SQLite transaction; wait_stateful_retired also requires no binding whose exact
+follower/leader task ID matches a retired sink descriptor. Existing timeout,
+drain/intent checks, remaining-subview assertions and full-row oracles unchanged.
+PYTHONPATH=/workspace/m2s-deps python tools/stateful_retirement_poll_test.py:
+5 PASS actual WAL fixtures (both operator kinds retired-before-GC, owner
+promotion references, unrelated exact IDs, stuck-binding timeout, concurrent
+writer committing between two reads). Original helper fails delayed-GC and
+snapshot consistency regressions. Next focused PR and real eight E2E required.
+
+
+PR28 f714d735 passed baseline37138496463/native37138496455/eight E2E37138496449. Integrate current main01996589 (validated optional timing PR27) and retain all checkpoint history. Fresh same-head checks required.

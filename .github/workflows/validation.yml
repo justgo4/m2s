@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'j4.py'
+      - 'sqlite_write_timing.py'
       - 'source_state.py'
       - 'aggregate_*.py'
       - 'join_*.py'
@@ -18,6 +19,7 @@ on:
   pull_request:
     paths:
       - 'j4.py'
+      - 'sqlite_write_timing.py'
       - 'source_state.py'
       - 'aggregate_*.py'
       - 'join_*.py'
@@ -55,6 +57,7 @@ jobs:
     env:
       PYTHONUNBUFFERED: '1'
       CDC_RESOURCE_CPU_CORES: '2'
+      CDC_SQLITE_WRITE_TIMING: '1'
       VALIDATION_PROFILE: ${{ matrix.profile }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
