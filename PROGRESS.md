@@ -7,34 +7,38 @@ authorized by the owner without expiry, subject to actual configured access.
 
 ## Immediate next action
 
-1. Inspect BOTH current PR heads and their CI before editing or rerunning.
-2. [PR #10](https://github.com/justgo4/m2s/pull/10), branch
-   `codex/v1-source-apply-busy-20261003`, current head
-   `d988e1e5f8b5e1f51a9718ecd70212e97bd19b57`.
-   Original base `2023a519ff82f04aeb08718190eea1898955d083`.
-   Fresh baseline [37088425843](https://github.com/justgo4/m2s/actions/runs/37088425843),
-   native [37088425837](https://github.com/justgo4/m2s/actions/runs/37088425837),
-   source-state [37088425911](https://github.com/justgo4/m2s/actions/runs/37088425911) (passed),
-   eight E2E [37088426468](https://github.com/justgo4/m2s/actions/runs/37088426468),
-   staged smoke [37088425825](https://github.com/justgo4/m2s/actions/runs/37088425825).
-   Others still pending at this checkpoint; do not merge yet.
+1. Correctness [PR #10](https://github.com/justgo4/m2s/pull/10) MERGED as
+   `c43f0fc3926cbd1800517599e147cc32a2043ba5`. Head
+   `d988e1e5f8b5e1f51a9718ecd70212e97bd19b57` passed baseline37088425843,
+   native37088425837, state37088425911, ALL eight E2E37088426468, supervised
+   smoke37088425825. Old core PR workflows actually checked merge
+   `9fb9fafadd2f244bd75664575a8ebd6766d85ef9`; compare with head differs ONLY
+   in PROGRESS. Final merge differs from tested head ONLY README/PROGRESS.
+   Runtime/workflow trees therefore match; staged smoke checked actual head.
+2. Inspect newly launched main small/million after c43f0fc3. They run outside
+   the AI session. Preserve exact SHA/report/artifacts; do not claim passed.
 3. [PR #9](https://github.com/justgo4/m2s/pull/9), branch
-   `codex/v1-cdc-bundle-20261003`, current head
-   `bdff6c887dcfacd195103df24d91be1e6337710e`.
-   Original base `d9d122ab1661013ce3907ef20d4e658dfc4359a7`.
-   Fresh baseline [37088427379](https://github.com/justgo4/m2s/actions/runs/37088427379),
-   native [37088427378](https://github.com/justgo4/m2s/actions/runs/37088427378),
-   source-state [37088427302](https://github.com/justgo4/m2s/actions/runs/37088427302),
-   eight E2E [37088427466](https://github.com/justgo4/m2s/actions/runs/37088427466),
-   smoke/small [37088427281](https://github.com/justgo4/m2s/actions/runs/37088427281).
-   No small performance pass yet.
-4. On all green, merge correctness PR #10 first. Then integrate current main
-   into PR #9 preserving BOTH retry and bounded snapshot/bundle behavior, both
-   baseline test invocations and latest README/PROGRESS. Retest combined SHA;
-   never combine green runs from different revisions. PR #9 has stricter
-   small performance requirements; do not lower thresholds to merge.
-5. Inspect main small/million produced after the correctness merge; preserve
-   actual revision, status and artifacts. Continue from measured failure.
+   `codex/v1-cdc-bundle-20261003`, combined head
+   `fbf0784a34dff3609d161e6c7e101534260951ce`, parents
+   `bdff6c887dcfacd195103df24d91be1e6337710e` and main merge c43f0fc3.
+   Integrated validated contention worker + new test invocation, actual-head
+   CI and bounded source snapshot/CDC changes. Preserved main documents.
+   Also corrected partition benchmark commit/artifact labels to checkout SHA.
+   Require FRESH combined baseline/native/state/all E2E/smoke/small checks.
+4. Previous PR #9 bdff6c88 small [37088427281](https://github.com/justgo4/m2s/actions/runs/37088427281)
+   completed workload with correct actual identity; full raw/three aggregate/
+   three JOIN/dynamic/recovery/drain correct; P95=12.072/P99=14.073s failed
+   ONLY latency. density=.981 passed; RSS≈591.5MiB,writes≈3.27GB. Artifact
+   `11261726394`, report SHA256
+   `13611eae42694efc1ca8e07202657852996d82e7def522b431d2f650d70421ee`.
+   Smoke passed. Do NOT merge performance candidate by lowering gates.
+5. Next measured performance question: startup snapshot delivery count and
+   raw marker latency; configured16384-row pages still take multiple remote
+   commits. Preserve group/generation/FIFO/membership/prepared bounds; any
+   cross-group batching needs explicit proofs. JOIN all-pair staging remains
+   a separate measured-scale risk, not a proven owner of old BUSY.
+6. Never combine green runs from different revisions. Do not repeat completed
+   runs without a changed implementation or specific new measurement.
 
 ## Current implementation boundaries
 
@@ -110,7 +114,7 @@ PR #9 changes:
 | Main7dc814ab /37085851322 million | Valid topology; source apply catalog BEGIN IMMEDIATE busy timeout fatal around180s. Artifact11261215092. Competing lock owner NOT proven |
 | PR #9 ea8b2cd7 /37086484023 small | Full correctness passed, P95=9.10/P99=11.10s failed;density=.975 passed. Artifact11260204343. Actual old report SHA ee10ce8ee1bc56d44fcf4f75f5bc7183e811a216 has identical Git tree to ea8 head (verified compare). Baseline37086484043/native37086484091/state37086484038/eight E2E37086484049 and smoke passed |
 | PR #9 5b382ef4 /37087609367 smoke+small | Workloads completed/full-row oracles correct but supervisor rejected revision mismatch. Artifacts11261655549/11261028417. Small observed11.17/13.19s, NOT accepted gate and no proven batching improvement. Baseline37087609348/native37087609372/state37087609364/eight E2E37087609344 passed |
-| PR #10 ea913d53 /37087862226 smoke | Workload completed/full-row correct; same identity rejection. Artifact11261248141. Baseline37087862148/native37087862223/state37087862129 passed; inspect E2E37087862207 separately |
+| PR #9 bdff6c88 /37088427281 small | Correct actual identity, all exactness/dynamic/recovery correct; only12.072/14.073s latency fails,density=.981 passes. Artifact11261726394; no performance pass |\n| PR #10 ea913d53 /37087862226 smoke | Workload completed/full-row correct; same identity rejection. Artifact11261248141. Baseline37087862148/native37087862223/state37087862129 passed; inspect E2E37087862207 separately |
 
 Identity bug: after explicit PR-head checkout, old code_revision() still preferred
 GITHUB_SHA (temporary event merge). Both current PR heads fix this; retain old
@@ -214,3 +218,18 @@ must be split into explicit acceptance criteria before coding.
 ## Immediate correction checkpoint
 
 PR #9 staged run `37087609367` failed both profiles solely at supervisor report revision identity; artifacts `11261655549` (smoke) and `11261028417` (small). PR #10 staged run `37087862226` similarly failed, artifact `11261248141`. Actual checkout is PR head, but longhaul_workload.code_revision() incorrectly prefers GITHUB_SHA (temporary PR merge) over git HEAD. Do not label these reports accepted or rewrite them. Fix identity discovery to use actual git HEAD first; add regressions for divergent event/checkout and archive fallback. Apply the same focused workload/test fix to both PR branches, then require fresh checks. PR #10 baseline `37087862148`, native `37087862223`, state `37087862129` passed; two E2E cells still pending at this checkpoint. No merge yet. Local PROGRESS refreshed from remote.
+
+## Active measured follow-up draft
+
+After accepted small artifact11261726394 still12/14s fails, inspect snapshot remote commit count. Current claim_snapshot_bundle restricts all members to one page group even when adjacent snapshot pages of the SAME plan/generation are pending. Draft a bounded per-lane contiguous snapshot-prefix claim across pages, stopping at CDC/assigned/different plan/group-less boundary, retaining row/byte/prepared/writer-width limits and all individual group IDs. Existing acknowledge_delivery already finishes every member group via longest completed stage prefix. Add real SQLite multi-group restart, CDC fence, out-of-order group visibility and budget tests before pushing PR #9 again. This is a draft hypothesis, not a proven SLO fix. Preserve current combined head fbf0784a and fresh CI evidence when superseding.
+
+## Resumed implementation 2026-10-03
+
+Current main83269c14; PR9 fbf0784a. Fresh combined baseline37089010582,
+native37089010600, state37089010500, eight E2E37089010524 and
+smoke37089010543 succeeded; strict small in37089010543 failed (inspect artifact).
+Main c43f0fc3 small/million37088943284 failed; million artifact11261727031.
+Live git checkout is now available at /workspace/scratch/eb808b527222/m2s.
+Continue bounded same-plan snapshot prefixes across page groups, with actual
+SQLite membership/FIFO, out-of-order group frontier, budgets, restart and OOM
+shrink regressions; no performance claim until fresh same-SHA measurements.
