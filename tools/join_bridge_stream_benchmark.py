@@ -207,7 +207,7 @@ def measure(mode,rows,partitions=4,batch_rows=4096,batch_bytes=1024*1024,max_row
             raise RuntimeError("full routed row count differs")
         output=dict(mode=mode,rows=rows,routed_rows=count,bag_digest="%064x"%total,wall_seconds=wall,
                     cpu_seconds=cpu_seconds,process_peak_rss_bytes=peak,jobs=len(result["job_ids"]),
-                    logical_bytes=j4.meta_get(con,"pending_bytes",0),atomic_enqueue_lock_bounded=False,
+                    logical_bytes=j4.meta_get(con,"pending_bytes",0),atomic_enqueue_lock_bounded=(mode!="cache"),
                     source_sha256=hashlib.sha256((ROOT/"join_job_bridge.py").read_bytes()).hexdigest(),
                     cache_reference_sha256=hashlib.sha256(CACHE_REFERENCE.encode()).hexdigest(),
                     configured_reference_sha256=hashlib.sha256(CONFIGURED_REFERENCE.encode()).hexdigest(),

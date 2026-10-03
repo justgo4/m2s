@@ -453,3 +453,54 @@ exact results; no gate thresholds changed. Formal50M72h and final stable-v1
 acceptance still require configured persistent isolated resources. Chat/session
 loss stops AI reasoning; repository checkpoints and Actions do not claim automatic
 continuation or final certification.
+
+
+## Active 2026-10-03 bounded JOIN publication continuation
+
+Owner renewed full m2s repository authorization. Read latest README review at
+main83b57faf94aa01d2b10838df7e955f8e8f0d3707 and reconciled open PR1/2/3/12/19.
+Branch codex/join-bounded-publication-20261003 uses that main as base.
+Latest main runtime146499d2 validation37103497183 completed BOTH workloads and
+failed the evidence gate (not the old pre-HTTP storage crash): small job111147445471
+checkpoint P95/P99=26.047165585/36.822977392s, pending0; million job111147445348
+checkpoint P95/P99=165.226829191/207.964109828s, pending0, workload_passed=true.
+Artifacts11267510189/11267972137 are being inspected for complete report/gate
+identity. Next implement bounded durable job registration with a sealed manifest,
+claim/ack isolation and restart/real-writer tests; then bootstrap chunking with
+fixed-W pins. Existing candidates remain unmerged; formal thresholds unchanged.
+No generic BEGIN retry is presented as throughput or final certification.
+
+
+### 2026-10-03 bounded job publication implementation checkpoint
+
+Both complete artifacts were downloaded and gate/workload identities verified at
+146499d2: small11267510189 and million11267972137 fail ONLY latency_p95/p99.
+All seven full output targets, four dynamic tasks, strong-exit recovery and drain
+pass. Sample densities0.901890/0.971664; daemon write bytes2,780,401,664 and
+33,826,349,056 respectively. Million is now completed development correctness
+evidence, not a performance pass or formal50M72h. Lock owner remains unproven.
+
+Implementation in j4.py/join_job_bridge.py: persistent spool fingerprint, cursor,
+record count and sealed manifest; at most32 jobs/16MiB payload per write chunk
+(config may lower), with a singleton bounded by existing max_row_bytes. Spool
+validation/Arrow routing/read happen outside the write transaction. Jobs,links,
+cursor and pending bytes commit together. active_jobs hides incomplete chunks;
+ack rejects even manually assigned unsealed jobs; final seal is a metadata update.
+Exact recreated spool resumes prior jobs; stale registration is a no-op and changed
+spool fails closed. Legacy completed links remain accepted; view upgrade preserves
+existing data; manifest is cascade-deleted with its output commit. This bounds
+write work, not elapsed lock wait or disk latency. Bootstrap seed remains unbounded
+and is the next separate structural milestone.
+
+Local Python3.12/SQLite3.53.1, pinned DuckDB1.5.5/sqlglot30.18.0:
+python tools/join_publication_test.py (15 tests including existing4 twice and
+7 new WAL/crash/ack/upgrade contracts), job_bridge/runtime/shared/generation,
+100 exact/subview/follower-GC and physical registry contracts PASS.
+Original83b57fa bridge fails real independent-writer spool-read regression with
+actual SQLite BUSY. Benchmark subprocess tests2 PASS;100k production-topology
+cache/current full bag exact, current400jobs/RSS246624256bytes/wall1.410s,
+cache16jobs/RSS418217984bytes/wall1.546s; local synthetic only.
+Direct cdc_selftest still blocked at resource_tree_stats /proc assertion locally;
+required hosted baseline/native/state/eight E2E/smoke must validate full change.
+Next commit focused job-publication PR and preserve its exact SHA while CI runs;
+continue fixed-W bootstrap staging on a separate branch.

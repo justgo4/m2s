@@ -1790,6 +1790,17 @@ def init_state(path):
             source_seq INTEGER NOT NULL);
         CREATE INDEX IF NOT EXISTS join_job_links_commit
             ON join_job_links(consumer_id,source_seq,job_id);
+        CREATE TABLE IF NOT EXISTS join_job_staging(
+            consumer_id TEXT NOT NULL, source_seq INTEGER NOT NULL,
+            spool_digest TEXT NOT NULL, record_count INTEGER NOT NULL,
+            next_record INTEGER NOT NULL DEFAULT 0,
+            spool_offset INTEGER NOT NULL DEFAULT 0,
+            sealed INTEGER NOT NULL DEFAULT 0 CHECK(sealed IN (0,1)),
+            updated REAL NOT NULL,
+            PRIMARY KEY(consumer_id,source_seq),
+            FOREIGN KEY(consumer_id,source_seq)
+                REFERENCES join_output_commits(consumer_id,source_seq)
+                ON DELETE CASCADE);
         CREATE TABLE IF NOT EXISTS prepare_reservations(
             delivery_id TEXT PRIMARY KEY REFERENCES deliveries(id) ON DELETE CASCADE,
             reserved_bytes INTEGER NOT NULL CHECK(reserved_bytes>=0));
@@ -1805,7 +1816,11 @@ def init_state(path):
         CREATE VIEW IF NOT EXISTS active_jobs AS
             SELECT j.* FROM jobs j
             LEFT JOIN retired_jobs r ON r.job_id=j.id
-            WHERE r.job_id IS NULL;
+            WHERE r.job_id IS NULL AND NOT EXISTS(
+                SELECT 1 FROM join_job_links l
+                JOIN join_job_staging s
+                  ON s.consumer_id=l.consumer_id AND s.source_seq=l.source_seq
+                WHERE l.job_id=j.id AND s.sealed=0);
         CREATE TABLE IF NOT EXISTS load_parts(
             delivery_id TEXT NOT NULL, part INTEGER NOT NULL,
             label TEXT NOT NULL, payload BLOB NOT NULL, nrows INTEGER NOT NULL,
@@ -1950,6 +1965,20 @@ def init_state(path):
             meta_set(con,"snapshot_staged_cursor_v1",1)
 
     job_columns = {row[1] for row in con.execute("PRAGMA table_info(jobs)").fetchall()}
+    if meta_get(con,"join_job_staging_view_v1",0) != 1:
+        with state_transaction(con):
+            con.execute("DROP VIEW active_jobs")
+            con.execute("""
+                CREATE VIEW active_jobs AS
+                SELECT j.* FROM jobs j
+                LEFT JOIN retired_jobs r ON r.job_id=j.id
+                WHERE r.job_id IS NULL AND NOT EXISTS(
+                    SELECT 1 FROM join_job_links l
+                    JOIN join_job_staging s
+                      ON s.consumer_id=l.consumer_id AND s.source_seq=l.source_seq
+                    WHERE l.job_id=j.id AND s.sealed=0)
+            """)
+            meta_set(con,"join_job_staging_view_v1",1)
     if "logical_bytes" not in job_columns:
         with state_transaction(con):
             con.execute("ALTER TABLE jobs ADD COLUMN logical_bytes INTEGER NOT NULL DEFAULT 0")
@@ -3400,6 +3429,14 @@ def is_duckdb_oom(exc):
 
 def acknowledge_delivery(con, delivery):
     with state_transaction(con):
+        if con.execute("""
+            SELECT 1 FROM job_assignments a
+            JOIN join_job_links l ON l.job_id=a.job_id
+            JOIN join_job_staging s
+              ON s.consumer_id=l.consumer_id AND s.source_seq=l.source_seq
+            WHERE a.delivery_id=? AND s.sealed=0 LIMIT 1
+        """,(delivery,)).fetchone():
+            raise RuntimeError("cannot acknowledge unsealed JOIN jobs")
         if con.execute("SELECT 1 FROM load_parts WHERE delivery_id=? AND visible=0", (delivery,)).fetchone():
             raise RuntimeError("attempt to acknowledge an invisible load")
         row = con.execute("SELECT prepared FROM deliveries WHERE id=?", (delivery,)).fetchone()
