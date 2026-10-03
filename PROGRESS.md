@@ -277,3 +277,11 @@ and WAL reader isolation, collision rollback, fixed-W recheck under write lock.
 stream~140–142MiB. CPU/wall~2.0–2.45s versus2.27–2.36s: no throughput claim.
 1M-pair synthetic A/B pending. Keep atomic seed; total writer duration unbounded.
 Do not confuse bounded Python pair memory with resumable chunked outbox/jobs.
+
+
+## 2026-10-03 checkpoint: stateful idle-loop investigation (not certified)
+
+- Main remains `cb153909` after validated PR #11 BUSY recovery; PR #12 snapshot batching is NOT merged: exact-head small run 37097752817 passed all full-output oracles but failed unchanged P95/P99 gates (10.107533s/14.107730s).
+- Artifact 11264873012 contains 6,689 unchanged shared reuse log lines in daemon-001 and 22,609 in daemon-002; peak 151/354 lines per second. Worker only waits when caught AND target active_jobs is empty AND ready. Pending downstream jobs therefore permit repeated runner/registry writes and logging without a new source prefix; catchup can also wait on leader/output visibility with no progress.
+- Next branch `codex/v1-stateful-idle-20261003`: pace workers that made no durable compute progress, retain timely source/visibility/retirement rechecks and loader wakeups, log physical reuse on binding transitions. Verify against original hot-loop implementation and real SQLite worker lifecycle before hosted CI/SLO. No latency gate changes, no claim this alone explains all tails.
+- PR #13 exact head `0a73f0a` streaming JOIN bootstrap: baseline/native/state/supervised smoke pass, eight-case daemon E2E still running. Local isolated 1M output-pair A/B reduced peak RSS 824,152,064 to 148,361,216 bytes, wall 25.751s to 28.469s; total atomic write lock remains a limitation.
