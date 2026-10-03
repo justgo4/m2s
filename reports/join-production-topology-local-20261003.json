@@ -1,0 +1,243 @@
+{
+  "kind": "m2s_join_production_topology_local_v1",
+  "scope": "isolated_synthetic_join_bridge",
+  "not_certification": true,
+  "runtime_base": "3da6cf7152e7ec8fd6a172e98a90e9dafcfa2750",
+  "exact_match_by_row_count": true,
+  "runs": [
+    {
+      "mode": "cache",
+      "rows": 100000,
+      "routed_rows": 100000,
+      "bag_digest": "63a78dec1235382e65b0a92ed48b2586e672abf8bfd697387ee26c75d9b1f39d",
+      "wall_seconds": 1.742993793000096,
+      "cpu_seconds": 1.7423601569999998,
+      "process_peak_rss_bytes": 412295168,
+      "jobs": 16,
+      "logical_bytes": 17337539,
+      "atomic_enqueue_lock_bounded": false,
+      "source_sha256": "3aa7b74c44b4be14ac3b31b13bd6cc3ae045d45d487a02d676f116feb21aa02c",
+      "cache_reference_sha256": "535342c75bf7ea12c613b3ef1b66aa24688664627d357f00b8bbb504d8c6b6b8",
+      "configured_reference_sha256": "fb44995ea7c65969845845ac2ab71d1a472c5043502858d36b593a1f909db610",
+      "topology": {
+        "key_partitions": 16,
+        "configured_batch_rows": 50000,
+        "batch_bytes": 16777216,
+        "max_row_bytes": 67108864,
+        "stream_mutation_row_limit": 4096
+      },
+      "software": {
+        "python": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+        "sqlite": "3.53.1"
+      }
+    },
+    {
+      "mode": "stream",
+      "rows": 100000,
+      "routed_rows": 100000,
+      "bag_digest": "63a78dec1235382e65b0a92ed48b2586e672abf8bfd697387ee26c75d9b1f39d",
+      "wall_seconds": 1.6608891799996854,
+      "cpu_seconds": 1.7919986289999996,
+      "process_peak_rss_bytes": 243982336,
+      "jobs": 400,
+      "logical_bytes": 17338460,
+      "atomic_enqueue_lock_bounded": false,
+      "source_sha256": "3aa7b74c44b4be14ac3b31b13bd6cc3ae045d45d487a02d676f116feb21aa02c",
+      "cache_reference_sha256": "535342c75bf7ea12c613b3ef1b66aa24688664627d357f00b8bbb504d8c6b6b8",
+      "configured_reference_sha256": "fb44995ea7c65969845845ac2ab71d1a472c5043502858d36b593a1f909db610",
+      "topology": {
+        "key_partitions": 16,
+        "configured_batch_rows": 50000,
+        "batch_bytes": 16777216,
+        "max_row_bytes": 67108864,
+        "stream_mutation_row_limit": 4096
+      },
+      "software": {
+        "python": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+        "sqlite": "3.53.1"
+      }
+    },
+    {
+      "mode": "configured-stream",
+      "rows": 100000,
+      "routed_rows": 100000,
+      "bag_digest": "63a78dec1235382e65b0a92ed48b2586e672abf8bfd697387ee26c75d9b1f39d",
+      "wall_seconds": 1.5767581850004717,
+      "cpu_seconds": 1.6115326040000002,
+      "process_peak_rss_bytes": 342953984,
+      "jobs": 32,
+      "logical_bytes": 17337578,
+      "atomic_enqueue_lock_bounded": false,
+      "source_sha256": "3aa7b74c44b4be14ac3b31b13bd6cc3ae045d45d487a02d676f116feb21aa02c",
+      "cache_reference_sha256": "535342c75bf7ea12c613b3ef1b66aa24688664627d357f00b8bbb504d8c6b6b8",
+      "configured_reference_sha256": "fb44995ea7c65969845845ac2ab71d1a472c5043502858d36b593a1f909db610",
+      "topology": {
+        "key_partitions": 16,
+        "configured_batch_rows": 50000,
+        "batch_bytes": 16777216,
+        "max_row_bytes": 67108864,
+        "stream_mutation_row_limit": 50000
+      },
+      "software": {
+        "python": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+        "sqlite": "3.53.1"
+      }
+    },
+    {
+      "mode": "cache",
+      "rows": 100000,
+      "routed_rows": 100000,
+      "bag_digest": "63a78dec1235382e65b0a92ed48b2586e672abf8bfd697387ee26c75d9b1f39d",
+      "wall_seconds": 1.956310196999766,
+      "cpu_seconds": 1.9631150219999998,
+      "process_peak_rss_bytes": 409219072,
+      "jobs": 16,
+      "logical_bytes": 17337539,
+      "atomic_enqueue_lock_bounded": false,
+      "source_sha256": "3aa7b74c44b4be14ac3b31b13bd6cc3ae045d45d487a02d676f116feb21aa02c",
+      "cache_reference_sha256": "535342c75bf7ea12c613b3ef1b66aa24688664627d357f00b8bbb504d8c6b6b8",
+      "configured_reference_sha256": "fb44995ea7c65969845845ac2ab71d1a472c5043502858d36b593a1f909db610",
+      "topology": {
+        "key_partitions": 16,
+        "configured_batch_rows": 50000,
+        "batch_bytes": 16777216,
+        "max_row_bytes": 67108864,
+        "stream_mutation_row_limit": 4096
+      },
+      "software": {
+        "python": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+        "sqlite": "3.53.1"
+      }
+    },
+    {
+      "mode": "stream",
+      "rows": 100000,
+      "routed_rows": 100000,
+      "bag_digest": "63a78dec1235382e65b0a92ed48b2586e672abf8bfd697387ee26c75d9b1f39d",
+      "wall_seconds": 1.60380017100033,
+      "cpu_seconds": 1.7143048490000004,
+      "process_peak_rss_bytes": 238379008,
+      "jobs": 400,
+      "logical_bytes": 17338460,
+      "atomic_enqueue_lock_bounded": false,
+      "source_sha256": "3aa7b74c44b4be14ac3b31b13bd6cc3ae045d45d487a02d676f116feb21aa02c",
+      "cache_reference_sha256": "535342c75bf7ea12c613b3ef1b66aa24688664627d357f00b8bbb504d8c6b6b8",
+      "configured_reference_sha256": "fb44995ea7c65969845845ac2ab71d1a472c5043502858d36b593a1f909db610",
+      "topology": {
+        "key_partitions": 16,
+        "configured_batch_rows": 50000,
+        "batch_bytes": 16777216,
+        "max_row_bytes": 67108864,
+        "stream_mutation_row_limit": 4096
+      },
+      "software": {
+        "python": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+        "sqlite": "3.53.1"
+      }
+    },
+    {
+      "mode": "configured-stream",
+      "rows": 100000,
+      "routed_rows": 100000,
+      "bag_digest": "63a78dec1235382e65b0a92ed48b2586e672abf8bfd697387ee26c75d9b1f39d",
+      "wall_seconds": 1.4212836229999084,
+      "cpu_seconds": 1.4411181300000004,
+      "process_peak_rss_bytes": 335634432,
+      "jobs": 32,
+      "logical_bytes": 17337578,
+      "atomic_enqueue_lock_bounded": false,
+      "source_sha256": "3aa7b74c44b4be14ac3b31b13bd6cc3ae045d45d487a02d676f116feb21aa02c",
+      "cache_reference_sha256": "535342c75bf7ea12c613b3ef1b66aa24688664627d357f00b8bbb504d8c6b6b8",
+      "configured_reference_sha256": "fb44995ea7c65969845845ac2ab71d1a472c5043502858d36b593a1f909db610",
+      "topology": {
+        "key_partitions": 16,
+        "configured_batch_rows": 50000,
+        "batch_bytes": 16777216,
+        "max_row_bytes": 67108864,
+        "stream_mutation_row_limit": 50000
+      },
+      "software": {
+        "python": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+        "sqlite": "3.53.1"
+      }
+    },
+    {
+      "mode": "cache",
+      "rows": 1000000,
+      "routed_rows": 1000000,
+      "bag_digest": "a1026d6b2f5d924462f991478805b965827022bd0488f81fcd9c92a5066c36fd",
+      "wall_seconds": 18.686084855000445,
+      "cpu_seconds": 18.741837466,
+      "process_peak_rss_bytes": 1910452224,
+      "jobs": 16,
+      "logical_bytes": 173375045,
+      "atomic_enqueue_lock_bounded": false,
+      "source_sha256": "3aa7b74c44b4be14ac3b31b13bd6cc3ae045d45d487a02d676f116feb21aa02c",
+      "cache_reference_sha256": "535342c75bf7ea12c613b3ef1b66aa24688664627d357f00b8bbb504d8c6b6b8",
+      "configured_reference_sha256": "fb44995ea7c65969845845ac2ab71d1a472c5043502858d36b593a1f909db610",
+      "topology": {
+        "key_partitions": 16,
+        "configured_batch_rows": 50000,
+        "batch_bytes": 16777216,
+        "max_row_bytes": 67108864,
+        "stream_mutation_row_limit": 4096
+      },
+      "software": {
+        "python": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+        "sqlite": "3.53.1"
+      }
+    },
+    {
+      "mode": "stream",
+      "rows": 1000000,
+      "routed_rows": 1000000,
+      "bag_digest": "a1026d6b2f5d924462f991478805b965827022bd0488f81fcd9c92a5066c36fd",
+      "wall_seconds": 17.424036659000194,
+      "cpu_seconds": 18.26283284,
+      "process_peak_rss_bytes": 252301312,
+      "jobs": 3920,
+      "logical_bytes": 173390392,
+      "atomic_enqueue_lock_bounded": false,
+      "source_sha256": "3aa7b74c44b4be14ac3b31b13bd6cc3ae045d45d487a02d676f116feb21aa02c",
+      "cache_reference_sha256": "535342c75bf7ea12c613b3ef1b66aa24688664627d357f00b8bbb504d8c6b6b8",
+      "configured_reference_sha256": "fb44995ea7c65969845845ac2ab71d1a472c5043502858d36b593a1f909db610",
+      "topology": {
+        "key_partitions": 16,
+        "configured_batch_rows": 50000,
+        "batch_bytes": 16777216,
+        "max_row_bytes": 67108864,
+        "stream_mutation_row_limit": 4096
+      },
+      "software": {
+        "python": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+        "sqlite": "3.53.1"
+      }
+    },
+    {
+      "mode": "configured-stream",
+      "rows": 1000000,
+      "routed_rows": 1000000,
+      "bag_digest": "a1026d6b2f5d924462f991478805b965827022bd0488f81fcd9c92a5066c36fd",
+      "wall_seconds": 14.975596313999631,
+      "cpu_seconds": 15.176401385999995,
+      "process_peak_rss_bytes": 368746496,
+      "jobs": 320,
+      "logical_bytes": 173375789,
+      "atomic_enqueue_lock_bounded": false,
+      "source_sha256": "3aa7b74c44b4be14ac3b31b13bd6cc3ae045d45d487a02d676f116feb21aa02c",
+      "cache_reference_sha256": "535342c75bf7ea12c613b3ef1b66aa24688664627d357f00b8bbb504d8c6b6b8",
+      "configured_reference_sha256": "fb44995ea7c65969845845ac2ab71d1a472c5043502858d36b593a1f909db610",
+      "topology": {
+        "key_partitions": 16,
+        "configured_batch_rows": 50000,
+        "batch_bytes": 16777216,
+        "max_row_bytes": 67108864,
+        "stream_mutation_row_limit": 50000
+      },
+      "software": {
+        "python": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+        "sqlite": "3.53.1"
+      }
+    }
+  ]
+}

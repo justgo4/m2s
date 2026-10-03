@@ -361,3 +361,17 @@ JOIN JSON artifacts (previous workflow computed them but omitted upload paths).
 Added real process topology forwarding/full bag and failure diagnostic tests.
 Next: collect reports, preserve curated numeric evidence, submit focused PR with
 fresh state CI. No cap change or bounded enqueue/SLO claim.
+
+Measurement complete: reports/join-production-topology-local-20261003.json
+retains100k two repeats and1M one repeat, ALL output bags equal per row count.
+1M current stream3920 jobs/252301312 RSS/17.424s; isolated configured-row
+candidate320 jobs/368746496 RSS/14.976s; cache16 jobs/1910452224 RSS/18.686s.
+Candidate trades bounded extra batch memory for fewer jobs; this is local bridge
+evidence, not remote/SLO or bounded-lock proof. No runtime change in this PR.
+PR18 head6f8111e9859cb770b6e7f39b0b362328f728ae1f began baseline37102340984,
+native37102341012,state37102340983; fresh report/docs commit needs own checks.
+Local stream4/benchmark2/job bridge/runtime/privacy/diff checks passed.
+Next independent runtime candidate: honor configured row budget up to bounded
+50000 cap, maintain byte/singleton/restart/last-ack contracts and require real
+daemon strict-small before any performance claim. Bounded durable publication
+remains separate structural work; do not conflate larger batch with shorter locks.
