@@ -453,3 +453,19 @@ exact results; no gate thresholds changed. Formal50M72h and final stable-v1
 acceptance still require configured persistent isolated resources. Chat/session
 loss stops AI reasoning; repository checkpoints and Actions do not claim automatic
 continuation or final certification.
+
+
+## Active 2026-10-03 bounded JOIN publication continuation
+
+Owner renewed full m2s repository authorization. Read latest README review at
+main83b57faf94aa01d2b10838df7e955f8e8f0d3707 and reconciled open PR1/2/3/12/19.
+Branch codex/join-bounded-publication-20261003 uses that main as base.
+Latest main runtime146499d2 validation37103497183 completed BOTH workloads and
+failed the evidence gate (not the old pre-HTTP storage crash): small job111147445471
+checkpoint P95/P99=26.047165585/36.822977392s, pending0; million job111147445348
+checkpoint P95/P99=165.226829191/207.964109828s, pending0, workload_passed=true.
+Artifacts11267510189/11267972137 are being inspected for complete report/gate
+identity. Next implement bounded durable job registration with a sealed manifest,
+claim/ack isolation and restart/real-writer tests; then bootstrap chunking with
+fixed-W pins. Existing candidates remain unmerged; formal thresholds unchanged.
+No generic BEGIN retry is presented as throughput or final certification.
