@@ -1,0 +1,31 @@
+{
+  "kind": "m2s_share_observation_idle_v1",
+  "scope": "synthetic_idle_wal_full",
+  "not_certification": true,
+  "sqlite": "3.53.1",
+  "source_sha256": "e0a95e382c8f80d9651c0cc55dd9c9f6177c969c41ea9fa90ec786a3a758da2c",
+  "runs": [
+    {
+      "unchanged_interval": 0,
+      "poll_calls": 4000,
+      "durable_observation_writes": 4000,
+      "durable_samples": 4000,
+      "max_visible_lag": 0,
+      "copied_sequences": 0,
+      "wal_frames": 4100,
+      "wall_seconds": 0.11975257700032671,
+      "synchronous": 2
+    },
+    {
+      "unchanged_interval": 1,
+      "poll_calls": 4000,
+      "durable_observation_writes": 200,
+      "durable_samples": 200,
+      "max_visible_lag": 0,
+      "copied_sequences": 0,
+      "wal_frames": 300,
+      "wall_seconds": 0.03923361400029535,
+      "synchronous": 2
+    }
+  ]
+}

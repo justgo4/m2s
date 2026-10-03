@@ -358,7 +358,7 @@ def step(con,task,mapping,cfg):
         int(leader_consumer["watermark"]),
         int(follower["watermark"]),
         int(applied),int(visible),
-        copied_sequences=copied_sequences)
+        copied_sequences=copied_sequences,unchanged_interval=1)
     return dict(
         generation=generation,
         consumer=follower,

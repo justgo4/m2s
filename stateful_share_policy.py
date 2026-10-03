@@ -849,7 +849,8 @@ def choose(con,kind,task,candidates,cfg=None):
 
 def observe(
         con,task_id,leader_watermark,follower_watermark,
-        source_applied,visible_frontier,copied_sequences=0
+        source_applied,visible_frontier,copied_sequences=0,
+        unchanged_interval=0
 ):
     task_id=_text(task_id,"task_id")
     leader_watermark=int(leader_watermark)
@@ -860,7 +861,26 @@ def observe(
     leader_lag=max(0,leader_watermark-follower_watermark)
     source_lag=max(0,source_applied-follower_watermark)
     visible_lag=max(0,follower_watermark-visible_frontier)
+    # samples counts durable observations, rather than runtime polling calls.
+    # Legacy callers retain one durable observation per call. Runtime followers
+    # can coalesce unchanged idle polls; new lag peaks and copied work are always
+    # recorded immediately. Read durable rows each time, with no process cache.
+    unchanged_interval=float(unchanged_interval)
+    if not 0<=unchanged_interval<float("inf"):
+        raise ValueError("unchanged observation interval must be finite and >= 0")
     now=time.time()
+    if unchanged_interval and not copied_sequences:
+        try:
+            previous=observation_info(con,task_id)
+        except KeyError:
+            previous=None
+        if previous is not None and (
+            leader_lag<=previous["max_leader_lag"]
+            and source_lag<=previous["max_source_lag"]
+            and visible_lag<=previous["max_visible_lag"]
+            and 0<=now-previous["updated"]<unchanged_interval
+        ):
+            return previous
     con.execute("""
         INSERT INTO stateful_share_observations(
             task_id,samples,max_leader_lag,max_source_lag,
