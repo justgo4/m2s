@@ -249,3 +249,31 @@ Commands: python tools/stateful_worker_contention_test.py; python tools/aggregat
 python tools/stateful_physical_registry_test.py; python tools/stateful_hot_add_test.py.
 New same-SHA CI still required. PR9 ref87ef3616 updated but GitHub returned no new
 workflow runs; reopening once also has not yielded runs. No old run relabeled.
+
+## Validated stateful recovery merged
+
+PR11 head1a01cf3f74a0a1f8b442eae9a21b2a8188f37c2d passed baseline37097520156,
+native37097520165, state37097520149, ALL eight E2E37097520171,
+supervised smoke37097520134. Merged ef6ea5390850e71025bdea8cce8032331ec8962c;
+merge tree must match tested head (verify compare). Production timeout unchanged.
+Original worker AST, with real module globals/10ms test timeout, FAILS both lock
+and post-step sync regressions; fixed worker passes all4 tests. Local baseline
+script contracts83/84 passed; validation_run_test fails here because /proc process
+identity is unavailable, while full hosted baseline including it passed.
+
+Snapshot PR9 closed/superseded by PR12; identical runtime tree now head0660e327
+with main83269c14 as second parent. Earlier head87ef3616 had PROGRESS merge
+conflict (mergeable_state dirty), which blocked pull_request CI; initial event
+hypothesis was wrong. Conflict now resolved and fresh runs baseline37097752779,
+native37097752778, state37097752801 PASS; E2E37097752807 and staged37097752817
+pending. Preserve strict small gate result; merge only if complete checks green.
+Old combined fbf0784a small37089010543 artifact11262540394 complete/exact,
+P95=11.098/P99=15.098,density=.973 fails ONLY latency; report unchanged.
+
+JOIN stream branch2edcf7e9 checkpoint;5 full SQLite stream tests pass including
+old full-pair oracle, exact digest/retry, NULL/bag/projection, midstream rollback
+and WAL reader isolation, collision rollback, fixed-W recheck under write lock.
+100k output fanout A/B3 repeats exact digest; peak RSS cache~203–205MiB versus
+stream~140–142MiB. CPU/wall~2.0–2.45s versus2.27–2.36s: no throughput claim.
+1M-pair synthetic A/B pending. Keep atomic seed; total writer duration unbounded.
+Do not confuse bounded Python pair memory with resumable chunked outbox/jobs.
