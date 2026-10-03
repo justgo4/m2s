@@ -11,7 +11,8 @@ the goals and evidence boundaries. Read AGENTS.md before continuing.
 - Starting main: `017285bafd1978cdf129ba2beb9a592d4c63ce48`.
 - Active milestone: **V1-02, runner inventory and safe operating procedures**.
 - V1-01 merged as `719159d60c54ce510fb5ffabfcc847b068e4bc51` (PR #5).
-- Active branch: `codex/v1-runner-inventory-20261003` (base `389ca15dfa9cdef2c8d08164680a402783c97a1f`).
+- Active branch: `codex/v1-profile-budget-20261003` (preparing).
+- Runner inventory [PR #6](https://github.com/justgo4/m2s/pull/6) merged as `af67f2e3a4b14d32b969ed8ec7ac6d4c1d2f3d05`.
 - Previous validated implementation: [PR #5](https://github.com/justgo4/m2s/pull/5).
 - Implementation checkpoint: `2837773a2018ffcb3e7a70db4abf099edeabf099`;
   base `ffad2701181a475d44622a16c89539a30b675b3c`. Nine local protocol tests,
@@ -43,11 +44,20 @@ pass independently; do not merge by combining old and new green runs.
   its revision or declare the local snapshot formal evidence.
 - Next action: inspect [hosted small/million](https://github.com/justgo4/m2s/actions/runs/37084867442)
   on merge SHA `719159d60c54ce510fb5ffabfcc847b068e4bc51`; preserve artifacts and
-  inspect actual performance. Finish separate runner-inventory PR, query the real Actions management endpoint,
-  then continue operating procedures and consistent state backup.
+  inspect actual performance. Fix the million development topology, then continue operating procedures and
+  consistent state backup. Initial million rejected before seed: six hot-adds
+  exceed 4GiB at two-core cap; run `37084867442`, artifact `11259906985` retained.
+  Draft changes: million uses four hot-adds like small, workflow fixes CPU cap=2,
+  real topology-budget regression covers every named plan at cap=2. Local runner
+  nine tests/P11/AST-loaded real topology calculation pass. Full workload test uses CI.
+  Backup drafts: `tools/state_backup.py`, `tools/state_backup_test.py`; five real
+  SQLite WAL/timeout/tamper/interruption tests pass. Not committed or merged yet.
   Inventory implementation: `tools/runner_inventory.py`, `tools/runner_inventory_test.py`,
   `.github/workflows/runner-inventory.yml`; four sanitized inventory tests pass.
-  Actual runner-management access is still unknown until the workflow probe.
+  Actual inventory [run 37084999017](https://github.com/justgo4/m2s/actions/runs/37084999017)
+  returned HTTP 403: registration availability remains unknown. Exact inventory
+  head `69e33a794f1d9580b7a5672958b4a882ef547801` passed baseline `37084999011`
+  and native `37084999018`. No persistent host was provisioned.
 
 Local commands completed:
 
