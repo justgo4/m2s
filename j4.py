@@ -7885,6 +7885,7 @@ def submit_merge_async(handle, con, mapping, delivery, part, cfg, stop, runtime)
     url = merge_stream_load_url(cfg,mapping)
     headers = merge_commit_headers(mapping,cfg,profile)
     last_error = None
+    accepted = None
     attempt = 0
     while not stop.is_set():
         retry_mode="safe_pre_send"
@@ -7908,19 +7909,8 @@ def submit_merge_async(handle, con, mapping, delivery, part, cfg, stop, runtime)
                     raise RuntimeError("Merge Commit async success response lacks TxnId/Label: "+
                                        load_result_text(result))
                 remote_txn = int(remote_txn)
-                # Persist the server transaction identity and clear the write-ahead uncertainty marker atomically.
-                with state_transaction(con):
-                    con.execute("UPDATE load_parts SET txn_id=? WHERE delivery_id=? AND part=?",
-                                (remote_txn,delivery,part))
-                    con.execute("DELETE FROM merge_uncertain WHERE delivery_id=? AND part=?",
-                                (delivery,part))
-                left_merge_ms = int(result.get("LeftMergeTimeMs",0) or 0)
-                metric_add_merge(runtime,mapping_key(mapping),remote_txn,nrows,left_merge_ms)
-                if cfg.get("detail_logs",False):
-                    log(f"MERGE ACCEPTED table={mapping_key(mapping)} delivery={delivery} part={part} "
-                        f"rows={nrows} txn={remote_txn} server_label={remote_label} "
-                        f"left_merge_ms={left_merge_ms}")
-                return remote_txn,result
+                accepted=(remote_txn,result)
+                break
             if status in (401,403,404):
                 clear_merge_request(con,delivery,part)
                 raise ValueError(f"Merge Commit HTTP {status}: check endpoint/permissions; "
@@ -7979,8 +7969,56 @@ def submit_merge_async(handle, con, mapping, delivery, part, cfg, stop, runtime)
             f"attempt={attempt+1} mode={retry_mode} reason={last_error}")
         stop.wait(min(30,0.25*2**min(attempt,7)))
         attempt += 1
-    raise RuntimeError(f"unresolved Merge Commit async request delivery={delivery} part={part}: "
-                       f"{last_error}; journal retained")
+    if accepted is None:
+        raise RuntimeError(f"unresolved Merge Commit async request delivery={delivery} part={part}: "
+                           f"{last_error}; journal retained")
+    remote_txn,result=accepted
+    # Once accepted, local persistence never returns to HTTP retry handling.
+    record_merge_acceptance(con,delivery,part,remote_txn,stop)
+    left_merge_ms=int(result.get("LeftMergeTimeMs",0) or 0)
+    metric_add_merge(runtime,mapping_key(mapping),remote_txn,nrows,left_merge_ms)
+    if cfg.get("detail_logs",False):
+        log(f"MERGE ACCEPTED table={mapping_key(mapping)} delivery={delivery} part={part} "
+            f"rows={nrows} txn={remote_txn} server_label={remote_label} "
+            f"left_merge_ms={left_merge_ms}")
+    return remote_txn,result
+
+
+def record_merge_acceptance(con, delivery, part, txn_id, stop):
+    # Retry only BEGIN before any local mutation. Drain a successful HTTP
+    # response even on shutdown if the write lock is immediately available.
+    # Cancellation after contention retains the write-ahead UNKNOWN marker;
+    # restart quarantines that request rather than resending it.
+    last_log=-float("inf")
+    while True:
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            break
+        except sqlite3.OperationalError as exc:
+            if con.in_transaction or (getattr(exc,"sqlite_errorcode",0)&255)!=sqlite3.SQLITE_BUSY:
+                raise
+            if stop.is_set():
+                raise RuntimeError("stopped saving accepted Merge Commit TxnId; journal retained") from exc
+            now=time.monotonic()
+            if now-last_log>=30:
+                log("MERGE ACCEPTED BUSY delivery=%s part=%s txn=%s local_record_retry=1"
+                    % (delivery,part,txn_id))
+                last_log=now
+            if stop.wait(0.2):
+                raise RuntimeError("stopped saving accepted Merge Commit TxnId; journal retained") from exc
+    try:
+        updated=con.execute("""
+            UPDATE load_parts SET txn_id=? WHERE delivery_id=? AND part=?
+            AND (txn_id IS NULL OR txn_id=?)
+        """,(txn_id,delivery,part,txn_id))
+        if updated.rowcount!=1:
+            raise RuntimeError("accepted Merge Commit local identity changed; journal retained")
+        con.execute("DELETE FROM merge_uncertain WHERE delivery_id=? AND part=?",(delivery,part))
+        con.execute("COMMIT")
+    except BaseException:
+        if con.in_transaction:
+            con.execute("ROLLBACK")
+        raise
 
 
 def mark_merge_transaction_visible(con, delivery, txn_id, stop):
