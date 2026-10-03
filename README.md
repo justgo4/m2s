@@ -361,6 +361,8 @@ smoke 精确沿用已有 E2E 的 60 秒 cold-start/mixed-fault workload 与开�
 
 监督执行器 [PR #5](https://github.com/justgo4/m2s/pull/5) 的最终提交 `2837773a` 已通过 baseline/native、八格真实 E2E 与新增真实 supervised smoke。runner 检查 [PR #6](https://github.com/justgo4/m2s/pull/6) 的 [实际管理接口查询](https://github.com/justgo4/m2s/actions/runs/37084999017) 返回 HTTP 403，明确为“注册情况未知”；当前 Actions token 没有 runner 管理读取权限。工具 `tools/runner_inventory.py` 只公开计数，不公开主机名/标签。现有配置未提供云身份或持久主机入口，因此尚未创建或确认 self-hosted runner；公开 Actions 免费额度可用于当前短测，无法提供单台 72h 持久机器。
 
+测试计划修正后的 [million run 37085851322](https://github.com/justgo4/m2s/actions/runs/37085851322) 在约 180s 时失败：source apply 在 `sync_source_base_catalog` 的 BEGIN IMMEDIATE 等写锁超过 30s，artifact `11261215092` 保留。修复仅在无打开事务、前次事务已回滚时重试 SQLITE_BUSY，等待可停止、告警限频，并在已提交 apply prefix 后持续重试物理 catalog 同步；即使无新输入也不会漏同步。FULL/损坏/其他 SQLite 错误及仍打开的事务继续 fail-closed。竞争锁持有者和长事务成本尚未实证，不把该修复称为吞吐/1M/正式长跑通过；JOIN 初始化/共享出口一次缓存全部 pair 的规模风险仍须解决。
+
 ### 11.3 先完成有边界的 v1，再推进完整愿景
 
 **受限 v1** 的范围为单 MySQL→StarRocks、已登记的源表/列和稳定主键、共享源状态、运行时新增/删除/重建任务、投影/过滤、COUNT/SUM/AVG 与受限双源 INNER equi-join，以及明确的故障恢复/隔离边界。上述功能闭环已有，剩余重点是固定资源下的规模与压力证据、实测预算/准入、积压与低磁盘处置、告警/操作手册和版本化升级/回滚验证。破坏性 DDL/未支持 SQL 仍明确拒绝或重建；Merge Commit 未知结果仍隔离目标，在自动对账完成前不承诺自动解隔离。
@@ -376,6 +378,12 @@ smoke 精确沿用已有 E2E 的 60 秒 cold-start/mixed-fault workload 与开�
 测试计划修正后的 million 在 [run 37085851322](https://github.com/justgo4/m2s/actions/runs/37085851322) 约 180s 时退出：source apply 的 `sync_source_base_catalog` 在 BEGIN IMMEDIATE 等待写锁超出 30s，artifact `11261215092` 保留。竞争锁持有者尚未实证；代码中 JOIN 初始化/共享 follower 出口会在一个外层事务中枚举、缓存全部 pair 和登记身份，属于需测量和改造的规模风险。当前不能把它称为 1M 通过或仅提高 timeout 来收口。
 
 Actions 旧版默认 checkout PR 的临时 merge commit，不等于页面 `head_sha`：上述候选报告实际 SHA 为 `ee10ce8e`，已用 GitHub compare 确认其 tree 与 head `ea8b2cd7` 完全一致。后续 baseline/native/E2E/source-state/staged workflow 显式 checkout PR head SHA，push 使用实际 push SHA；真实报告中的 code_revision 始终保留。旧结果不改写版本，也不与新检查拼成认证。
+
+近期继续改造：[PR #10](https://github.com/justgo4/m2s/pull/10) 仅对 `source_state_apply_worker` 的明确 `SQLITE_BUSY` 且事务已退出情况做停止可打断的重试；已提交的 source apply 前缀即使没有新输入，也必须补做 physical catalog 同步。FULL/损坏/仍有活动事务等错误保持 fail-stop，busy timeout 不提高。四个真实 SQLite 连接用例覆盖提交后登记争用、释放锁后同步、争用中取消与非 BUSY/活动事务错误。当前仍待新 SHA 的完整 CI，未宣称 million 或长期锁争用问题已经解决。
+
+[PR #9](https://github.com/justgo4/m2s/pull/9) 的批次候选 `5b382ef4` 和 PR #10 初版 `ea913d53` 已完成 workload，但监督器因报告版本不一致拒绝证据（runs [37087609367](https://github.com/justgo4/m2s/actions/runs/37087609367)、[37087862226](https://github.com/justgo4/m2s/actions/runs/37087862226)；artifacts `11261655549`/`11261028417`/`11261248141`）。原因是报告函数优先取 `GITHUB_SHA`，而 workflow 已检出 PR head；两者在 PR 事件中不同。修复为真实 Git HEAD 优先、无 Git 时仅允许显式 source archive 身份，附真实临时 Git 回归；旧报告不改写 SHA，新 checks 分别对应 `bdff6c88`/`d988e1e5`。被拒绝的小型报告观察到 P95≈11.17/P99≈13.19s，不能据此宣布新批次改善或门禁通过。
+
+恢复报告的 `catchup_seconds` 也有测量边界：`recover_after_fault()` 持续造数并把新 marker 加入待校验集合，等待所有 marker 可见且 source log/apply 水位相等后才返回。约 180s 的数字可能包含持续追逐移动尾部直至负载结束，不能直接等同于进程停机时间或证明某个锁持有 180s。修改这一测量协议需要独立定义/回归，当前正式 P11 和恢复判据保持原样。
 
 **完整愿景** 还包括更多 SQL/跨算子通用增量编译、通用 arrangement/factorized state、整图长期成本优化、公平对标以及 P12/P13 的运维控制面/权限/MCP。它们不是受限 v1 的强制前置依赖；“任意 SQL”“达到物理极限”“全面领先”不能成为没有可验收边界的完成定义。Python/SQLite 或 native 的替换也不先验必做。
 

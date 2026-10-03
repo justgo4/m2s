@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'j4.py'
+      - 'tools/source_apply_contention_test.py'
       - 'cdc_catalog.py'
       - 'source_state.py'
       - 'validation_profiles.py'
@@ -15,6 +16,7 @@ on:
   pull_request:
     paths:
       - 'j4.py'
+      - 'tools/source_apply_contention_test.py'
       - 'cdc_catalog.py'
       - 'source_state.py'
       - 'validation_profiles.py'
@@ -120,7 +122,7 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
-          name: validation-${{ matrix.profile }}-${{ github.sha }}
+          name: validation-${{ matrix.profile }}-${{ github.event.pull_request.head.sha || github.sha }}
           path: |
             benchmark-results/validation/plan.json
             benchmark-results/validation/status.json

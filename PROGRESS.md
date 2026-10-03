@@ -1,129 +1,167 @@
 # m2s continuation checkpoint
 
-Last recorded: 2026-10-03 UTC. This file is the durable handoff; README defines
-the goals and evidence boundaries. Read AGENTS.md before continuing.
+Last recorded: 2026-10-03 UTC. Read AGENTS.md and README.md first. This file is
+the durable handoff if Codex quota/session ends; it does not promise automatic
+AI continuation. Routine repository changes, Actions and validated merges are
+authorized by the owner without expiry, subject to actual configured access.
 
-## Current checkpoint
+## Immediate next action
 
-- Owner instruction: continue all README work; persist progress frequently so
-  development can resume after usage resets. Routine repository operations and
-  validated merges are authorized without a new confirmation.
-- Starting main: `017285bafd1978cdf129ba2beb9a592d4c63ce48`.
-- Active milestone: **V1-02, runner inventory and safe operating procedures**.
-- V1-01 merged as `719159d60c54ce510fb5ffabfcc847b068e4bc51` (PR #5).
-- Active branch: `codex/v1-cdc-bundle-20261003` (preparing).
-- Operations [PR #8](https://github.com/justgo4/m2s/pull/8) merged as `448f618babc28ec2be71b291c5ea0572b2e1cba0`.
-- Operations head `9de0453b28181b59e1b0443bdf735f01a9dd6194`: baseline `37085918376`
-  and native `37085918360` passed, including ten new operating/backup tests.
-- Profile budget [PR #7](https://github.com/justgo4/m2s/pull/7) merged as `7dc814ab4d7e5a6b9e93a701c8ebeab0bfdb5dd6`.
-- Profile fix SHA: `52bb1f3686b771f8b4cf3d5683bac26ef375fec1`; baseline `37085454135`,
-  native `37085454170` and supervised smoke `37085454133` passed.
-- Runner inventory [PR #6](https://github.com/justgo4/m2s/pull/6) merged as `af67f2e3a4b14d32b969ed8ec7ac6d4c1d2f3d05`.
-- Previous validated implementation: [PR #5](https://github.com/justgo4/m2s/pull/5).
-- Implementation checkpoint: `2837773a2018ffcb3e7a70db4abf099edeabf099`;
-  base `ffad2701181a475d44622a16c89539a30b675b3c`. Nine local protocol tests,
-  canonical P11/gate contracts, syntax and privacy checks pass. Remote baseline/native/all eight E2E/new supervised smoke passed on that exact SHA.
+1. Inspect BOTH current PR heads and their CI before editing or rerunning.
+2. [PR #10](https://github.com/justgo4/m2s/pull/10), branch
+   `codex/v1-source-apply-busy-20261003`, current head
+   `d988e1e5f8b5e1f51a9718ecd70212e97bd19b57`.
+   Original base `2023a519ff82f04aeb08718190eea1898955d083`.
+   Fresh baseline [37088425843](https://github.com/justgo4/m2s/actions/runs/37088425843),
+   native [37088425837](https://github.com/justgo4/m2s/actions/runs/37088425837),
+   source-state [37088425911](https://github.com/justgo4/m2s/actions/runs/37088425911) (passed),
+   eight E2E [37088426468](https://github.com/justgo4/m2s/actions/runs/37088426468),
+   staged smoke [37088425825](https://github.com/justgo4/m2s/actions/runs/37088425825).
+   Others still pending at this checkpoint; do not merge yet.
+3. [PR #9](https://github.com/justgo4/m2s/pull/9), branch
+   `codex/v1-cdc-bundle-20261003`, current head
+   `bdff6c887dcfacd195103df24d91be1e6337710e`.
+   Original base `d9d122ab1661013ce3907ef20d4e658dfc4359a7`.
+   Fresh baseline [37088427379](https://github.com/justgo4/m2s/actions/runs/37088427379),
+   native [37088427378](https://github.com/justgo4/m2s/actions/runs/37088427378),
+   source-state [37088427302](https://github.com/justgo4/m2s/actions/runs/37088427302),
+   eight E2E [37088427466](https://github.com/justgo4/m2s/actions/runs/37088427466),
+   smoke/small [37088427281](https://github.com/justgo4/m2s/actions/runs/37088427281).
+   No small performance pass yet.
+4. On all green, merge correctness PR #10 first. Then integrate current main
+   into PR #9 preserving BOTH retry and bounded snapshot/bundle behavior, both
+   baseline test invocations and latest README/PROGRESS. Retest combined SHA;
+   never combine green runs from different revisions. PR #9 has stricter
+   small performance requirements; do not lower thresholds to merge.
+5. Inspect main small/million produced after the correctness merge; preserve
+   actual revision, status and artifacts. Continue from measured failure.
 
-First implementation `db96c9193fd04236a040e5ac47f6a77f24f408da`:
-[baseline](https://github.com/justgo4/m2s/actions/runs/37083541892) and
-[native](https://github.com/justgo4/m2s/actions/runs/37083541616) succeeded;
-[E2E](https://github.com/justgo4/m2s/actions/runs/37083541618) reached seven
-successful cells before the new revision. [Staged smoke](https://github.com/justgo4/m2s/actions/runs/37083541672)
-failed its latency/density gate, with all full-row exactness, dynamic tasks and
-recovery correct: P95/P99 15.09s, density 0.664. Artifact `11260180673` preserves
-the complete report. This is not a 5/10s performance pass.
+## Current implementation boundaries
 
-The follow-up checkpoint aligns only **protocol smoke** with existing E2E:
-sample=0.5s, snapshot chunk=512, fault interval=20s; P95/P99=30/60s and density=0.2.
-Small/million/medium/scale/soak retain 5/10s; canonical P11 and formal gate defaults
-remain unchanged. plan.json explicitly exposes gate_thresholds. Latest PR CI must
-pass independently; do not merge by combining old and new green runs.
-- Working files: `validation_profiles.py`, `tools/validation_run.py`,
-  `tools/validation_run_test.py`, `tools/longhaul_workload.py`,
-  `tools/longhaul_workload_test.py`, `.github/workflows/validation.yml`,
-  `.github/workflows/ci.yml`, README.
-- Local workspace: `/workspace/m2s-work`; all 174 original tracked blobs were
-  checked against GitHub SHA-1 and permissions. A Git index exists for privacy
-  checks, but its historical HEAD could not be materialized; it is not a clean
-  live-test checkout. Python runtime lacks Arrow/database dependencies. Full
-  imports/live database contracts use the real GitHub checkout. Never fabricate
-  its revision or declare the local snapshot formal evidence.
-- Next action: inspect [hosted small/million](https://github.com/justgo4/m2s/actions/runs/37084867442)
-  on merge SHA `719159d60c54ce510fb5ffabfcc847b068e4bc51`; preserve artifacts and
-  inspect actual performance. Inspect fresh small/million on the profile-fix merge, then complete operations PR.
-  Implemented drafts: `OPERATIONS.md`, `tools/state_backup*.py`,
-  `tools/operational_check*.py`, `.github/workflows/ci.yml`; five real SQLite backup
-  tests plus five health/CLI tests pass, privacy PASS. Add README operating link,
-  submit focused PR, verify its baseline/native, merge. No cross-version rollback
-  or production fault drill has been claimed. Initial million rejected before seed: six hot-adds
-  exceed 4GiB at two-core cap; run `37084867442`, artifact `11259906985` retained.
-  Draft changes: million uses four hot-adds like small, workflow fixes CPU cap=2,
-  real topology-budget regression covers every named plan at cap=2. Local runner
-  nine tests/P11/AST-loaded real topology calculation pass. Full workload test uses CI.
-  Backup drafts: `tools/state_backup.py`, `tools/state_backup_test.py`; five real
-  SQLite WAL/timeout/tamper/interruption tests pass. Operations committed and merged in PR #8. Cross-version and deployed fault drills remain pending.
-  Inventory implementation: `tools/runner_inventory.py`, `tools/runner_inventory_test.py`,
-  `.github/workflows/runner-inventory.yml`; four sanitized inventory tests pass.
-  Actual inventory [run 37084999017](https://github.com/justgo4/m2s/actions/runs/37084999017)
-  returned HTTP 403: registration availability remains unknown. Exact inventory
-  head `69e33a794f1d9580b7a5672958b4a882ef547801` passed baseline `37084999011`
-  and native `37084999018`. No persistent host was provisioned.
+PR #10 changes:
+- `j4.py:source_state_apply_worker`: retry only SQLite BUSY (masked extended
+  error code) AFTER rollback/no open transaction; stop-aware 0.2s wait,
+  rate-limited generic logs and retry counter. Keep original 30s busy timeout.
+- Preserve committed-prefix catalog resync with a dirty flag even if no new
+  input follows. FULL/corruption/active transaction errors remain fatal.
+- `tools/source_apply_contention_test.py`: four real-connection regressions
+  for post-commit catalog lock, release/resync/exactly-once prefix, prompt stop,
+  FULL and BUSY with active transaction rollback. Added baseline invocation.
+- `tools/longhaul_workload.py/test.py`: authoritative actual Git HEAD, not
+  GITHUB_SHA/M2S override when Git works. Explicit validated archive fallback
+  only if Git unavailable; event SHA alone is never sufficient. Real temporary
+  Git mismatch regression and error/fallback cases. Same fix on PR #9.
 
-Local commands completed:
+PR #9 changes:
+- CDC bundle cap configurable `CDC_CDC_BUNDLE_MAX_LANES` default16/max64,
+  apportioned by active writers; preserve bytes/rows/prepared budget, lane FIFO,
+  durable membership/ack, kind/plan version/generation boundaries.
+- Source snapshot streams SQLite cursor and honors configured count and
+  serialized PK/payload byte cap. A budget-truncated page is not EOF; singleton
+  over-budget rejects retaining pin; cursor/restart/full coverage regressions.
+- Shared snapshot replaces fixed4096 cap with configured count plus byte cap.
+- Five core workflows explicitly checkout actual PR head SHA.
+- `tools/cdc_bundle_test.py` (four real SQLite regressions),
+  `tools/source_snapshot_budget_test.py` (three Arrow/SQLite regressions),
+  baseline invocations, curated old small numeric report and README.
+- JOIN bootstrap/follower still enumerates/caches all pairs/identities under
+  outer transaction: no bounded JOIN staging or scale proof yet.
 
+## Completed milestones and evidence
+
+- PR #4 GC/admission lock protocol merged
+  `55fa2a940a3174e0916b2b64b1d6180d8f1527df`, identical tree to fix
+  `b30fd98dbf878873247457ac9d9bc2a9ddb09bdd`. All baseline/native/state/eight
+  E2E passed; README10.5 contains exact run links and three WAL race regressions.
+- PR #5 supervised staged validation merged
+  `719159d60c54ce510fb5ffabfcc847b068e4bc51`.
+  Tested head `2837773a2018ffcb3e7a70db4abf099edeabf099`: baseline37084288295,
+  native37084288145, all eight E2E37084288201, smoke37084288352 passed.
+  Merge differed only in PROGRESS; runtime tree unchanged.
+- PR #6 sanitized runner inventory merged
+  `af67f2e3a4b14d32b969ed8ec7ac6d4c1d2f3d05`.
+  Head `69e33a794f1d9580b7a5672958b4a882ef547801`: baseline37084999011 and
+  native37084999018 passed. Actual inventory37084999017 returned HTTP403:
+  registration availability UNKNOWN, not zero. No persistent host created.
+- PR #7 hosted topology plan merged
+  `7dc814ab4d7e5a6b9e93a701c8ebeab0bfdb5dd6`.
+  Head `52bb1f3686b771f8b4cf3d5683bac26ef375fec1`: baseline37085454135,
+  native37085454170, smoke37085454133 passed. Million now four dynamic tasks
+  at4GiB and explicit hosted CPU cap2; all named plans real resource regression.
+- PR #8 operations merged
+  `448f618babc28ec2be71b291c5ea0572b2e1cba0`.
+  Head `9de0453b28181b59e1b0443bdf735f01a9dd6194`: baseline37085918376/native
+  37085918360 passed. Ten real SQLite backup/health/CLI tests. Online backup
+  creates NEW private directory and consistent per-file single DB copy
+  (DELETE journal), quickcheck/hash/fsync/ready verification and incomplete
+  evidence. No blind restore/overwrite/old local state onto advanced remote.
+  Status exits0 observation/1 alert/2 unknown. OPERATIONS.md covers startup,
+  unknown output isolation, disk/backlog, backup and upgrade/rollback limits;
+  deployed drills and real cross-version recovery still pending.
+
+## Failures and performance evidence to preserve
+
+| Revision / run | Result / artifact |
+|---|---|
+| First supervisor draft db96c919 /37083541672 | Strict smoke correctness all passed, P95/P99≈15.09s,density=.664 failed. Artifact11260180673. Follow-up protocol smoke uses existing E2E30/60s,.2; performance/P11 thresholds unchanged |
+| Main719159d6 /37084867442 million | Six dynamic tasks exceeded4GiB before seed. Artifact11259906985; not a performance result |
+| Main719159d6 /37084867442 small | All full-row/dynamic/recovery/drain correct, P95=21.25/P99=41.99s failed;density=.899 passed. RSS605MiB,writes2.79GB. Artifact11260627960; numeric summary in PR #9 |
+| Main7dc814ab /37085851322 small | Same topology, P95=26.32/P99=33.10s failed;density=.887 passed. Artifact11261185396 |
+| Main7dc814ab /37085851322 million | Valid topology; source apply catalog BEGIN IMMEDIATE busy timeout fatal around180s. Artifact11261215092. Competing lock owner NOT proven |
+| PR #9 ea8b2cd7 /37086484023 small | Full correctness passed, P95=9.10/P99=11.10s failed;density=.975 passed. Artifact11260204343. Actual old report SHA ee10ce8ee1bc56d44fcf4f75f5bc7183e811a216 has identical Git tree to ea8 head (verified compare). Baseline37086484043/native37086484091/state37086484038/eight E2E37086484049 and smoke passed |
+| PR #9 5b382ef4 /37087609367 smoke+small | Workloads completed/full-row oracles correct but supervisor rejected revision mismatch. Artifacts11261655549/11261028417. Small observed11.17/13.19s, NOT accepted gate and no proven batching improvement. Baseline37087609348/native37087609372/state37087609364/eight E2E37087609344 passed |
+| PR #10 ea913d53 /37087862226 smoke | Workload completed/full-row correct; same identity rejection. Artifact11261248141. Baseline37087862148/native37087862223/state37087862129 passed; inspect E2E37087862207 separately |
+
+Identity bug: after explicit PR-head checkout, old code_revision() still preferred
+GITHUB_SHA (temporary event merge). Both current PR heads fix this; retain old
+reports as rejected evidence rather than changing recorded SHA/relabeling passes.
+
+Latency observations across hosted machines are not strict same-machine A/B.
+CPU snapshot_pause only controls legacy snapshot, not shared backfill; its role
+in shared delay was NOT proven. The ~180s catchup figure follows a moving marker
+set: recover_after_fault() keeps adding produced markers and waits for every one
+plus log==apply. Constant delivery lag can keep it waiting until source window
+ends. Do not equate that whole interval to daemon downtime or one long lock.
+Changing recovery measurement needs a separately specified protocol/regression;
+formal P11 is unchanged.
+
+## Local workspace and validation
+
+Working directory `/workspace/m2s-work`. All174 original tracked blobs were
+SHA-verified; local Git has an index but UNBORN historical HEAD, so it is not a
+clean live-test checkout or formal benchmark revision. Arrow/database imports
+are unavailable locally; full-runtime tests run against real GitHub checkouts.
+Local j4 currently contains BOTH PR drafts, while remote PR #10 contains only
+its independent changes. Treat remote per-branch trees as authoritative.
+
+Latest local checks: AST-loaded ORIGINAL code_revision() using real temporary Git
+passed divergence/archive/error cases; syntax compileall workload/test passed;
+privacy PASS files191. Previous supervisor nine, backup five, health five and
+inventory four stdlib/SQLite tests passed; P11/gate contracts passed. Do not
+claim AST-only checks are full module tests. Current workload/test local files
+match identity fixes pushed to both PR branches.
+
+Commands:
 ```bash
 python tools/validation_run_test.py
 python tools/p11_profile_test.py
 python tools/longhaul_gate_test.py
-python -m compileall -q validation_profiles.py tools/validation_run.py tools/validation_run_test.py tools/longhaul_workload.py tools/longhaul_workload_test.py
+python tools/state_backup_test.py
+python tools/operational_check_test.py
+python tools/runner_inventory_test.py
 python tools/privacy_check.py
+# Full imports (CI dependencies required)
+python tools/longhaul_workload_test.py
+python tools/source_apply_contention_test.py
+python tools/cdc_bundle_test.py
+python tools/source_snapshot_budget_test.py
 ```
 
-V1-01 implementation provides named development/P11 plans, new-only private run
-directories, atomic status and logs, clean revision and finished-report identity,
-PIDFD cancel, real child cleanup, and gate-only resume without reinitialization.
-SIGTERM now unwinds the workload's independent daemon group. It does not support
-resuming an incomplete workload or surviving host loss. PR runs real hosted smoke;
-main runs small/million; no shortened result is called formal P11 certification.
-
-
-Latest exact-head evidence: [baseline](https://github.com/justgo4/m2s/actions/runs/37084288295),
-[native](https://github.com/justgo4/m2s/actions/runs/37084288145),
-[all eight E2E jobs](https://github.com/justgo4/m2s/actions/runs/37084288201), and
-[supervised real-service smoke](https://github.com/justgo4/m2s/actions/runs/37084288352)
-passed. Merge differs from tested PR head only in PROGRESS.md, verified by GitHub
-compare; runtime/workflow trees are unchanged. Main small/million run `37084867442` failed: million topology preflight before
-seed; small full-row/dynamic/recovery correctness passed but P95=21.25s,
-P99=41.99s failed. Density=0.899 passed; only latency gates failed. Small artifact `11260627960` retained; exact
-performance root cause still under investigation. No performance pass exists.
-
-## Completed evidence to preserve
-
-- GC retention and consumer admission now share the SQLite write transaction;
-  stale consumer watermarks below min_readable_seq are rejected. Three WAL race
-  regressions added. [PR #4](https://github.com/justgo4/m2s/pull/4) merged.
-- Fix commit `b30fd98dbf878873247457ac9d9bc2a9ddb09bdd`: [baseline](https://github.com/justgo4/m2s/actions/runs/37078480776),
-  [native](https://github.com/justgo4/m2s/actions/runs/37078480762),
-  [source-state](https://github.com/justgo4/m2s/actions/runs/37078480742), and
-  [eight real E2E jobs](https://github.com/justgo4/m2s/actions/runs/37078480757)
-  all successful. Its merge `55fa2a940a3174e0916b2b64b1d6180d8f1527df`
-  has the same Git tree. README section 10.5 has details.
-- README section 11 separates staged validation, bounded v1, and longer-term
-  goals. 72h execution does not itself call an LLM. Existing checkpoint is only
-  evidence and does **not** resume the entire workload runner.
-
-Performance follow-up under investigation: existing CDC bundles cap width at four
-lanes even when one writer serves sixteen lanes. Small metrics show ~1.19s VISIBLE
-per delivery and four-lane CDC bundles; larger bounded bundles may reduce queue
-rotation. Candidate drafts: `j4.py`, `cdc_catalog.py`, `tools/cdc_bundle_test.py`,
-`.github/workflows/validation.yml`: configurable CDC bundle cap=16, adapting to
-active writer count; existing row/byte/prepared limits and durable memberships
-unchanged. Four real-SQLite regressions prepared (full imports require CI).
-Syntax and actual AST-loaded width tests pass. Add baseline invocation and README,
-submit PR; require same-head baseline/native/eight E2E and hosted smoke/small.
-No improvement yet claimed; compare against profile-fix main
-[run 37085851322](https://github.com/justgo4/m2s/actions/runs/37085851322), still running.
-CPU-only snapshot starvation is a separate measured symptom, not yet fixed.
+Supervisor named profiles persist plan/status/logs, require a new private run
+directory, verify actual code/report identity, use bootID/startticks/PIDFD
+cancel and unwind independent daemon groups on SIGTERM. Gate-only retry is
+permitted only for successfully completed immutable report with SHA256 match.
+It does NOT resume an interrupted workload or guarantee survival of host loss.
 
 ## Ordered backlog and exit gates
 
@@ -172,3 +210,7 @@ must be split into explicit acceptance criteria before coding.
 4. Commit code, tests and this checkpoint together; record remote results/merge.
 5. If the next task is blocked by a machine, record the exact dependency and
    continue independent code work. Never mark blocked testing as passed.
+
+## Immediate correction checkpoint
+
+PR #9 staged run `37087609367` failed both profiles solely at supervisor report revision identity; artifacts `11261655549` (smoke) and `11261028417` (small). PR #10 staged run `37087862226` similarly failed, artifact `11261248141`. Actual checkout is PR head, but longhaul_workload.code_revision() incorrectly prefers GITHUB_SHA (temporary PR merge) over git HEAD. Do not label these reports accepted or rewrite them. Fix identity discovery to use actual git HEAD first; add regressions for divergent event/checkout and archive fallback. Apply the same focused workload/test fix to both PR branches, then require fresh checks. PR #10 baseline `37087862148`, native `37087862223`, state `37087862129` passed; two E2E cells still pending at this checkpoint. No merge yet. Local PROGRESS refreshed from remote.
