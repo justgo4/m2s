@@ -273,19 +273,20 @@ def _validate_binding(con,task,binding):
 
 
 def step(con,task,mapping,cfg):
-    binding=binding_info(
-        con,task["task_id"])
-    leader,follower,_,reuse=_validate_binding(
-        con,task,binding)
-    leader_consumer=source_state.consumer_info(
-        con,leader["consumer_id"])
-    leader_state=join_state.state_info(
-        con,leader["state_id"])
-    if int(leader_state["watermark"])!=int(
-        leader_consumer["watermark"]
-    ):
-        raise RuntimeError(
-            "JOIN shared leader state/consumer watermarks diverged")
+    with source_state.read_snapshot(con):
+        binding=binding_info(
+            con,task["task_id"])
+        leader,follower,_,reuse=_validate_binding(
+            con,task,binding)
+        leader_consumer=source_state.consumer_info(
+            con,leader["consumer_id"])
+        leader_state=join_state.state_info(
+            con,leader["state_id"])
+        if int(leader_state["watermark"])!=int(
+            leader_consumer["watermark"]
+        ):
+            raise RuntimeError(
+                "JOIN shared leader state/consumer watermarks diverged")
 
     copied_sequences=0
     if int(follower["watermark"])<int(
