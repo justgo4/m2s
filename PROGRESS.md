@@ -11,7 +11,8 @@ the goals and evidence boundaries. Read AGENTS.md before continuing.
 - Starting main: `017285bafd1978cdf129ba2beb9a592d4c63ce48`.
 - Active milestone: **V1-02, runner inventory and safe operating procedures**.
 - V1-01 merged as `719159d60c54ce510fb5ffabfcc847b068e4bc51` (PR #5).
-- Active branch: `codex/v1-staged-validation-20261003`, [PR #5](https://github.com/justgo4/m2s/pull/5).
+- Active branch: `codex/v1-runner-inventory-20261003` (base `389ca15dfa9cdef2c8d08164680a402783c97a1f`).
+- Previous validated implementation: [PR #5](https://github.com/justgo4/m2s/pull/5).
 - Implementation checkpoint: `2837773a2018ffcb3e7a70db4abf099edeabf099`;
   base `ffad2701181a475d44622a16c89539a30b675b3c`. Nine local protocol tests,
   canonical P11/gate contracts, syntax and privacy checks pass. Remote baseline/native/all eight E2E/new supervised smoke passed on that exact SHA.
@@ -42,8 +43,9 @@ pass independently; do not merge by combining old and new green runs.
   its revision or declare the local snapshot formal evidence.
 - Next action: inspect [hosted small/million](https://github.com/justgo4/m2s/actions/runs/37084867442)
   on merge SHA `719159d60c54ce510fb5ffabfcc847b068e4bc51`; preserve artifacts and
-  inspect actual performance. Prepare separate runner-inventory/operating PR.
-  Local drafts: `tools/runner_inventory.py`, `tools/runner_inventory_test.py`,
+  inspect actual performance. Finish separate runner-inventory PR, query the real Actions management endpoint,
+  then continue operating procedures and consistent state backup.
+  Inventory implementation: `tools/runner_inventory.py`, `tools/runner_inventory_test.py`,
   `.github/workflows/runner-inventory.yml`; four sanitized inventory tests pass.
   Actual runner-management access is still unknown until the workflow probe.
 

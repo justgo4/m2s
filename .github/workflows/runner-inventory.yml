@@ -1,0 +1,35 @@
+name: Inspect configured test runners
+
+on:
+  push:
+    branches: [main]
+    paths: ['tools/runner_inventory*.py', '.github/workflows/runner-inventory.yml']
+  pull_request:
+    paths: ['tools/runner_inventory*.py', '.github/workflows/runner-inventory.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Test sanitization and unknown availability handling
+        run: python tools/runner_inventory_test.py
+      - name: Inspect the actual management endpoint
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python tools/runner_inventory.py --output benchmark-results/runner-inventory.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: runner-inventory-${{ github.sha }}
+          path: benchmark-results/runner-inventory.json
+          if-no-files-found: warn
+          retention-days: 14
