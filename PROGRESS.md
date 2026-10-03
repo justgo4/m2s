@@ -222,3 +222,30 @@ PR #9 staged run `37087609367` failed both profiles solely at supervisor report 
 ## Active measured follow-up draft
 
 After accepted small artifact11261726394 still12/14s fails, inspect snapshot remote commit count. Current claim_snapshot_bundle restricts all members to one page group even when adjacent snapshot pages of the SAME plan/generation are pending. Draft a bounded per-lane contiguous snapshot-prefix claim across pages, stopping at CDC/assigned/different plan/group-less boundary, retaining row/byte/prepared/writer-width limits and all individual group IDs. Existing acknowledge_delivery already finishes every member group via longest completed stage prefix. Add real SQLite multi-group restart, CDC fence, out-of-order group visibility and budget tests before pushing PR #9 again. This is a draft hypothesis, not a proven SLO fix. Preserve current combined head fbf0784a and fresh CI evidence when superseding.
+
+## Stateful contention fix started
+
+Base main83269c14; branch codex/v1-stateful-busy-20261003. Main million
+37088943284 artifact11261727031 fails stateful_task_worker with BUSY.
+Implement narrowly scoped stop-aware BUSY retry only after rolled-back durable
+runner operations; retain post-step result for physical registry sync retry.
+FULL/corruption/active transactions remain fatal. Add real SQLite contention,
+atomic bootstrap/outbox, post-commit sync and cancellation regressions before CI.
+Snapshot prefix remains independent PR9 head87ef3616, awaiting fresh checks.
+
+## Stateful BUSY implementation checkpoint
+
+Four full-import real SQLite tests PASS: rollback-safe actual aggregate bootstrap
+resumes to exactly one durable outbox/row and releases its fixed-W pin after target
+ack; stop interrupts contention; post-step registry contention retains the committed
+result without rerunning the runner; FULL/CORRUPT/LOCKED/open-transaction BUSY stay
+fatal. All calls use original30s production busy timeout (only tests10ms).
+Existing aggregate runtime, physical registry and hot-add tests PASS locally.
+Runner retry returns to outer loop to recheck membership/completeness/retire W;
+registry retry retains result. No retry added to remote output or retirement.
+Long JOIN bootstrap/outbox lock cost is still unresolved; this is recovery,
+not a claim of throughput, million success or formal P11 certification.
+Commands: python tools/stateful_worker_contention_test.py; python tools/aggregate_runtime_test.py;
+python tools/stateful_physical_registry_test.py; python tools/stateful_hot_add_test.py.
+New same-SHA CI still required. PR9 ref87ef3616 updated but GitHub returned no new
+workflow runs; reopening once also has not yielded runs. No old run relabeled.
