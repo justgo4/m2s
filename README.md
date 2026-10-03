@@ -398,3 +398,6 @@ JOIN 出口的下一候选改为有界 mutation/Arrow 批次与磁盘 spool，�
 主线914c163a的小型综合仍是完整精确性/故障恢复/排空通过、严格延迟失败；百万行在 native capture 的本地 SQLite 写锁超时停止。PR #12 的跨页回填批次候选也未因正确性绿色而提前合并。正式 P95≤5s/P99≤10s 与固定50M/72h目标保持不变；持久固定资源主机尚未配置。
 
 [PR #15](https://github.com/justgo4/m2s/pull/15) 已在最终组合 SHA 通过全部合同并合并：远端事务明确 VISIBLE 后，本地登记遇 SQLite BUSY 时仅重试该本地事务；取消保留 journal，重启沿用 durable TxnId，未知远端请求仍隔离且禁止重发。主线7fe6小型综合的 P95/P99=25.345/33.752s 仍未通过正式延迟阈值；空转日志降至四条和合成内存改善不能代替端到端验收。
+
+
+完整组合的回填批次候选 [PR #12](https://github.com/justgo4/m2s/pull/12) 现已保留主线已验收的 stateful BUSY、流式 JOIN 初始化、空闲 worker 等待、已知 VISIBLE 本地持久化与有界 JOIN桥接。候选继续使用 lane cap16、行/字节预算 snapshot 与有界跨页 FIFO 前缀；必须重新通过同一最终 SHA 的完整合同、smoke 与严格 small。旧0660e327小型P95/P99=10.108/14.108s仍按失败保留；50M/72h与5/10s目标不变。

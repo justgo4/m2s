@@ -1091,7 +1091,8 @@ def pin_watermark(con, pin_id):
     return int(row[0])
 
 
-def read_snapshot_batch(con, pin_id, table_name, after_key=None, limit=1000):
+def read_snapshot_batch(con, pin_id, table_name, after_key=None, limit=1000,
+                        max_bytes=None, return_info=False):
     watermark = pin_watermark(con, pin_id)
     if watermark < min_readable_seq(con):
         raise RuntimeError(
@@ -1100,33 +1101,49 @@ def read_snapshot_batch(con, pin_id, table_name, after_key=None, limit=1000):
     if info["complete_seq"] is None or info["complete_seq"] > watermark:
         raise RuntimeError("relation was not complete at pinned watermark")
     limit = max(1, int(limit))
+    if max_bytes is not None and int(max_bytes) < 1:
+        raise ValueError("source snapshot byte budget must be positive")
     params = [str(table_name), watermark, watermark]
     after_sql = ""
     if after_key is not None:
         after_sql = " AND pk>?"
         params.append(bytes(after_key))
     params.append(limit)
-    rows = con.execute("""
+    cursor = con.execute("""
         SELECT pk,row_payload
         FROM source_versions INDEXED BY sqlite_autoindex_source_versions_1
         WHERE table_name=?
           AND valid_from<=?
           AND (valid_to IS NULL OR valid_to>?)
           AND deleted=0
-    """ + after_sql + " ORDER BY pk LIMIT ?", params).fetchall()
+    """ + after_sql + " ORDER BY pk LIMIT ?", params)
 
     records = []
     next_key = None
-    for pk, payload in rows:
-        values = pickle.loads(payload)
-        records.append(dict(zip(info["columns"], values)))
-        next_key = bytes(pk)
+    payload_bytes = 0
+    budget_limited = False
+    try:
+        for pk, payload in cursor:
+            size = len(pk) + len(payload)
+            if max_bytes is not None and payload_bytes + size > int(max_bytes):
+                if not records:
+                    raise RuntimeError("source snapshot row exceeds byte budget; pin retained")
+                budget_limited = True
+                break
+            values = pickle.loads(payload)
+            records.append(dict(zip(info["columns"], values)))
+            next_key = bytes(pk)
+            payload_bytes += size
+    finally:
+        cursor.close()
     table = pa.Table.from_pylist(records, schema=info["schema"])
     table = table.append_column(
         "_sync_op", pa.array([0] * len(records), type=pa.int8())
     ).append_column(
         "_sync_order", pa.array(range(len(records)), type=pa.int64())
     )
+    if return_info:
+        return table, next_key, dict(payload_bytes=payload_bytes, budget_limited=budget_limited)
     return table, next_key
 
 
