@@ -636,3 +636,27 @@ Original main9f4560b accepted-response contention negative reproduces actual
 OperationalError(database is locked), while PR23's new six tests pass.
 Local network quarantine run cannot reach isolated StarRocks (connection
 refused); this is unavailable local service, not a passed network test.
+
+
+### 2026-10-03 accepted-response merge and catalog GC race fix
+
+PR23 aeaf500 all five workflows PASS: baseline37117087500,
+native37117087497, state37117087441, eight daemon37117087474,
+smoke37117087444. Merged566baccef4ba4829c293216d2a06d8728b7970a3.
+
+PR24 original72b6056 all five workflows PASS, but PROGRESS additions conflict
+with parallel PR23. New integrated head f5052b95ea1d9b88d264080b3ecaac0fcf05d6d3
+retains both parents, includes accepted-response code, and keeps checkpoint
+history without changing idle-write code; required integrated CI is restarting.
+Do not merge only by citing old72b6056 checks.
+
+Catalog race reproduced with real two connections and original9f4560b:
+GC captures keep1/2, publisher adds3 before DELETE; after GC published_version3
+but plans1/2, load_plan raises exact missing-version3 error. Artifact has no
+catalog DB, so this is a matching reproducible race rather than proof of actual
+scheduler interleaving. PR25 https://github.com/justgo4/m2s/pull/25 head
+24bf234842356281047b56f96897e3216d986ccf serializes keep+DELETE using BEGIN
+IMMEDIATE and reads pointer+manifest in one WAL snapshot. Five real SQLite
+race/rollback/failclosed tests PASS and both original paths fail negative
+controls. Full catalog selftest unavailable locally due AF_UNIX permission;
+required hosted workflows verify actual catalog/daemon. No missing-plan fallback.
