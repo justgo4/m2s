@@ -376,3 +376,44 @@ Next independent runtime candidate: honor configured row budget up to bounded
 50000 cap, maintain byte/singleton/restart/last-ack contracts and require real
 daemon strict-small before any performance claim. Bounded durable publication
 remains separate structural work; do not conflate larger batch with shorter locks.
+
+
+## Active local preparation BEGIN recovery
+
+PR18 ef613a90882b62627fb2fe964cb638c6b8128b59 passed baseline37102418772,
+native37102418792,state37102418768 and merged e18c543283f16f0ab686187504bd0d7866bc5bf4.
+PR19 configured batch0d3ffd80a82e9a93764dae33631972ffce98e98c remains under
+full real daemon/smoke/strict-small CI; do not merge before its gates.
+Fresh main5a0f validation37101481261 small artifact11265808134: all seven
+full output oracles/dynamic4/recovery/drain exact,pending0;strict P95/P99
+44.431475206/55.121011750s fails. Million artifact11266297740 now stops at
+prepare_delivery->persist_field_overflows->BEGIN IMMEDIATE before any target
+HTTP. Lock owner still not established; avoiding prior capture stop revealed
+this distinct local boundary, not million success.
+Branch codex/prepare-begin-busy-20261003 based e18c: optional stop on local
+preparation transaction BEGIN only, including reservation/overflow/final parts.
+Pass runtime stop from both delivery protocols/OOM recovery. Default helper
+behavior unchanged; no body/COMMIT/HTTP retry. Next real lock tests at acquisition,
+post-transform overflow/final parts, cancellation/restart, fatal data/storage;
+fresh exact-head full CI required. This is safe recovery, not bounded locking.
+
+Local preparation implementation checkpoint: five real SQLite/Arrow preparation
+tests PASS: BEGIN before transform; post-transform overflow evidence; final parts
+conversion; stop retains unprepared jobs/reservation with no load_parts and reopen
+recovers exact payload; FULL/CORRUPT/LOCKED and body BUSY remain fatal/one-shot.
+Successful contention paths run transform once and final parts exactly once;
+HTTP is guarded against in these tests. Existing capture4/known-visible3 pass.
+The initial fixture omitted jobs.created and routing metadata; corrected fixture
+now uses actual checked Arrow journal schema. Original negative regression runs
+against HEAD prepare with optional-keyword adapter, not a TypeError comparison.
+Main CLI selftest is locally blocked at AF_UNIX socket creation by environment
+EPERM; full CI must validate it. Original SQLite30s timeout unchanged; backoff
+stop-aware, transaction body/COMMIT/HTTP never replayed.
+PR19 baseline37102524135/native37102524124/state37102524127/eight E2E37102524140
+PASS;smoke PASS and strict small still running37102524134. No merge yet.
+
+Corrected negative check uses original prepare function in ACTUAL j4 globals:
+all three initial/overflow/final regressions fail with SQLITE_BUSY, fixed passes.
+Direct cdc_selftest reaches process-resource assertion then fails because this
+workspace cannot inspect /proc; AF_UNIX and /proc checks remain hosted evidence.
+Next preserve fixed SHA CI without repeated pushes cancelling runs.
