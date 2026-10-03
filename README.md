@@ -365,6 +365,10 @@ smoke 精确沿用已有 E2E 的 60 秒 cold-start/mixed-fault workload 与开�
 
 **受限 v1** 的范围为单 MySQL→StarRocks、已登记的源表/列和稳定主键、共享源状态、运行时新增/删除/重建任务、投影/过滤、COUNT/SUM/AVG 与受限双源 INNER equi-join，以及明确的故障恢复/隔离边界。上述功能闭环已有，剩余重点是固定资源下的规模与压力证据、实测预算/准入、积压与低磁盘处置、告警/操作手册和版本化升级/回滚验证。破坏性 DDL/未支持 SQL 仍明确拒绝或重建；Merge Commit 未知结果仍隔离目标，在自动对账完成前不承诺自动解隔离。
 
+运行与恢复步骤见 [OPERATIONS.md](OPERATIONS.md)。新增 `tools/operational_check.py` 以新鲜 daemon 摘要、durable status 与磁盘余量评估未知输出/停止/积压/低空间，退出码 0/1/2 分别为本次未触发阈值/告警/证据未知；它不自动解隔离或发送消息。`tools/state_backup.py` 用 SQLite online backup 生成私有单文件快照，校验完整性/字节摘要并保留 incomplete 证据；不覆盖旧目录、不提供盲目 restore。真实 WAL 并发、锁超时、损坏/篡改和中断检查已加入测试。catalog/远端目标与 state 的联合恢复、真实跨版本升级/回滚仍需隔离演练。
+
+首个 100k/5 分钟性能测试 [run 37084867442](https://github.com/justgo4/m2s/actions/runs/37084867442) 的 raw、aggregate、三个 JOIN 的全行 oracle 和动态任务/强退恢复/drain 均正确，sample density=0.899 达标；仅延迟门禁失败，P95≈21.25s、P99≈41.99s。恢复追赶约 190s、m2s 峰值 RSS≈605MiB、累计写入约 2.79GB；日志中有 CPU 压力触发的 snapshot pause 和任务就绪尾延迟。artifact `11260627960` 保留，性能根因仍需分析；这些数据不支持生产 SLO 或 50M/72h 声明，也不直接证明必须更换 SQLite/native。
+
 **完整愿景** 还包括更多 SQL/跨算子通用增量编译、通用 arrangement/factorized state、整图长期成本优化、公平对标以及 P12/P13 的运维控制面/权限/MCP。它们不是受限 v1 的强制前置依赖；“任意 SQL”“达到物理极限”“全面领先”不能成为没有可验收边界的完成定义。Python/SQLite 或 native 的替换也不先验必做。
 
 | 出口 | 条件化规划预算 | 完成的含义 |
