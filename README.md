@@ -371,7 +371,7 @@ smoke 精确沿用已有 E2E 的 60 秒 cold-start/mixed-fault workload 与开�
 
 首个 100k/5 分钟性能测试 [run 37084867442](https://github.com/justgo4/m2s/actions/runs/37084867442) 的 raw、aggregate、三个 JOIN 的全行 oracle 和动态任务/强退恢复/drain 均正确，sample density=0.899 达标；仅延迟门禁失败，P95≈21.25s、P99≈41.99s。恢复追赶约 190s、m2s 峰值 RSS≈605MiB、累计写入约 2.79GB；日志中有 CPU 压力触发的 snapshot pause 和任务就绪尾延迟。artifact `11260627960` 保留，性能根因仍需分析；这些数据不支持生产 SLO 或 50M/72h 声明，也不直接证明必须更换 SQLite/native。
 
-近期继续改造：[PR #10](https://github.com/justgo4/m2s/pull/10) 仅对 `source_state_apply_worker` 的明确 `SQLITE_BUSY` 且事务已退出情况做停止可打断的重试；已提交的 source apply 前缀即使没有新输入，也必须补做 physical catalog 同步。FULL/损坏/仍有活动事务等错误保持 fail-stop，busy timeout 不提高。四个真实 SQLite 连接用例覆盖提交后登记争用、释放锁后同步、争用中取消与非 BUSY/活动事务错误。PR #10 已完成完整 CI 并合并；后续 stateful BUSY、流式 JOIN 初始化、worker 空转等待与已知 VISIBLE 结果本地持久化也分别通过合同后合并。million 与长期锁争用仍未验收通过。
+近期继续改造：[PR #10](https://github.com/justgo4/m2s/pull/10) 仅对 `source_state_apply_worker` 的明确 `SQLITE_BUSY` 且事务已退出情况做停止可打断的重试；已提交的 source apply 前缀即使没有新输入，也必须补做 physical catalog 同步。FULL/损坏/仍有活动事务等错误保持 fail-stop，busy timeout 不提高。四个真实 SQLite 连接用例覆盖提交后登记争用、释放锁后同步、争用中取消与非 BUSY/活动事务错误。PR #10 已合并并通过完整 CI；后续 [PR #11](https://github.com/justgo4/m2s/pull/11) 对 stateful worker 的明确 BUSY 做同样的 durable-prefix 恢复，并保留已提交结果补做 registry 同步。两者均未宣称 million 或长期锁争用问题已经解决。
 
 [PR #9](https://github.com/justgo4/m2s/pull/9) 的批次候选 `5b382ef4` 和 PR #10 初版 `ea913d53` 已完成 workload，但监督器因报告版本不一致拒绝证据（runs [37087609367](https://github.com/justgo4/m2s/actions/runs/37087609367)、[37087862226](https://github.com/justgo4/m2s/actions/runs/37087862226)；artifacts `11261655549`/`11261028417`/`11261248141`）。原因是报告函数优先取 `GITHUB_SHA`，而 workflow 已检出 PR head；两者在 PR 事件中不同。修复为真实 Git HEAD 优先、无 Git 时仅允许显式 source archive 身份，附真实临时 Git 回归；旧报告不改写 SHA，新 checks 分别对应 `bdff6c88`/`d988e1e5`。被拒绝的小型报告观察到 P95≈11.17/P99≈13.19s，不能据此宣布新批次改善或门禁通过。
 
@@ -389,4 +389,15 @@ smoke 精确沿用已有 E2E 的 60 秒 cold-start/mixed-fault workload 与开�
 这些是按持续工程投入、测试机就绪、v1 范围不扩张且未遇结构性瓶颈给出的预算，**不是已测得的完成日期**。当前最大的未知数仍是目标机器上的 50M bootstrap、状态/目标真实物理字节、WAL/GC 锁等待、JOIN 输出放大、恢复追赶及最终 oracle 耗时。下一步优先取性能摸底/中型综合证据，依据数字更新排期，再决定首次昂贵认证的开始时间。
 
 
-2026-10-03 批次候选 [PR #12](https://github.com/justgo4/m2s/pull/12) 保留 CDC lane cap16、按行/字节预算读取共享 snapshot 和有界跨页 FIFO 前缀，继续接受最新已验证主线修复。旧0660e327的小型全行精确性/恢复/排空通过，但P95/P99=10.108/14.108s未达5/10s；新组合必须重新运行完整合同和严格 small 门槛。JOIN桥接内存候选 [PR #16](https://github.com/justgo4/m2s/pull/16) 暂独立验收。进度与失败现场见 [PROGRESS.md](PROGRESS.md)。
+### 2026-10-03 规模改造续接
+
+[PR #13](https://github.com/justgo4/m2s/pull/13) 的 JOIN bootstrap 改为索引枚举和流式 durable outbox 写入，保持原子初始化与逐行精确重试；[PR #14](https://github.com/justgo4/m2s/pull/14) 对等待下游可见性或 leader 的空闲 worker 做 50ms 等待，并仅在共享绑定改变时打印复用信息。两项均在各自最终 SHA 通过 baseline/native/state、八格真实 daemon E2E 与 supervised smoke 后合并，具体 SHA/run 见 [PROGRESS.md](PROGRESS.md)。
+
+JOIN 出口的下一候选改为有界 mutation/Arrow 批次与磁盘 spool，原子登记 jobs/links，并仅在整批全部 ack 后推进可见水位。独立进程百万输出 A/B 的完整行袋摘要一致：峰值 RSS 1,821,097,984→241,070,080 bytes，桥接耗时 18.008→14.775s；job 数量256→980，仍须验证真实下游成本。结果见 [合成数字摘要](reports/join-bridge-stream-local-20261003.json)，不是 daemon/SLO/50M 认证。现有初始化与 job 登记的**总写锁时长仍随输出规模增长**，后续须引入可恢复的分块构建/发布协议，不能靠流式内存或扩大超时宣称已解决。
+
+主线914c163a的小型综合仍是完整精确性/故障恢复/排空通过、严格延迟失败；百万行在 native capture 的本地 SQLite 写锁超时停止。PR #12 的跨页回填批次候选也未因正确性绿色而提前合并。正式 P95≤5s/P99≤10s 与固定50M/72h目标保持不变；持久固定资源主机尚未配置。
+
+[PR #15](https://github.com/justgo4/m2s/pull/15) 已在最终组合 SHA 通过全部合同并合并：远端事务明确 VISIBLE 后，本地登记遇 SQLite BUSY 时仅重试该本地事务；取消保留 journal，重启沿用 durable TxnId，未知远端请求仍隔离且禁止重发。主线7fe6小型综合的 P95/P99=25.345/33.752s 仍未通过正式延迟阈值；空转日志降至四条和合成内存改善不能代替端到端验收。
+
+
+完整组合的回填批次候选 [PR #12](https://github.com/justgo4/m2s/pull/12) 现已保留主线已验收的 stateful BUSY、流式 JOIN 初始化、空闲 worker 等待、已知 VISIBLE 本地持久化与有界 JOIN桥接。候选继续使用 lane cap16、行/字节预算 snapshot 与有界跨页 FIFO 前缀；必须重新通过同一最终 SHA 的完整合同、smoke 与严格 small。旧0660e327小型P95/P99=10.108/14.108s仍按失败保留；50M/72h与5/10s目标不变。

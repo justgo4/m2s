@@ -7,11 +7,11 @@ authorized by the owner without expiry, subject to actual configured access.
 
 ## Immediate next action
 
-1. Main `efd9a049` includes validated source/stateful BUSY, streamed JOIN bootstrap, idle pacing and known-visible local persistence. Exact tested/merge SHAs are recorded below.
-2. PR #12 now integrates main fixes with only CDC16-lane cap, byte-budgeted shared snapshot pages and bounded FIFO snapshot prefixes. Require fresh baseline/native/state/eight E2E/smoke/STRICT small on the combined SHA. Old0660e327 small10.107533/14.107730s failed latency; no threshold changes and no green performance claim.
-3. PR #16 bridge streaming current `4e2328a8` is under separate CI and not yet included here. Isolated1M routed-output RSS1,821,097,984→241,070,080 bytes and whole bag exact; this is not daemon/SLO evidence. Integrate only after validation and require fresh combination checks.
-4. Main7fe6 small37099489202/artifact11266005315 all exactness/recovery/drain pass, latencyFAIL25.344531/33.751959s. Only4 reuse messages and CPU120.93s; hosted runs are not controlled A/B. Million capture commit_spool BEGIN IMMEDIATE still fails; artifact11265104301, lock owner unproven. Need resumable bounded output construction/publication, not HTTP replay.
-5. Preserve fixed-W/pin/consumer/visibility/GC/generation and unknown-output fail-closed contracts. Formal unchanged50M/72h profile still needs configured persistent fixed-resource host; runner inventory403 meansUNKNOWN, no host/cloud identity configured.
+1. Main `f586798c8624d8f53ed96a326c2928e6288037c4` includes validated PR #11 stateful BUSY, #13 streamed JOIN bootstrap, #14 idle pacing, #15 known-visible local retry and #16 bounded JOIN bridge. Exact tested/merge SHAs and evidence below; formal SLO/P11 still open.
+2. PR #12 now integrates ALL these validated runtime/memory fixes with its CDC16-lane cap, byte-budgeted shared snapshot pages and bounded FIFO snapshot prefixes. Require fresh baseline/native/state/eight real daemon/smoke/STRICT small on this complete combined SHA. Old0660e327 small10.107533/14.107730s failed latency, and earlier7052d6c3 measurement excluded the now-validated bridge; preserve artifacts separately and do not mix revisions.
+3. If strict small passes, merge exact tested candidate and inspect fresh main small/million; if fails, preserve numeric/full-oracle/artifact and profile slow output/lock boundaries. No threshold relaxation. Total JOIN initialization, follower copy and atomic job enqueue locks remain proportional to output; next structural milestone is resumable unpublished chunks and bounded publication with pin/consumer/visibility/GC/crash proofs.
+4. Main7fe6 small37099489202/artifact11266005315 all full exactness/dynamic/recovery/drain pass but latencyFAIL25.344531/33.751959s; only4 reuse messages,CPU120.93s. Million native capture commit_spool BEGIN IMMEDIATE still fails, artifact11265104301; lock owner unproven. Hosted runs are not controlled A/B.
+5. Formal unchanged `p11-50m-50rps-72h-v4` needs independently configured persistent fixed-resource host; inventory403 meansUNKNOWN, no host/cloud identity configured. Unsupported SQL and unknown HTTP outcomes remain fail-closed. No final v1/P11 certification claimed.
 
 ## Current implementation boundaries
 
@@ -292,6 +292,15 @@ in37097752817 artifact11264873012; retain original report and inspect numbers.
 - New main million run 37098049769 (`ef6ea539`, artifact 11264953117) failed later at merge_delivery_worker -> process_merge_lane -> merge_async_delivery -> BEGIN IMMEDIATE (30s SQLite BUSY), not stateful_task_worker. Source log/base reached 66; join retained state ~1,001,724 rows; lock owner not identified. Still requires bounded output staging/write transactions and exact remote-unknown recovery; do not blindly replay HTTP or raise timeout to claim success.
 
 
+## 2026-10-03 JOIN bridge stream implementation and measurement checkpoint
+
+- Changes: join_job_bridge cursor enumerates canonical durable rows; mutation batches cap4096 (or lower configured batch_rows) and serialized payload/identity bytes; only singleton may exceed byte budget, existing Arrow max-row check still applies. Each batch routes/spools outside the write lock. Atomic jobs/links/pending_bytes transaction reads one spool record at a time; no complete mutation/Arrow/record cache. Returned job-id list still scales with job count, total enqueue write lock is NOT bounded.
+- `python tools/join_bridge_stream_test.py`: four PASS (row/byte caps including singleton, independent bag/retract Arrow payloads, reopen/idempotence, last-job visibility, real truncated spool rollback and bad commit nrows). Original cached bridge fails batch-limit and malformed-header regressions via AST in actual module globals. Existing join_job_bridge/runtime/shared/subview/generation and shared_join_state_scale/shared_join_subview_scale/shared_join_follower_gc_scale contracts all PASS, including100 followers. Compile/diff checks pass.
+- Isolated fresh-process old/new A/B, full ALL routed-row bag digest/count exact in both: 100k2repeats cache RSS410,828,800/406,278,144 vs stream233,545,728/237,707,264 bytes, wall2.110/1.976 vs1.517/1.523s; 1M cache1,821,097,984 vs stream241,070,080 bytes (86.8% less), wall18.008 vs14.775s. Jobs256 ->980 for1M; measure daemon/remote commit consequences, don't call this SLO success. Reproducible benchmark includes exact original cb153909 cache functions and algorithm SHA256. Curated synthetic summary reports/join-bridge-stream-local-20261003.json; raw runtime/workload states remain outside git.
+- Main914c staged37098826117: million capture_binlog_native failed local BEGIN IMMEDIATE after30s, artifact11265542421. Small artifact11265487699 all seven full output targets, four dynamic ready, sharedfollowers4, finalseq301/pending0/recovery pass; strict latency still fails. No certification and no invented write-lock owner.
+- Fresh exact-head CI is required before merging bridge candidate. Next executable structural work: resumable unpublished JOIN output chunks and bounded enqueue batches, ensuring pin/consumer readiness, independent target visibility, partial crash/GC and owner promotion cannot expose incomplete results. Remaining operational/fanout/disk and persistent50M72h acceptance scopes stay open.
+
+
 ## 2026-10-03 checkpoint: idle pacing merged, known-visible local retry integrated
 
 - PR #14 tested `ff41867dc49b4d83b2bb6ad03af2e7aa8b0e64cc`: baseline37098907314, native37098907256, state37098907301, all eight daemon E2E37098907452 and supervised smoke37098907352 PASS. Merged `7fe6bc05eac4060dac050c5a0c5c0026efe0e1e0`, identical tree to tested head. Main small/million will measure this combined stream+idle revision separately, without declaring a performance pass in advance.
@@ -299,8 +308,15 @@ in37097752817 artifact11264873012; retain original report and inspect numbers.
 - JOIN bridge streaming branch has four local passing tests (batch rows/bytes, bag/retract payloads, restart/final ack, real truncated spool rollback and bad nrows), and two regressions fail against original bridge. Existing bridge/runtime/shared/projection/generation and all three 100-follower state/subview/GC contracts pass. Benchmark and fresh PR CI pending; atomic output enqueue lock duration remains unbounded by this memory change.
 
 
-## 2026-10-03 checkpoint: fresh bounded batching combination
+## 2026-10-03 integration checkpoint: bridge retains validated local visibility retry
 
-- Main PR #15 `330005b4`: baseline37099529873/native37099529883/state37099529877/eight E2E37099529894/smoke37099529902 PASS, merged `efd9a049` identical tree.
-- This candidate retains complete main j4 including idle pacing and known-visible local retry; only read_config, cdc_bundle_width, claim_snapshot_bundle and shared_snapshot_worker receive the tested batching changes. Compare main source_state/catalog since83269c confirms unchanged, so source snapshot cursor+byte budget and env allowlist are applied without dropping concurrent runtime changes. Current main workflows/tests retained, three batching test invocations added; candidate PR validation uses smoke+strict small.
-- Original regressions/Arrow preparation/restart/OOM/FIFO/budget/cap4096 contracts were proven on0660e327. Their code unchanged; combined runtime requires fresh exact-head CI and small measurement before merge. Prior artifacts preserved under original identity; no SLO or controlled A/B improvement inferred.
+- PR #15 tested `330005b4c60d9150e29c67faaec0d3dfd4410545`: baseline37099529873/native37099529883/state37099529877/all eight E2E37099529894/smoke37099529902 PASS; merged `efd9a0498de5cf8afa8816015b1ccf8db96aac79`, identical tree.
+- PR #16 previous d15f009a state/native passed; integrate main recovery change and preserve all tests/docs now. Require fresh complete CI on the integrated head, do not reuse prior-head green checks as final acceptance.
+- Main7fe6 small37099489202/artifact11266005315: all full output oracles/recovery/drain pass, latencyFAIL25.344531/33.751959s; CPU120.93s and only4 physical-reuse logs after restart (versus29,298 in older snapshot candidate), RSS618,950,656. Different hosted runs are not controlled A/B. Million same run/artifact11265104301 fails native capture -> commit_spool -> BEGIN IMMEDIATE. Formal thresholds unchanged and lock owner not proven.
+
+
+## 2026-10-03 checkpoint: bounded JOIN bridge merged; full batching combination
+
+- PR #16 tested `4e2328a859aa71c233de653e511f3d048e49a5e6`: baseline37100123569/native37100123462/state37100123544 (new bridge contract and100k A/B included)/all eight E2E37100123514/supervised smoke37100123576 PASS. Merged `f586798c8624d8f53ed96a326c2928e6288037c4`; compare tested head to merge has zero changed files.
+- This #12 integration starts from complete main f586798c, retaining streamed bridge/benchmarks/README/history/all tests/workflows. Only bounded batching/source snapshot/env changes are overlaid from7052d6c3. Its local snapshot6/CDC4/source snapshot budget3/idle3/known-visible3/stateful BUSY4 plus compile/diff checks all PASS. New complete combination needs fresh exact-head CI and strict small; do not reuse7052/0660 green checks as final proof.
+- #16 synthetic million RSS1,821,097,984→241,070,080 bytes,wall18.008→14.775s with equal full bag digest; not daemon/SLO certification. Pending main staged profiling follows its own exact revision. Total write-lock/chunk-publication/follower scale and persistent50M72h still unresolved.
