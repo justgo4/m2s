@@ -308,3 +308,9 @@ A/B2 repeats, with explicit actual-head checkout. Require fresh same-head comple
 CI after this workflow correction rather than mixing prior SHA passes.
 Snapshot PR12 head0660e327 all correctness/smoke passed but strict small failed
 in37097752817 artifact11264873012; retain original report and inspect numbers.
+
+
+## 2026-10-03 checkpoint: bound JOIN outbox-to-job materialization
+
+- Main `914c163a` streamed pair enumeration, but join_job_bridge still copies complete commit_rows -> mutations -> full Arrow/routed arrays -> all serialized spool records into RAM. This is a separate 50M bootstrap/output amplification risk even after pair seeding is streamed.
+- Next focused branch `codex/v1-join-bridge-stream-20261003`: enumerate immutable durable output via cursor, batch Arrow transforms by rows/payload bytes, spool to disk, then read one serialized record at a time in the existing atomic jobs/links/pending_bytes transaction. Preserve canonical pair identity, same-source-sequence lane ordering, visibility only after ALL linked jobs ack, exact restart idempotence, and rollback on malformed/truncated spool. This will bound memory, not claim to bound the total enqueue write-lock duration. Test actual Arrow payloads, bag/retract semantics, fault rollback/restart and empty/corrupt commits; measure isolated old/new bridge on synthetic outputs before hosted CI.
