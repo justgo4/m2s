@@ -223,15 +223,77 @@ PR #9 staged run `37087609367` failed both profiles solely at supervisor report 
 
 After accepted small artifact11261726394 still12/14s fails, inspect snapshot remote commit count. Current claim_snapshot_bundle restricts all members to one page group even when adjacent snapshot pages of the SAME plan/generation are pending. Draft a bounded per-lane contiguous snapshot-prefix claim across pages, stopping at CDC/assigned/different plan/group-less boundary, retaining row/byte/prepared/writer-width limits and all individual group IDs. Existing acknowledge_delivery already finishes every member group via longest completed stage prefix. Add real SQLite multi-group restart, CDC fence, out-of-order group visibility and budget tests before pushing PR #9 again. This is a draft hypothesis, not a proven SLO fix. Preserve current combined head fbf0784a and fresh CI evidence when superseding.
 
-## JOIN bootstrap streaming milestone started
+## Stateful contention fix started
 
-Branch codex/v1-stream-join-bootstrap-20261003 base main83269c14. Million
-artifact11261727031 shows1.36GiB RSS and1,002,124 JOIN backing rows before
-stateful worker write-lock failure. Existing seed_bootstrap/seed_bootstrap_projected
-materialize all JOIN pairs and pickled rows, and _insert_commit sorts another list
-inside activation's write transaction. Implement streaming indexed pair enumeration
-and atomic bootstrap insert/digest with bounded Python live row memory, retaining
-existing full-state oracle as independent reference and exact identity/digest/retry
-semantics. This DOES NOT bound total writer lock duration or solve1M SLO; durable
-chunked bootstrap/job staging is a separate protocol. Measure old/new identical
-synthetic fan-out and complete RSS/CPU/wall cost before conclusions.
+Base main83269c14; branch codex/v1-stateful-busy-20261003. Main million
+37088943284 artifact11261727031 fails stateful_task_worker with BUSY.
+Implement narrowly scoped stop-aware BUSY retry only after rolled-back durable
+runner operations; retain post-step result for physical registry sync retry.
+FULL/corruption/active transactions remain fatal. Add real SQLite contention,
+atomic bootstrap/outbox, post-commit sync and cancellation regressions before CI.
+Snapshot prefix remains independent PR9 head87ef3616, awaiting fresh checks.
+
+## Stateful BUSY implementation checkpoint
+
+Four full-import real SQLite tests PASS: rollback-safe actual aggregate bootstrap
+resumes to exactly one durable outbox/row and releases its fixed-W pin after target
+ack; stop interrupts contention; post-step registry contention retains the committed
+result without rerunning the runner; FULL/CORRUPT/LOCKED/open-transaction BUSY stay
+fatal. All calls use original30s production busy timeout (only tests10ms).
+Existing aggregate runtime, physical registry and hot-add tests PASS locally.
+Runner retry returns to outer loop to recheck membership/completeness/retire W;
+registry retry retains result. No retry added to remote output or retirement.
+Long JOIN bootstrap/outbox lock cost is still unresolved; this is recovery,
+not a claim of throughput, million success or formal P11 certification.
+Commands: python tools/stateful_worker_contention_test.py; python tools/aggregate_runtime_test.py;
+python tools/stateful_physical_registry_test.py; python tools/stateful_hot_add_test.py.
+New same-SHA CI still required. PR9 ref87ef3616 updated but GitHub returned no new
+workflow runs; reopening once also has not yielded runs. No old run relabeled.
+
+## Validated stateful recovery merged
+
+PR11 head1a01cf3f74a0a1f8b442eae9a21b2a8188f37c2d passed baseline37097520156,
+native37097520165, state37097520149, ALL eight E2E37097520171,
+supervised smoke37097520134. Merged ef6ea5390850e71025bdea8cce8032331ec8962c;
+merge tree must match tested head (verify compare). Production timeout unchanged.
+Original worker AST, with real module globals/10ms test timeout, FAILS both lock
+and post-step sync regressions; fixed worker passes all4 tests. Local baseline
+script contracts83/84 passed; validation_run_test fails here because /proc process
+identity is unavailable, while full hosted baseline including it passed.
+
+Snapshot PR9 closed/superseded by PR12; identical runtime tree now head0660e327
+with main83269c14 as second parent. Earlier head87ef3616 had PROGRESS merge
+conflict (mergeable_state dirty), which blocked pull_request CI; initial event
+hypothesis was wrong. Conflict now resolved and fresh runs baseline37097752779,
+native37097752778, state37097752801 PASS; E2E37097752807 and staged37097752817
+pending. Preserve strict small gate result; merge only if complete checks green.
+Old combined fbf0784a small37089010543 artifact11262540394 complete/exact,
+P95=11.098/P99=15.098,density=.973 fails ONLY latency; report unchanged.
+
+JOIN stream branch2edcf7e9 checkpoint;5 full SQLite stream tests pass including
+old full-pair oracle, exact digest/retry, NULL/bag/projection, midstream rollback
+and WAL reader isolation, collision rollback, fixed-W recheck under write lock.
+100k output fanout A/B3 repeats exact digest; peak RSS cache~203–205MiB versus
+stream~140–142MiB. CPU/wall~2.0–2.45s versus2.27–2.36s: no throughput claim.
+1M-pair synthetic A/B pending. Keep atomic seed; total writer duration unbounded.
+Do not confuse bounded Python pair memory with resumable chunked outbox/jobs.
+
+## Streamed atomic JOIN seed implemented
+
+Branch codex/v1-stream-join-bootstrap-20261003 now integrates maincb153909a979200d246fb516117758ebdb221d41.
+join_state.iter_pairs uses indexed left scan/right equality probes, yields one
+pair projection at a time. join_outbox seeds full/projected bootstrap directly
+into atomic durable rows and hashes canonical ordered durable PK cursor. Existing
+commits verify each source payload/count/digest on exact retry. Rechecks immutable
+state identity/spec/bootstrap/W under the write lock. No schema change, no partial
+bootstrap publication, no output protocol/consumer/pin/frontier change.
+Five real WAL/full-oracle tests PASS; original generation/runtime/job bridge/
+shared/subview/100 follower/GC/2000transaction randomized oracle PASS locally.
+reports/join-stream-local-20261003.json retains raw synthetic A/B and SHA256 of
+algorithm sources. 1M exact pair/digest: cache824152064 RSS/25.751s versus
+stream148361216 RSS/28.469s (82.0% less peak process RSS,10.6% slower wall).
+100k3 repeats similar CPU/wall and~30% lower RSS. Do not declare faster/lock
+resolved: total atomic seed writer time and full job staging remain unbounded.
+A 1M output pair ≠ 1M source rows or true daemon performance evidence.
+Next: fresh full same-SHA CI before merge; bounded durable seeding/job staging
+protocol and real1M/SLO after prior gates. Formal50M72h still absent.
