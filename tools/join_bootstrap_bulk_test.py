@@ -13,6 +13,7 @@ sys.path[:0]=[str(Path(__file__).resolve().parents[1]),str(Path(__file__).resolv
 import join_bootstrap_stream_test as fixture
 import join_outbox
 import join_state
+import source_state
 
 
 class JoinBootstrapBulkTest(unittest.TestCase):
@@ -20,6 +21,7 @@ class JoinBootstrapBulkTest(unittest.TestCase):
         self.temp=tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.con=fixture.open_db(str(Path(self.temp.name)/"state.sqlite3"))
+        self.con.execute("PRAGMA temp_store=FILE")
         self.addCleanup(self.con.close)
         fixture.setup_state(self.con,34,37)
 
@@ -45,6 +47,20 @@ class JoinBootstrapBulkTest(unittest.TestCase):
         self.assertEqual(identities,[(pair,hashlib.sha256(pair).hexdigest()) for pair,_,_ in expected])
         self.assertEqual(self.seed(),result)
         self.assertEqual(self.con.execute("SELECT COUNT(*) FROM join_bootstrap_identity_stage").fetchone()[0],0)
+
+    def test_default_temp_mode_can_still_be_configured_for_source_apply(self):
+        self.con.execute("PRAGMA temp_store=DEFAULT")
+        self.seed()
+        self.assertIsNone(self.con.execute("SELECT name FROM sqlite_temp_master LIMIT 1").fetchone())
+        self.assertEqual(source_state.require_file_temp_store(self.con)["mode"],1)
+
+    def test_unconfigured_existing_temp_objects_are_not_destroyed(self):
+        self.con.execute("PRAGMA temp_store=DEFAULT")
+        self.con.execute("CREATE TEMP TABLE caller_owned(v)")
+        self.con.execute("INSERT INTO caller_owned VALUES(99)")
+        self.assertEqual(self.seed()["nrows"],1258)
+        self.assertEqual(self.con.execute("SELECT v FROM caller_owned").fetchall(),[(99,)])
+        self.assertIsNone(self.con.execute("SELECT name FROM sqlite_temp_master WHERE name='join_bootstrap_identity_stage'").fetchone())
 
     def test_buffer_row_and_byte_limits_and_single_oversized_row(self):
         original=join_outbox._insert_bootstrap_batch_locked

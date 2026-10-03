@@ -363,10 +363,13 @@ def _seed_bootstrap_stream(con,consumer_id,fixed_w,state_id,spec_hash,rows):
         count=0
         try:
             identity_format=stream_info(con,consumer_id)["identity_format"]
+            # Legacy/manual callers may not have selected a safe TEMP mode.
+            # Keep their original path rather than changing caller TEMP state.
+            bulk=existing is None and int(con.execute("PRAGMA temp_store").fetchone()[0])==1
             batch=[]
             batch_bytes=0
             for pair_id,op,payload in rows:
-                if existing is None:
+                if bulk:
                     size=len(pair_id)+len(payload)+80
                     if batch and (len(batch)>=1000 or batch_bytes+size>1024*1024):
                         _insert_bootstrap_batch_locked(
@@ -377,12 +380,18 @@ def _seed_bootstrap_stream(con,consumer_id,fixed_w,state_id,spec_hash,rows):
                     batch_bytes+=size
                 else:
                     _register_pair_identity_locked(con,consumer_id,pair_id)
-                    stored=con.execute("""
-                        SELECT op,row_payload FROM join_output_rows
-                        WHERE consumer_id=? AND source_seq=? AND pair_id=?
-                    """,(consumer_id,int(fixed_w),bytes(pair_id))).fetchone()
-                    if stored is None or int(stored[0])!=int(op) or bytes(stored[1])!=bytes(payload):
-                        raise RuntimeError("JOIN output commit retry has different payload")
+                    if existing is None:
+                        con.execute("""
+                            INSERT INTO join_output_rows(consumer_id,source_seq,pair_id,op,row_payload)
+                            VALUES(?,?,?,?,?)
+                        """,(consumer_id,int(fixed_w),bytes(pair_id),int(op),bytes(payload)))
+                    else:
+                        stored=con.execute("""
+                            SELECT op,row_payload FROM join_output_rows
+                            WHERE consumer_id=? AND source_seq=? AND pair_id=?
+                        """,(consumer_id,int(fixed_w),bytes(pair_id))).fetchone()
+                        if stored is None or int(stored[0])!=int(op) or bytes(stored[1])!=bytes(payload):
+                            raise RuntimeError("JOIN output commit retry has different payload")
                 count+=1
             if batch:
                 _insert_bootstrap_batch_locked(

@@ -35,6 +35,7 @@ def worker(rows,variant):
         exec(REFERENCE,join_outbox.__dict__)
     with tempfile.TemporaryDirectory() as td:
         con=fixture.open_db(str(Path(td)/"state.sqlite3"))
+        con.execute("PRAGMA temp_store=FILE")
         join_state.begin_bootstrap(con,"state",join_affected_reads_test.spec(),0)
         for offset in range(0,rows,10000):
             end=min(rows,offset+10000)
@@ -106,4 +107,3 @@ def main():
 
 if __name__=="__main__":
     main()
-

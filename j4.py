@@ -11495,6 +11495,7 @@ def stateful_task_worker(item, cfg, runtime):
         else list(task["source_relations"])
     )
     try:
+        source_state.require_file_temp_store(con)
         while not stop.is_set():
             stateful_rebuild_test_gate(
                 item,stop)
