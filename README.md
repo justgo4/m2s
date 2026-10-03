@@ -357,6 +357,10 @@ python tools/validation_run.py resume-gate --run-directory /data/m2s/run-001
 
 smoke 精确沿用已有 E2E 的 60 秒 cold-start/mixed-fault workload 与开发门槛（P95≤30s、P99≤60s、sample density≥0.2），只验收协议/恢复/精确性，**不宣称达到正式 SLO**。small/million/medium/scale-short/soak 保留 P95≤5s、P99≤10s 的性能门槛；p11 使用原正式 gate 默认值和 require-profile。所有 plan.json 显式列出 gate_thresholds，不能把不同层级的绿色结果混为一谈。首次新增 smoke 用正式延迟门槛运行时，[run 37083541672](https://github.com/justgo4/m2s/actions/runs/37083541672) 精确性全过，但 P95/P99≈15.09s、density≈0.664 未达 5/10s 与 0.75；该失败 artifact 保留，性能瓶颈仍应由后续分层测量判断，而非通过修改正式 gate 消除。
 
+分级 hosted 测试固定 m2s CPU cap=2；small/million 均用 4 GiB、4 个动态任务，比较 100k/1M 基数下的相同拓扑，服务仍独立计量。首个 million 计划的 6 个动态任务使最终 9 个 sink 超出 4 GiB 的引擎预算，被 [run 37084867442](https://github.com/justgo4/m2s/actions/runs/37084867442) 在 seed 前拒绝；artifact `11259906985` 保留。修正测试计划后须重新取证，不能把预检失败称为性能通过。其他机器/CPU cap 仍须接受实际资源预检。
+
+监督执行器 [PR #5](https://github.com/justgo4/m2s/pull/5) 的最终提交 `2837773a` 已通过 baseline/native、八格真实 E2E 与新增真实 supervised smoke。runner 检查 [PR #6](https://github.com/justgo4/m2s/pull/6) 的 [实际管理接口查询](https://github.com/justgo4/m2s/actions/runs/37084999017) 返回 HTTP 403，明确为“注册情况未知”；当前 Actions token 没有 runner 管理读取权限。工具 `tools/runner_inventory.py` 只公开计数，不公开主机名/标签。现有配置未提供云身份或持久主机入口，因此尚未创建或确认 self-hosted runner；公开 Actions 免费额度可用于当前短测，无法提供单台 72h 持久机器。
+
 ### 11.3 先完成有边界的 v1，再推进完整愿景
 
 **受限 v1** 的范围为单 MySQL→StarRocks、已登记的源表/列和稳定主键、共享源状态、运行时新增/删除/重建任务、投影/过滤、COUNT/SUM/AVG 与受限双源 INNER equi-join，以及明确的故障恢复/隔离边界。上述功能闭环已有，剩余重点是固定资源下的规模与压力证据、实测预算/准入、积压与低磁盘处置、告警/操作手册和版本化升级/回滚验证。破坏性 DDL/未支持 SQL 仍明确拒绝或重建；Merge Commit 未知结果仍隔离目标，在自动对账完成前不承诺自动解隔离。
