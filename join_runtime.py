@@ -32,7 +32,9 @@ def step(
         if result["done"]:
             activated=join_generation.activate_catchup(
                 con,sink_key,plan_version,consumer_id,
-                ir,state_id)
+                ir,state_id,output_limit=bootstrap_limit,
+                output_bytes=cfg["batch_bytes"],
+                max_row_bytes=cfg["max_row_bytes"])
             generation=activated["generation"]
     else:
         generation=task_generation.info(

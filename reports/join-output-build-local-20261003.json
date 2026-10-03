@@ -1,0 +1,83 @@
+{
+  "kind": "m2s_join_bootstrap_stream_ab_v1",
+  "runs": [
+    {
+      "mode": "cache",
+      "left_rows": 1000,
+      "right_rows": 100,
+      "output_pairs": 100000,
+      "digest": "45cc08430a141be8e74226e32b0e9db52e082074320315b278724a210a5b0793",
+      "wall_seconds": 1.8943621250000433,
+      "cpu_seconds": 1.896131784,
+      "process_peak_rss_bytes": 218779648,
+      "scope": "synthetic_bootstrap",
+      "write_lock_duration_bounded": false,
+      "write_work_bounded": false,
+      "transaction_count": 1,
+      "max_transaction_wall_seconds": 1.8943466910000097,
+      "transaction_wall_scope": "begin_attempt_through_commit_return_including_wait_and_fsync",
+      "software": {
+        "python": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+        "sqlite": "3.53.1",
+        "source_sha256": {
+          "join_state.py": "eec7b25b12bf79f59ff191601928a2da60014c3456c3f13d89d70426d00af765",
+          "join_outbox.py": "1c81afbd73b00bbe0a85288385accecc067175945fdbcbf0a6bc86dddc04e4bb",
+          "join_output_build.py": "42fc6f5de5f998fe9d71b2185fc677c5c749a1580f7be90f0112d4222f1b9e84"
+        }
+      }
+    },
+    {
+      "mode": "stream",
+      "left_rows": 1000,
+      "right_rows": 100,
+      "output_pairs": 100000,
+      "digest": "45cc08430a141be8e74226e32b0e9db52e082074320315b278724a210a5b0793",
+      "wall_seconds": 1.9596688040001027,
+      "cpu_seconds": 1.961984926,
+      "process_peak_rss_bytes": 152301568,
+      "scope": "synthetic_bootstrap",
+      "write_lock_duration_bounded": false,
+      "write_work_bounded": false,
+      "transaction_count": 1,
+      "max_transaction_wall_seconds": 1.9596529100003863,
+      "transaction_wall_scope": "begin_attempt_through_commit_return_including_wait_and_fsync",
+      "software": {
+        "python": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+        "sqlite": "3.53.1",
+        "source_sha256": {
+          "join_state.py": "eec7b25b12bf79f59ff191601928a2da60014c3456c3f13d89d70426d00af765",
+          "join_outbox.py": "1c81afbd73b00bbe0a85288385accecc067175945fdbcbf0a6bc86dddc04e4bb",
+          "join_output_build.py": "42fc6f5de5f998fe9d71b2185fc677c5c749a1580f7be90f0112d4222f1b9e84"
+        }
+      }
+    },
+    {
+      "mode": "chunked",
+      "left_rows": 1000,
+      "right_rows": 100,
+      "output_pairs": 100000,
+      "digest": "45cc08430a141be8e74226e32b0e9db52e082074320315b278724a210a5b0793",
+      "wall_seconds": 1.9678129099997932,
+      "cpu_seconds": 1.970847665,
+      "process_peak_rss_bytes": 149708800,
+      "scope": "synthetic_bootstrap",
+      "write_lock_duration_bounded": false,
+      "write_work_bounded": true,
+      "transaction_count": 204,
+      "max_transaction_wall_seconds": 0.017705439000110346,
+      "transaction_wall_scope": "begin_attempt_through_commit_return_including_wait_and_fsync",
+      "software": {
+        "python": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+        "sqlite": "3.53.1",
+        "source_sha256": {
+          "join_state.py": "eec7b25b12bf79f59ff191601928a2da60014c3456c3f13d89d70426d00af765",
+          "join_outbox.py": "1c81afbd73b00bbe0a85288385accecc067175945fdbcbf0a6bc86dddc04e4bb",
+          "join_output_build.py": "42fc6f5de5f998fe9d71b2185fc677c5c749a1580f7be90f0112d4222f1b9e84"
+        }
+      }
+    }
+  ],
+  "exact_match": true,
+  "scope": "synthetic_bootstrap",
+  "not_certification": true
+}

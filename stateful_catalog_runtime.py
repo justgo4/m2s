@@ -680,6 +680,7 @@ def durable_mappings(con):
 def retire_task(con,cfg,kind,task):
     import aggregate_job_bridge
     import join_job_bridge
+    import join_output_build
     import j4
     import source_state
     import task_generation
@@ -725,6 +726,9 @@ def retire_task(con,cfg,kind,task):
         else:
             join_job_bridge.stage_pending(
                 con,task["consumer_id"],mapping,cfg)
+    elif generation is not None and kind=="inner_join":
+        join_output_build.discard_unactivated(
+            con,task["consumer_id"],generation["fixed_w"])
 
     # Consumer removal, generation retirement, descriptor retirement and
     # retirement-intent cleanup are one SQLite commit. A crash can therefore
