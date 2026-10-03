@@ -12,7 +12,9 @@ the goals and evidence boundaries. Read AGENTS.md before continuing.
 - Active milestone: **V1-02, runner inventory and safe operating procedures**.
 - V1-01 merged as `719159d60c54ce510fb5ffabfcc847b068e4bc51` (PR #5).
 - Active branch: `codex/v1-cdc-bundle-20261003`, [PR #9](https://github.com/justgo4/m2s/pull/9).
-- Candidate head `ea8b2cd7642db856da4b8ca6884775bebdc812d2` (CI pending).
+- Candidate head `ea8b2cd7642db856da4b8ca6884775bebdc812d2`: baseline `37086484043`,
+  native `37086484091`, source-state `37086484038` passed. E2E `37086484049` and
+  staged smoke/small `37086484023` pending.
 - Operations [PR #8](https://github.com/justgo4/m2s/pull/8) merged as `448f618babc28ec2be71b291c5ea0572b2e1cba0`.
 - Operations head `9de0453b28181b59e1b0443bdf735f01a9dd6194`: baseline `37085918376`
   and native `37085918360` passed, including ten new operating/backup tests.
@@ -128,7 +130,16 @@ API-returned final blank line. Durable old small numeric report committed at
 No improvement yet claimed; compare against profile-fix main
 [run 37085851322](https://github.com/justgo4/m2s/actions/runs/37085851322), completed with small/million failures; inspect artifacts `11261185396` and
 `11261215092` before any new rerun.
-CPU-only snapshot starvation is a separate measured symptom, not yet fixed.
+Profile-fix main `7dc814ab` results: small P95=26.32/P99=33.10, density=0.887
+passed but latency gates failed (artifact `11261185396`). Million failed about
+180s into run with `source_state_apply_worker` waiting over the 30s busy timeout
+at `sync_source_base_catalog` BEGIN IMMEDIATE (artifact `11261215092`): transient
+write contention currently terminates the daemon. Exact competing lock holder
+not proven. Code inspection finds JOIN bootstrap/follower output staging builds
+all pairs/identities under one outer transaction; this is a scale risk and needs
+bounded consistent staging or measured set-wise improvement plus crash/fixed-W
+proof. Do not merely raise timeouts or mark million passed. CPU-only snapshot
+starvation is a separate measured symptom, not yet fixed.
 
 ## Ordered backlog and exit gates
 
