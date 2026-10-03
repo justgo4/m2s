@@ -11374,6 +11374,8 @@ def stateful_worker_busy_retry(con, runtime, task_id, exc):
 def stateful_task_worker(item, cfg, runtime):
     con=open_state(cfg["state"])
     stop=runtime["stop"]
+    previous_watermark=None
+    logged_reuse=None
     kind=str(item["kind"])
     task=item["task"]
     mapping=item["mapping"]
@@ -11462,23 +11464,27 @@ def stateful_task_worker(item, cfg, runtime):
                 continue
             wake_loaders(runtime,mapping_key(mapping))
             if result.get("shared_physical"):
-                log(
-                    "STATEFUL PHYSICAL REUSE task=%s sink=%s kind=%s "
-                    "mode=shared_%s leader=%s state=%s"
-                    % (
-                        task["task_id"],mapping_key(mapping),kind,
-                        result.get("shared_reuse_mode","exact"),
-                        result.get("shared_leader_task_id"),
-                        result.get("shared_state_id"),
-                    ))
+                reuse=("shared",result.get("shared_reuse_mode","exact"),
+                       result.get("shared_leader_task_id"),
+                       result.get("shared_state_id"))
+                if reuse!=logged_reuse:
+                    log(
+                        "STATEFUL PHYSICAL REUSE task=%s sink=%s kind=%s "
+                        "mode=shared_%s leader=%s state=%s"
+                        % (task["task_id"],mapping_key(mapping),kind,
+                           reuse[1],reuse[2],reuse[3]))
+                logged_reuse=reuse
             elif result.get("reused_physical"):
-                log(
-                    "STATEFUL PHYSICAL REUSE task=%s sink=%s kind=%s "
-                    "fixed_w=%s mode=atomic_clone"
-                    % (
-                        task["task_id"],mapping_key(mapping),kind,
-                        result["generation"].get("fixed_w"),
-                    ))
+                reuse=("clone",result["generation"].get("generation_id"),
+                       result["generation"].get("fixed_w"))
+                if reuse!=logged_reuse:
+                    log(
+                        "STATEFUL PHYSICAL REUSE task=%s sink=%s kind=%s "
+                        "fixed_w=%s mode=atomic_clone"
+                        % (task["task_id"],mapping_key(mapping),kind,reuse[2]))
+                logged_reuse=reuse
+            else:
+                logged_reuse=None
             while not stop.is_set():
                 try:
                     stateful_physical_registry.sync_runtime_result(
@@ -11511,16 +11517,17 @@ def stateful_task_worker(item, cfg, runtime):
 
             applied=int(result.get(
                 "source_applied",source_state.base_applied_seq(con)))
-            caught=(
-                consumer is not None
-                and int(consumer["watermark"])>=applied
-            )
-            pending=con.execute("""
-                SELECT 1 FROM active_jobs
-                WHERE table_name=? LIMIT 1
-            """,(mapping_key(mapping),)).fetchone()
-            if caught and pending is None and result.get("phase")=="ready":
+            watermark=(None if consumer is None else int(consumer["watermark"]))
+            # Pending target jobs are owned by delivery workers. Repeating a
+            # caught-up runner step cannot flush them; a lagging shared follower
+            # can likewise be waiting on its leader. Pace both idle cases while
+            # rechecking source/visibility/retirement within 50ms. Bootstrap
+            # chunks and advancing CDC prefixes continue without a wait.
+            if watermark is not None and (
+                watermark>=applied or watermark==previous_watermark
+            ):
                 stop.wait(0.05)
+            previous_watermark=watermark
     finally:
         with runtime["plan_lock"]:
             threads=runtime.get("stateful_worker_threads",{})
