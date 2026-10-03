@@ -18,13 +18,13 @@
 | Merge Commit 本地恢复 | [PR #26](https://github.com/justgo4/m2s/pull/26) 已合并：HTTP 前 intent BEGIN BUSY 可取消重试；事务体/COMMIT 与未知远端结果不重放。头 `b8e6d7ab` 全部合同、八格 E2E、smoke 通过 |
 | SQLite 写事务测量 | [PR #27](https://github.com/justgo4/m2s/pull/27) 已合并：可选容量/隐私受限的等待与持锁采集，头 `1218c28f` 全部 CI 通过。覆盖显式 Connection.execute 写事务，测量有开销 |
 | 退役测试与一致读取 | [PR #28](https://github.com/justgo4/m2s/pull/28) 修复 retirement/GC 轮询证据竞态；[PR #32](https://github.com/justgo4/m2s/pull/32) 在短只读 WAL 快照中检查 shared leader state/consumer，避免跨提交的假损坏，同时仍拒绝真实水位不一致。各最终头完整所需 CI 通过并合并 |
-| 真实百万源行主线 | SHA `436a6f6b`，[run 37138133724](https://github.com/justgo4/m2s/actions/runs/37138133724)，artifact `11279748960`：最终109万行、raw/三个 aggregate/三个 JOIN 全行 oracle、四动态任务、强退与右侧变化恢复、排空通过；严格 P95/P99=73.716/116.725s，失败 |
+| 最新主线 small / million | SHA `335bf1d3`，[run 37141634186](https://github.com/justgo4/m2s/actions/runs/37141634186)：两个规模均通过七个目标的完整 oracle、四动态任务、强退与右侧变化恢复及排空。small P95/P99=24.258/35.305s；百万源行最终1,090,050行，P95/P99=60.201/118.257s；严格延迟均失败。artifact `11281547859` / `11283185268` |
 | 最接近 small 门槛的组合 | [PR #33](https://github.com/justgo4/m2s/pull/33)，头 `02355671`：预算约束的 CDC lane 合并、JOIN changed-PK 读取、私有 owner 只读检查。所有合同、八格 E2E、smoke、完整结果/恢复通过；严格 small P95/P99=7.088/8.104s，仅 P95 未达标，未合并 |
 | JOIN 批量登记实验 | [PR #34](https://github.com/justgo4/m2s/pull/34)，最终头 `ac3ba30f`：有行/字节预算的身份验证和输出登记，保留默认调用者 TEMP 配置。七项新测试及所有 CI/完整结果/恢复通过；严格 small P95/P99=9.112/13.112s 仍失败，未合并。合成 SQL 成本改善不能作为端到端达标证据 |
 | 其余性能候选 | PR #12/#19/#29/#31 仍未合并，历史失败记录保留。不沿用不同提交的绿色检查，不扩大超时或放宽原门槛 |
 | 正式 P11 | 原 `p11-50m-50rps-72h-v4` 未认证；未配置持久隔离主机/云身份。5/10秒与5000万行/72小时目标不变 |
 
-最新 profiler 在 follower 绑定中观察到长写事务，主线恢复修复已让真实百万负载完成正确性验证，但延迟仍未通过。下一项应实现 **durable frozen-W 的 follower 输出分块构建及 owner promotion**：保留可重启的输入/游标，未封口结果不可 claim/ready/visible，并覆盖独立 writer、强退续建、投影子视图、drop/GC/ref 与 ownership 交接。不能在分块之间继续读取不断变化的 leader 状态而假定它仍是同一个 W。
+最新百万行 profiler 在 follower 绑定中直接观察到一次 **155.766 秒**的写事务，主线恢复修复已让真实百万负载完成正确性验证，但延迟仍未通过。下一项应实现 **durable frozen-W 的 follower 输出分块构建及 owner promotion**：保留可重启的输入/游标，未封口结果不可 claim/ready/visible，并覆盖独立 writer、强退续建、投影子视图、drop/GC/ref 与 ownership 交接。不能在分块之间继续读取不断变化的 leader 状态而假定它仍是同一个 W。
 
 严格 small 的 sentinel 目前测量 raw events 查询可见延迟，不能替代每个 stateful target 的 SLO；其他任务也保存各自可见/源龄指标与完整 oracle。不同 hosted runner、启用/关闭测量的运行不是受控 A/B。后续继续分层验证规模、低空间/升级恢复和固定资源，在持久主机上才运行正式认证。
 
