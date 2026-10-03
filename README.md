@@ -361,6 +361,8 @@ smoke 精确沿用已有 E2E 的 60 秒 cold-start/mixed-fault workload 与开�
 
 监督执行器 [PR #5](https://github.com/justgo4/m2s/pull/5) 的最终提交 `2837773a` 已通过 baseline/native、八格真实 E2E 与新增真实 supervised smoke。runner 检查 [PR #6](https://github.com/justgo4/m2s/pull/6) 的 [实际管理接口查询](https://github.com/justgo4/m2s/actions/runs/37084999017) 返回 HTTP 403，明确为“注册情况未知”；当前 Actions token 没有 runner 管理读取权限。工具 `tools/runner_inventory.py` 只公开计数，不公开主机名/标签。现有配置未提供云身份或持久主机入口，因此尚未创建或确认 self-hosted runner；公开 Actions 免费额度可用于当前短测，无法提供单台 72h 持久机器。
 
+测试计划修正后的 [million run 37085851322](https://github.com/justgo4/m2s/actions/runs/37085851322) 在约 180s 时失败：source apply 在 `sync_source_base_catalog` 的 BEGIN IMMEDIATE 等写锁超过 30s，artifact `11261215092` 保留。修复仅在无打开事务、前次事务已回滚时重试 SQLITE_BUSY，等待可停止、告警限频，并在已提交 apply prefix 后持续重试物理 catalog 同步；即使无新输入也不会漏同步。FULL/损坏/其他 SQLite 错误及仍打开的事务继续 fail-closed。竞争锁持有者和长事务成本尚未实证，不把该修复称为吞吐/1M/正式长跑通过；JOIN 初始化/共享出口一次缓存全部 pair 的规模风险仍须解决。
+
 ### 11.3 先完成有边界的 v1，再推进完整愿景
 
 **受限 v1** 的范围为单 MySQL→StarRocks、已登记的源表/列和稳定主键、共享源状态、运行时新增/删除/重建任务、投影/过滤、COUNT/SUM/AVG 与受限双源 INNER equi-join，以及明确的故障恢复/隔离边界。上述功能闭环已有，剩余重点是固定资源下的规模与压力证据、实测预算/准入、积压与低磁盘处置、告警/操作手册和版本化升级/回滚验证。破坏性 DDL/未支持 SQL 仍明确拒绝或重建；Merge Commit 未知结果仍隔离目标，在自动对账完成前不承诺自动解隔离。
