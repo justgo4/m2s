@@ -121,6 +121,7 @@ jobs:
           python tools/join_subview_shared_runtime_test.py
           python tools/join_state_test.py
           python tools/join_incremental_delta_test.py
+          python tools/join_affected_reads_test.py
           python tools/join_state_oracle.py
           python tools/join_target_mapping_test.py
           python tools/join_task_catalog_test.py
