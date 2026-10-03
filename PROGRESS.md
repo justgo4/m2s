@@ -336,3 +336,27 @@ in37097752817 artifact11264873012; retain original report and inspect numbers.
 - PR #17 tested6ce77149b55ac0eaa70c1f1afda92e893093c41c: baseline37101089222/native37101089228/state37101089260/eight E2E37101089263/smoke37101089198 PASS; merged5a0f22f300d0d9afbfaa141dfe19df4d6b75d193, identical tree.
 - PR #12 c509d5ae correctness baseline37100671711/native37100671748/state37100671721/eight E2E37100671701 PASS; staged37100671707 smokePASS/strict smallFAIL. Artifact11266017029 actual report SHA verifiedc509: P95=19.065292522/P99=21.066043648s, CPU245.33s/RSS475729920; all output/recovery/drain exact. Earlier7052 artifact11266365888 separately P95=6.147336155/P99=9.118501335s, stillFAIL P95. Neither is certified or controlled A/B.
 - Next executable measurement edits tools/join_bridge_stream_benchmark.py to parameterize partition/row/byte budgets; compare current stream and independent cached baseline at production topology with full output bag. No runtime cap change before measured evidence. Then pursue bounded durable staging protocol with crash/last-ack/GC tests. Continue saving before and after milestones.
+
+
+## Active configured JOIN batch runtime candidate
+
+Base main3da6cf7152e7ec8fd6a172e98a90e9dafcfa2750; branch
+`codex/join-configured-batches-20261003`. PR18 independent production topology
+measurement ef613a90882b62627fb2fe964cb638c6b8128b59 retains full100k/1M
+bag equality;1M configured candidate320 jobs vs current3920,369MB vs252MB RSS.
+Honor caller batch_rows up to hard50000, retaining serialized byte cap, singleton
+handling, streaming spool/atomic enqueue and all visibility/restart contracts.
+Add real5001 output retract/bag/reopen/last-ack regression that old4096 fails.
+Next run stream and runtime/shared/100follower contracts, exact-head CI and strict
+small measurements. Longer atomic enqueue/bootstrap locks are NOT addressed by
+this bounded batch change. Formal P11/SLO unchanged.
+
+Implementation/tests: configured JOIN row limit now max1/min(batch_rows,50000),
+no new environment knob/default/server parameter. Five real stream regressions
+PASS including5001 rows with5000-row split, exact retract bags, reopen/idempotence
+and last-ack frontier. Existing runtime/shared/100exact contracts PASS; subview/GC
+running. Initial added fixture attempted reuse of an already-consumed seq1 and
+correctly failed applied assertion; corrected test creates genuine next seq2,
+without rewinding durable consumer. Strict small added for this candidate branch
+to validation matrix; thresholds unchanged. Next original negative regression,
+full CI at one fixed head, then inspect strict small before merge.
