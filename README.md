@@ -396,3 +396,5 @@ smoke 精确沿用已有 E2E 的 60 秒 cold-start/mixed-fault workload 与开�
 JOIN 出口的下一候选改为有界 mutation/Arrow 批次与磁盘 spool，原子登记 jobs/links，并仅在整批全部 ack 后推进可见水位。独立进程百万输出 A/B 的完整行袋摘要一致：峰值 RSS 1,821,097,984→241,070,080 bytes，桥接耗时 18.008→14.775s；job 数量256→980，仍须验证真实下游成本。结果见 [合成数字摘要](reports/join-bridge-stream-local-20261003.json)，不是 daemon/SLO/50M 认证。现有初始化与 job 登记的**总写锁时长仍随输出规模增长**，后续须引入可恢复的分块构建/发布协议，不能靠流式内存或扩大超时宣称已解决。
 
 主线914c163a的小型综合仍是完整精确性/故障恢复/排空通过、严格延迟失败；百万行在 native capture 的本地 SQLite 写锁超时停止。PR #12 的跨页回填批次候选也未因正确性绿色而提前合并。正式 P95≤5s/P99≤10s 与固定50M/72h目标保持不变；持久固定资源主机尚未配置。
+
+[PR #15](https://github.com/justgo4/m2s/pull/15) 已在最终组合 SHA 通过全部合同并合并：远端事务明确 VISIBLE 后，本地登记遇 SQLite BUSY 时仅重试该本地事务；取消保留 journal，重启沿用 durable TxnId，未知远端请求仍隔离且禁止重发。主线7fe6小型综合的 P95/P99=25.345/33.752s 仍未通过正式延迟阈值；空转日志降至四条和合成内存改善不能代替端到端验收。
