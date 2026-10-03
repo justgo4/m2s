@@ -11,7 +11,8 @@ the goals and evidence boundaries. Read AGENTS.md before continuing.
 - Starting main: `017285bafd1978cdf129ba2beb9a592d4c63ce48`.
 - Active milestone: **V1-02, runner inventory and safe operating procedures**.
 - V1-01 merged as `719159d60c54ce510fb5ffabfcc847b068e4bc51` (PR #5).
-- Active branch: `codex/v1-operations-20261003` (preparing).
+- Active branch: `codex/v1-operations-20261003`, [PR #8](https://github.com/justgo4/m2s/pull/8).
+- Operations head `9de0453b28181b59e1b0443bdf735f01a9dd6194` (CI pending).
 - Profile budget [PR #7](https://github.com/justgo4/m2s/pull/7) merged as `7dc814ab4d7e5a6b9e93a701c8ebeab0bfdb5dd6`.
 - Profile fix SHA: `52bb1f3686b771f8b4cf3d5683bac26ef375fec1`; baseline `37085454135`,
   native `37085454170` and supervised smoke `37085454133` passed.
@@ -58,7 +59,7 @@ pass independently; do not merge by combining old and new green runs.
   real topology-budget regression covers every named plan at cap=2. Local runner
   nine tests/P11/AST-loaded real topology calculation pass. Full workload test uses CI.
   Backup drafts: `tools/state_backup.py`, `tools/state_backup_test.py`; five real
-  SQLite WAL/timeout/tamper/interruption tests pass. Operations drafts not committed or merged yet.
+  SQLite WAL/timeout/tamper/interruption tests pass. Operations committed in PR #8; remote checks pending.
   Inventory implementation: `tools/runner_inventory.py`, `tools/runner_inventory_test.py`,
   `.github/workflows/runner-inventory.yml`; four sanitized inventory tests pass.
   Actual inventory [run 37084999017](https://github.com/justgo4/m2s/actions/runs/37084999017)
@@ -108,6 +109,13 @@ performance root cause still under investigation. No performance pass exists.
 - README section 11 separates staged validation, bounded v1, and longer-term
   goals. 72h execution does not itself call an LLM. Existing checkpoint is only
   evidence and does **not** resume the entire workload runner.
+
+Performance follow-up under investigation: existing CDC bundles cap width at four
+lanes even when one writer serves sixteen lanes. Small metrics show ~1.19s VISIBLE
+per delivery and four-lane CDC bundles; larger bounded bundles may reduce queue
+rotation. No improvement yet claimed; compare against profile-fix main
+[run 37085851322](https://github.com/justgo4/m2s/actions/runs/37085851322), still running.
+CPU-only snapshot starvation is a separate measured symptom, not yet fixed.
 
 ## Ordered backlog and exit gates
 
