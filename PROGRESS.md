@@ -9,11 +9,12 @@ the goals and evidence boundaries. Read AGENTS.md before continuing.
   development can resume after usage resets. Routine repository operations and
   validated merges are authorized without a new confirmation.
 - Starting main: `017285bafd1978cdf129ba2beb9a592d4c63ce48`.
-- Active milestone: **V1-01, staged validation and independent run supervision**.
+- Active milestone: **V1-02, runner inventory and safe operating procedures**.
+- V1-01 merged as `719159d60c54ce510fb5ffabfcc847b068e4bc51` (PR #5).
 - Active branch: `codex/v1-staged-validation-20261003`, [PR #5](https://github.com/justgo4/m2s/pull/5).
 - Implementation checkpoint: `2837773a2018ffcb3e7a70db4abf099edeabf099`;
   base `ffad2701181a475d44622a16c89539a30b675b3c`. Nine local protocol tests,
-  canonical P11/gate contracts, syntax and privacy checks pass. Remote CI pending.
+  canonical P11/gate contracts, syntax and privacy checks pass. Remote baseline/native/all eight E2E/new supervised smoke passed on that exact SHA.
 
 First implementation `db96c9193fd04236a040e5ac47f6a77f24f408da`:
 [baseline](https://github.com/justgo4/m2s/actions/runs/37083541892) and
@@ -39,10 +40,12 @@ pass independently; do not merge by combining old and new green runs.
   live-test checkout. Python runtime lacks Arrow/database dependencies. Full
   imports/live database contracts use the real GitHub checkout. Never fabricate
   its revision or declare the local snapshot formal evidence.
-- Next action: inspect PR #5 workflow results/logs, fix any failures, and merge
-  when required checks pass. Merge automatically starts hosted small/million
-  runs. Preserve run IDs/artifacts and inspect real performance before changing
-  state layout. Meanwhile continue V1-02 operating procedures.
+- Next action: inspect [hosted small/million](https://github.com/justgo4/m2s/actions/runs/37084867442)
+  on merge SHA `719159d60c54ce510fb5ffabfcc847b068e4bc51`; preserve artifacts and
+  inspect actual performance. Prepare separate runner-inventory/operating PR.
+  Local drafts: `tools/runner_inventory.py`, `tools/runner_inventory_test.py`,
+  `.github/workflows/runner-inventory.yml`; four sanitized inventory tests pass.
+  Actual runner-management access is still unknown until the workflow probe.
 
 Local commands completed:
 
@@ -60,6 +63,15 @@ PIDFD cancel, real child cleanup, and gate-only resume without reinitialization.
 SIGTERM now unwinds the workload's independent daemon group. It does not support
 resuming an incomplete workload or surviving host loss. PR runs real hosted smoke;
 main runs small/million; no shortened result is called formal P11 certification.
+
+
+Latest exact-head evidence: [baseline](https://github.com/justgo4/m2s/actions/runs/37084288295),
+[native](https://github.com/justgo4/m2s/actions/runs/37084288145),
+[all eight E2E jobs](https://github.com/justgo4/m2s/actions/runs/37084288201), and
+[supervised real-service smoke](https://github.com/justgo4/m2s/actions/runs/37084288352)
+passed. Merge differs from tested PR head only in PROGRESS.md, verified by GitHub
+compare; runtime/workflow trees are unchanged. Main small/million performance
+is running, not yet a pass.
 
 ## Completed evidence to preserve
 
@@ -81,8 +93,8 @@ main runs small/million; no shortened result is called formal P11 certification.
 | ID | State | Work and evidence required |
 |---|---|---|
 | V1-00 | done | Durable repository progress/authorization/continuation instructions |
-| V1-01 | active | Named small/medium/scale/soak/P11 profiles; independent supervised execution; atomic status/evidence; correct cancellation and interrupted-run behavior; local protocol tests and CI |
-| V1-02 | queued | Operational status/alert and safe unknown-output, backlog/low-disk/recovery procedures; upgrade/rollback runbook and tested boundaries |
+| V1-01 | done | Named small/medium/scale/soak/P11 profiles; independent supervised execution; atomic status/evidence; correct cancellation and interrupted-run behavior; local protocol tests and CI |
+| V1-02 | active | Operational status/alert and safe unknown-output, backlog/low-disk/recovery procedures; upgrade/rollback runbook and tested boundaries |
 | V1-03 | needs test machine | 100k–1M and 5M–10M fixed-resource measurements, 1/10/100 tasks, JOIN skew/fan-out, dynamic add/drop/rebuild, TEMP/WAL/RSS/GC contention; retain exact revision/artifacts |
 | V1-04 | conditional | Address measured bottlenecks only; any state layout/native change needs correctness/migration/recovery A/B evidence |
 | V1-05 | needs test machine | Scale-short and soak; source scope/DDL, concurrent replacement/cancel, low space and crash/upgrade combinations |
