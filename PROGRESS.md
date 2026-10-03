@@ -222,3 +222,16 @@ PR #9 staged run `37087609367` failed both profiles solely at supervisor report 
 ## Active measured follow-up draft
 
 After accepted small artifact11261726394 still12/14s fails, inspect snapshot remote commit count. Current claim_snapshot_bundle restricts all members to one page group even when adjacent snapshot pages of the SAME plan/generation are pending. Draft a bounded per-lane contiguous snapshot-prefix claim across pages, stopping at CDC/assigned/different plan/group-less boundary, retaining row/byte/prepared/writer-width limits and all individual group IDs. Existing acknowledge_delivery already finishes every member group via longest completed stage prefix. Add real SQLite multi-group restart, CDC fence, out-of-order group visibility and budget tests before pushing PR #9 again. This is a draft hypothesis, not a proven SLO fix. Preserve current combined head fbf0784a and fresh CI evidence when superseding.
+
+## JOIN bootstrap streaming milestone started
+
+Branch codex/v1-stream-join-bootstrap-20261003 base main83269c14. Million
+artifact11261727031 shows1.36GiB RSS and1,002,124 JOIN backing rows before
+stateful worker write-lock failure. Existing seed_bootstrap/seed_bootstrap_projected
+materialize all JOIN pairs and pickled rows, and _insert_commit sorts another list
+inside activation's write transaction. Implement streaming indexed pair enumeration
+and atomic bootstrap insert/digest with bounded Python live row memory, retaining
+existing full-state oracle as independent reference and exact identity/digest/retry
+semantics. This DOES NOT bound total writer lock duration or solve1M SLO; durable
+chunked bootstrap/job staging is a separate protocol. Measure old/new identical
+synthetic fan-out and complete RSS/CPU/wall cost before conclusions.
