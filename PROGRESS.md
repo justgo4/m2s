@@ -395,3 +395,24 @@ Pass runtime stop from both delivery protocols/OOM recovery. Default helper
 behavior unchanged; no body/COMMIT/HTTP retry. Next real lock tests at acquisition,
 post-transform overflow/final parts, cancellation/restart, fatal data/storage;
 fresh exact-head full CI required. This is safe recovery, not bounded locking.
+
+Local preparation implementation checkpoint: five real SQLite/Arrow preparation
+tests PASS: BEGIN before transform; post-transform overflow evidence; final parts
+conversion; stop retains unprepared jobs/reservation with no load_parts and reopen
+recovers exact payload; FULL/CORRUPT/LOCKED and body BUSY remain fatal/one-shot.
+Successful contention paths run transform once and final parts exactly once;
+HTTP is guarded against in these tests. Existing capture4/known-visible3 pass.
+The initial fixture omitted jobs.created and routing metadata; corrected fixture
+now uses actual checked Arrow journal schema. Original negative regression runs
+against HEAD prepare with optional-keyword adapter, not a TypeError comparison.
+Main CLI selftest is locally blocked at AF_UNIX socket creation by environment
+EPERM; full CI must validate it. Original SQLite30s timeout unchanged; backoff
+stop-aware, transaction body/COMMIT/HTTP never replayed.
+PR19 baseline37102524135/native37102524124/state37102524127/eight E2E37102524140
+PASS;smoke PASS and strict small still running37102524134. No merge yet.
+
+Corrected negative check uses original prepare function in ACTUAL j4 globals:
+all three initial/overflow/final regressions fail with SQLITE_BUSY, fixed passes.
+Direct cdc_selftest reaches process-resource assertion then fails because this
+workspace cannot inspect /proc; AF_UNIX and /proc checks remain hosted evidence.
+Next preserve fixed SHA CI without repeated pushes cancelling runs.

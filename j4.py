@@ -1726,7 +1726,7 @@ def state_transaction(con, stop=None):
             # the body or COMMIT; callers explicitly opt in for local capture.
             now=time.monotonic()
             if now-last_log>=30:
-                log("CAPTURE BEGIN BUSY local_lock_retry=1 durable_prefix_retained=1")
+                log("SQLITE BEGIN BUSY local_lock_retry=1 durable_prefix_retained=1")
                 last_log=now
             stop.wait(0.2)
     try:
@@ -2959,8 +2959,8 @@ def prepare_reservation_set_locked(con, delivery, reserved_bytes, cfg):
     return True
 
 
-def prepare_reservation_release(con, delivery):
-    with state_transaction(con):
+def prepare_reservation_release(con, delivery, stop=None):
+    with state_transaction(con,stop=stop):
         con.execute("DELETE FROM prepare_reservations WHERE delivery_id=?",(delivery,))
 
 
@@ -4457,14 +4457,14 @@ def transformed_lines(
     return (result,overflows) if collect_overflow else result
 
 
-def persist_field_overflows(con, mapping, delivery, overflows, jobs):
+def persist_field_overflows(con, mapping, delivery, overflows, jobs, stop=None):
     source = next((job for job in reversed(jobs) if job[2] is not None),None)
     source_file = source[2] if source else None
     source_pos = source[3] if source else None
     source_time = source[4] if source else None
     now = time.time()
 
-    with state_transaction(con):
+    with state_transaction(con,stop=stop):
         con.execute("DELETE FROM field_overflow WHERE delivery_id=?",(delivery,))
         for item in overflows:
             value = str(item["value_text"]).encode("utf-8")
@@ -4528,7 +4528,7 @@ def payload_chunks(lines, cfg):
             start = end
 
 
-def prepare_delivery(con, engine, mapping, delivery, cfg):
+def prepare_delivery(con, engine, mapping, delivery, cfg, stop=None):
     row = con.execute("SELECT prepared FROM deliveries WHERE id=?", (delivery,)).fetchone()
     if not row:
         raise RuntimeError(f"missing delivery {delivery}")
@@ -4538,7 +4538,7 @@ def prepare_delivery(con, engine, mapping, delivery, cfg):
     limit = int(cfg.get("max_prepared_bytes",2**63-1))
     # Unprepared parts were never submitted. A known exact wire size lets a
     # waiting delivery test capacity before repeating Arrow/DuckDB/JSON/gzip.
-    with state_transaction(con):
+    with state_transaction(con,stop=stop):
         con.execute("DELETE FROM load_parts WHERE delivery_id=?",(delivery,))
         required,_ = prepare_requirement_get(con,delivery)
         logical = con.execute("""
@@ -4592,7 +4592,7 @@ def prepare_delivery(con, engine, mapping, delivery, cfg):
                         if cfg["compression"] == "gzip" else bytes(payload))
                     total_wire += len(wire)
                     if total_wire > limit:
-                        with state_transaction(con):
+                        with state_transaction(con,stop=stop):
                             prepare_requirement_set_locked(
                                 con,delivery,total_wire)
                             con.execute(
@@ -4613,7 +4613,7 @@ def prepare_delivery(con, engine, mapping, delivery, cfg):
                         wanted = min(
                             limit,max(
                                 total_wire,max(1,reserved_capacity)*2))
-                        with state_transaction(con):
+                        with state_transaction(con,stop=stop):
                             if prepare_reservation_set_locked(
                                     con,delivery,wanted,cfg):
                                 reserved_capacity = wanted
@@ -4638,12 +4638,12 @@ def prepare_delivery(con, engine, mapping, delivery, cfg):
         if fatal_overflows and mapping.get("_target_constraints"):
             # Fatal data is independent of capacity and must remain fail-closed.
             # No load_parts have been committed yet; only local staging exists.
-            prepare_reservation_release(con,delivery)
+            prepare_reservation_release(con,delivery,stop=stop)
             persist_field_overflows(
-                con,mapping,delivery,overflows,jobs)
+                con,mapping,delivery,overflows,jobs,stop=stop)
 
         if not staged_complete:
-            with state_transaction(con):
+            with state_transaction(con,stop=stop):
                 prepare_requirement_set_locked(con,delivery,total_wire)
                 con.execute(
                     "DELETE FROM prepare_reservations WHERE delivery_id=?",(delivery,))
@@ -4655,14 +4655,14 @@ def prepare_delivery(con, engine, mapping, delivery, cfg):
         # owns enough exact/over-reserved capacity to finish. Capacity probes have
         # no durable overflow side effects.
         if mapping.get("_target_constraints"):
-            persist_field_overflows(con,mapping,delivery,overflows,jobs)
+            persist_field_overflows(con,mapping,delivery,overflows,jobs,stop=stop)
 
         # Finalize all prepared parts atomically. This converts one durable
         # reservation into load_parts without a fsync/BEGIN IMMEDIATE per part:
         # on crash SQLite exposes either the old unprepared delivery or the fully
         # prepared one, never a partially converted reservation.
         staged.seek(0)
-        with state_transaction(con):
+        with state_transaction(con,stop=stop):
             prepare_requirement_set_locked(con,delivery,total_wire)
             held = con.execute(
                 "SELECT reserved_bytes FROM prepare_reservations WHERE delivery_id=?",
@@ -8588,7 +8588,7 @@ def process_merge_lane(con, engine_cache, handle, table, lane, cfg, runtime):
             return False
         started = time.monotonic()
         try:
-            prepared = prepare_delivery(con,engine,mapping,delivery,cfg)
+            prepared = prepare_delivery(con,engine,mapping,delivery,cfg,stop=stop)
         except Exception as exc:
             if not is_duckdb_oom(exc):
                 raise
@@ -8647,7 +8647,7 @@ def process_merge_lane(con, engine_cache, handle, table, lane, cfg, runtime):
             try:
                 try:
                     prepared = prepare_delivery(
-                        con,recovery_engine,mapping,delivery,recovery_cfg)
+                        con,recovery_engine,mapping,delivery,recovery_cfg,stop=stop)
                 except Exception as recovery_exc:
                     if is_duckdb_oom(recovery_exc):
                         raise RuntimeError(
@@ -9045,7 +9045,7 @@ def table_delivery_worker(mapping, cfg, runtime):
             version = delivery_plan_version(con,delivery)
             mapping = runtime_mapping(runtime,version,table)
             engine = plan_engine(engines,runtime,cfg,version,table)
-            if not prepare_delivery(con,engine,mapping,delivery,cfg):
+            if not prepare_delivery(con,engine,mapping,delivery,cfg,stop=stop):
                 wake.wait(0.2)
                 wake.clear()
                 continue
