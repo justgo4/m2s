@@ -349,3 +349,15 @@ row/byte budgets, records effective4096 stream cap and measures production
 fresh child processes and original cache reference. Runtime unchanged until
 evidence. Next: implement parameters, run local contracts and100k/1M evidence,
 commit/checkpoint before bounded durable publication work. No formal SLO claim.
+
+Implementation checkpoint: benchmark accepts partitions/batch rows/bytes/max row
+bytes, forwards to fresh workers, reports topology/effective4096 cap. Optional
+configured-stream candidate changes only isolated function namespace, never runtime.
+First100k production A/B full bag exact: cache16 jobs vs stream400; RSS402–409MB
+vs238–239MB. Full1M three-way and100k two-repeat three-way running locally.
+Fixture max-row1MiB falsely rejects large cached batches; now explicit64MiB
+production default and worker failures preserve stdout/stderr. CI now uploads
+JOIN JSON artifacts (previous workflow computed them but omitted upload paths).
+Added real process topology forwarding/full bag and failure diagnostic tests.
+Next: collect reports, preserve curated numeric evidence, submit focused PR with
+fresh state CI. No cap change or bounded enqueue/SLO claim.
