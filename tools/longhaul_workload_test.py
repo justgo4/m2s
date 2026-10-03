@@ -11,9 +11,21 @@ sys.path.insert(0,str(ROOT))
 sys.path.insert(0,str(ROOT/"tools"))
 
 import longhaul_workload
+import validation_profiles
 
 
 def main():
+    # Named plans must fit every planned hot-add at the hosted two-core cap.
+    # A six-task/4GiB million plan previously failed before its first seed row.
+    for name in validation_profiles.NAMES:
+        values = validation_profiles.parameters(name)
+        budget = longhaul_workload.topology_resource_budget(
+            memory_mb=values["memory_mb"], cpu_cap=2,
+            dynamic_tasks=values["dynamic_tasks"], load_mode=values["load_mode"])
+        assert budget["ok"], (name, budget)
+    assert validation_profiles.parameters("small")["dynamic_tasks"] == 4
+    assert validation_profiles.parameters("million")["dynamic_tasks"] == 4
+    assert validation_profiles.parameters("million")["memory_mb"] == 4096
     # A supervisor SIGTERM must unwind run() and restore the previous handler;
     # otherwise the daemon's independent process group can be orphaned.
     with patch.object(longhaul_workload.sys, "argv", ["longhaul_workload.py", "--isolated"]), \
