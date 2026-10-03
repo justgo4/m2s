@@ -617,3 +617,36 @@ complete same-head checks; submit verified idle-write reduction separately and
 compare full strict small workload on integrated main. Remaining mutable
 shared initialization/owner promotion and high fan-out transactions still need
 bounded/versioned protocols if profile establishes material cost.
+
+
+## Active SQLite write timing (2026-10-03)
+
+Base05e8f168396179d74427bbe663877201ce158d67; independent branch
+codex/sqlite-write-timing-20261003. PR26 request-intent recovery head
+b8e6d7ab19c4eea6abd1ff5bbaee2effe2e3e96b stays frozen while required
+CI37132902557/37132902485/37132902475/37132902430/37132902472 runs.
+Remaining lock owner is unproven. Add opt-in bounded in-process transaction
+timing for explicit BEGIN IMMEDIATE acquisition/COMMIT-or-rollback residence,
+with operation names only (no SQL, paths, values). Preserve original connection
+when disabled; report coverage boundaries and open transactions separately.
+Next real WAL contention, rollback/fatal/commit boundaries and privacy tests.
+
+Timing implementation: optional TimingConnection records explicit writer acquisition
+and transaction residence, cumulative count/total/max per operation, bounded128
+buckets and128 active descriptions; scripts/deferred/cursor/implicit coverage is
+explicitly excluded. Original connection when flag disabled. Periodic/final daemon
+reports include diagnostics when enabled; staged development enables the flag.
+9 real SQLite/module tests PASS, with WAL busy/writer interleaving, rollback and
+failed COMMIT, automatic rollback, script exclusion, bounds/privacy and original
+connection defaults. Instrumented accepted-response6/output-build11/publication15
+contracts PASS; privacy/diff PASS. No throughput or lock-owner conclusion yet.
+
+PR26 baseline/native/state/smoke PASS atb8e6d7a. E2E transaction/ON/ON failed
+37132902430 job111231406263 artifact11277780160: retirement status observed
+before asynchronous follower-binding GC. Retire removes consumer/status/intent
+atomically but binding row intentionally remains for gc_retired_followers.
+wait_stateful_retired currently waits only status/drain/intent then immediately
+asserts binding count; no binding-GC predicate. Unchanged transaction path cannot
+execute this PR's Merge Commit change. Retrying that isolated job on the same SHA
+after diagnosing evidence; independently fix the test polling boundary rather
+than weaken the remaining-subview assertion or modify runtime retirement.
