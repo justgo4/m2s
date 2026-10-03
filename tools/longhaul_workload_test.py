@@ -14,6 +14,21 @@ import longhaul_workload
 
 
 def main():
+    # A supervisor SIGTERM must unwind run() and restore the previous handler;
+    # otherwise the daemon's independent process group can be orphaned.
+    with patch.object(longhaul_workload.sys, "argv", ["longhaul_workload.py", "--isolated"]), \
+         patch.object(longhaul_workload, "run", side_effect=KeyboardInterrupt("cancelled")), \
+         patch.object(longhaul_workload.signal, "signal", return_value="previous") as signals:
+        try:
+            longhaul_workload.main()
+            raise AssertionError("cancellation was swallowed")
+        except KeyboardInterrupt:
+            pass
+        assert signals.call_count == 2
+        assert signals.call_args_list[0].args == (
+            longhaul_workload.signal.SIGTERM, longhaul_workload.cancellation_signal)
+        assert signals.call_args_list[1].args == (
+            longhaul_workload.signal.SIGTERM, "previous")
     assert longhaul_workload.percentile([],0.95) is None
     assert longhaul_workload.percentile(
         [5,1,3,2,4],0.50)==3

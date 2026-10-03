@@ -2,6 +2,8 @@
 
 单机 MySQL → StarRocks 实时同步与动态 SQL 计算项目。
 
+开发续做入口：[PROGRESS.md](PROGRESS.md) 保存当前任务、分支、固定版本、CI 与阻断项；[AGENTS.md](AGENTS.md) 保存授权和执行约定。额度/会话中断后先读这两份记录。
+
 目标：一次捕获源数据，已有任务持续更新；运行期间新增 SQL 和下游表，完成历史构建后持续增量维护。共享源镜像完整后，新任务正常情况下不再扫描 MySQL，也不默认复制整份基础数据。未来 MCP 自然语言入口复用同一套 SQL 校验与部署协议。
 
 **当前已是可运行的 CDC + shared fixed-W 动态 SQL 基线；COUNT/SUM/AVG 与受限双源 INNER equi-join 已接入用户 catalog/daemon，支持无需重启的 stateful hot-add/drop，并持续用真实 MySQL→StarRocks 合同验证。** shared 模式已经接入 authoritative source log/base、generation 生命周期、drop/drain，以及 correctness-first 的跨任务状态复用：相同 aggregate/JOIN 可只维护一个 compute state；aggregate 的聚合输出子集与 JOIN 的投影子集可复用 superset state，保留独立 target/outbox/frontier；owner 退役时 follower 可在固定 frontier 提升为私有投影状态。当前还加入 durable sharing decision/telemetry、compatible/off/adaptive 准入和确定性的整图 leader preference。legacy 模式仍保留 MySQL snapshot 路径。本文区分已有证据、待实现协议和研究候选；不宣称已达到物理极限、生产就绪或全面超过其他引擎。
@@ -334,6 +336,26 @@ python tools/longhaul_gate.py /data/m2s-p11-run/longhaul-workload.json \
 成本须按真实 fan-out 估算：50 rows/s × 72h 新增 **12,960,000 行**，初始 50M 加上后源表约 **62.96M 行**。canonical mixed 一对一 JOIN 负载具有 1 个初始 JOIN 和 5 个动态 JOIN，另有 raw target；共享 compute 不会消除七个大型目标各自的存储。最终 raw source/target、JOIN source/六个 target 的 full-row oracle 约需九个大表 pass，扫描行量可达 **566.64M**，另有 aggregate 校验。因此先用短测估算 SSD 容量、服务资源与 oracle wall time，不能从小规模 rows/s 直接线性宣称整体达标。总墙钟还包含 50M seed、启动与最终排空/校验，超过 72h。
 
 当前原子 checkpoint 仅保存进度证据，**尚不支持整场 workload runner 中断后的续跑**；daemon 强退恢复是另一项已有能力。runner 没有 resume 参数，重新启动会初始化测试数据库，工作目录要求空目录。昂贵正式运行前应安排稳定的独立监督；如需 runner 续跑，另行实现数据集身份、时间窗口、故障/任务序列与分段证据协议，不能把现有 checkpoint 直接当作该能力，也不能直接对旧目录执行新的初始化命令。
+
+新增的独立监督入口为 `tools/validation_run.py`，它直接复用原 workload/gate，不调用模型、不降低正式门禁。`validation_profiles.py` 提供 smoke/small/million/medium/scale-short/soak/p11 固定参数；p11 精确复用 canonical profile，其余报告均为 development evidence。运行目录必须是新路径，持久保存 plan/status、阶段日志、workload checkpoint、最终报告和 gate。进程身份以 Linux boot ID/start ticks 校验，取消使用 PIDFD，避免误杀复用 PID；workload 收到 SIGTERM 会清理独立 daemon 进程组。
+
+```bash
+# 先检查计划，不初始化数据库
+python tools/validation_run.py plan --profile million --run-directory /data/m2s/run-001
+# 已配置一次性 MySQL/StarRocks 和持久测试机后运行；detach 无需聊天保持在线
+python tools/validation_run.py run --isolated --detach \
+  --profile million --run-directory /data/m2s/run-001
+python tools/validation_run.py status --run-directory /data/m2s/run-001
+python tools/validation_run.py cancel --run-directory /data/m2s/run-001
+# 仅当 status.can_resume_gate=true：重评已完成且摘要/版本一致的报告，不重跑造数
+python tools/validation_run.py resume-gate --run-directory /data/m2s/run-001
+```
+
+**监督程序不伪造完整 workload 续跑。** workload 中断时保留原目录并明确标记；恢复 gate 仅对已成功完成、SHA-256 校验一致且代码/参数身份未变的 workload 开放。host 本身停机、资源失效或 SIGKILL 不能靠 detach 保证存活，正式长跑仍需独立持久监督环境。
+
+`.github/workflows/validation.yml` 在 PR 跑真实 smoke，合并相关代码后跑 small/million，并支持手动 medium；它保留失败状态/日志/报告 artifact。公开仓库标准 hosted runner 的免费分钟数不消除单 job 时长、磁盘/内存和临时生命周期限制。soak/p11/scale-short 不映射到该 hosted workflow，不能通过分段换机冒充连续 72h；self-hosted 的注册/云测试机创建还依赖对应管理权限和资源，仓库连接器并不自动提供它们。
+
+smoke 精确沿用已有 E2E 的 60 秒 cold-start/mixed-fault workload 与开发门槛（P95≤30s、P99≤60s、sample density≥0.2），只验收协议/恢复/精确性，**不宣称达到正式 SLO**。small/million/medium/scale-short/soak 保留 P95≤5s、P99≤10s 的性能门槛；p11 使用原正式 gate 默认值和 require-profile。所有 plan.json 显式列出 gate_thresholds，不能把不同层级的绿色结果混为一谈。首次新增 smoke 用正式延迟门槛运行时，[run 37083541672](https://github.com/justgo4/m2s/actions/runs/37083541672) 精确性全过，但 P95/P99≈15.09s、density≈0.664 未达 5/10s 与 0.75；该失败 artifact 保留，性能瓶颈仍应由后续分层测量判断，而非通过修改正式 gate 消除。
 
 ### 11.3 先完成有边界的 v1，再推进完整愿景
 
