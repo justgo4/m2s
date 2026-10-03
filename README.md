@@ -129,7 +129,7 @@ cost_vector = {
 | **P11** | **可执行 long-haul driver/gate 已进入代码，但尚未完成正式 50M/72h 认证运行。** 固定机器目标仍是 50M 初始行 + 50 rows/s × 72h，并动态新增任务/注入故障。canonical `v4` profile 固定保留 aggregate 与 INNER JOIN 两类初始 stateful task，10 个动态任务按 5 aggregate + 5 JOIN 交替 hot-add；每次强退窗口还会在 daemon 停止期间提交一笔 JOIN 右侧 `dimensions` 更新，迫使恢复跨过双边变化。两类 follower sharing、time-to-ready、强退追赶与最终 exactness 都必须单独通过；短版真实 mixed smoke 已在 [E2E run 37013697722](https://github.com/justgo4/m2s/actions/runs/37013697722) 通过，但这不是 50M/72h 认证证据。daemon 精确累计全程 `>5s`/`>10s` CDC 样本；workload 在故障期间继续向 MySQL 产数并要求恢复追到持续推进的 live frontier。报告同时保存机器/cgroup 指纹、代码 revision、MySQL/StarRocks/关键 Python 依赖版本，以及 m2s daemon、MySQL、StarRocks 服务 scope 的 RSS/CPU/实际读写字节；相同 StarRocks 容器 scope 会去重，source/sink scope 混叠则 fail-closed。正式长跑还支持显式保留工作目录与原子 progress checkpoint，避免中途失败只剩控制台日志。gate 仍单独报告 recovery latency、time-to-ready、空间与版本债务；下一步是在固定资源上完成正式 50M/72h 证据 |
 | P12 / P13 | 公平对标后再给优势结论；补可解释 deploy/explain/status/cancel、预算准入、权限、版本化升级/回滚，MCP 接同一控制面；catalog 已保存不等于任务已激活 |
 
-最短主线现在是：**让真实 stateful catalog/P11 smoke 持续通过 → 用固定资源完成 50M/72h gate → 只把实测有收益的共享 arrangement/状态布局下沉到更通用物理计划。** 1/10/100 task sharing A/B、在线 rebuild/new-generation、远端 swap/fence 与 durable admission wait/backoff 已进入代码和合同测试；当前 whole-graph preference、adaptive sharing 与 stateful resource admission 仍是可解释规则，不把它们宣传成完整成本优化器。
+最短主线现在是：**保持真实 stateful catalog/P11 smoke → 按第 11 节逐级测规模、时间与资源 → 收口受限 SQL v1 的运行交付 → 对冻结版本完成声明范围所需的正式 50M/72h gate。** 更广 SQL、通用共享 arrangement、成本优化器与 MCP 分阶段后置；状态布局/native 替换只在 profile 证明必要后实施。1/10/100 task sharing A/B、在线 rebuild/new-generation、远端 swap/fence 与 durable admission wait/backoff 已进入代码和合同测试；当前 whole-graph preference、adaptive sharing 与 stateful resource admission 仍是可解释规则，不把它们宣传成完整成本优化器。
 
 测量分 decoder、local durable pipeline、snapshot、端到端四层；最终 gate 固定机器/资源并计入 Python/C、source/sink、compaction、存储和网络。与 Flink、RisingWave、Materialize、Bytewax、Pathway、Proton、Arroyo 对比时保持 SQL/结果语义、源/目标、耐久性和恢复要求一致，分别报告吞吐、延迟、构建、空间、恢复与功能缺失；不宣称任意 SQL 下全面领先。
 
@@ -261,7 +261,7 @@ python tools/longhaul_gate.py /data/m2s-p11-run/longhaul-workload.json \
 1. **完整行 oracle 已消除 1024 次 bucket 扫描，但仍需测 50M 全表扫描成本。** 当前 raw/JOIN source 与每个 required target 各做一次 unbuffered full-table pass；访问形状从可能的 1024 次全表扫描降到每表一次，但 50M × 多 target 的网络、hash、CPU 与 wall time 仍必须在固定资源下记录。oracle 正确性已收口，不等于正式规模成本已证明。
 2. **source capture/base apply 已从旧的整事务 Python dict 路径推进到 set-wise SQLite DML，并进一步将 durable capture 与 base apply 异步解耦。** durable source log/版本/cursor 仍在主 SQLite；`source_apply_actions` 与 `source_snapshot_rows` 只承担单事务内 scratch，当前连接会用同名 TEMP shadow table 承载它们；staging 入口会在创建任何 TEMP 对象前强制并校验 `temp_store=FILE`，若 SQLite 编译配置强制 MEMORY 则 fail-closed。安装/升级同时删除旧版遗留的主库 scratch 表，避免把可重建中间态留在主 WAL/schema，也不把大事务 scratch 的内存上界交给 SQLite 环境默认值。pending-byte 背压、独立 apply worker、snapshot set-wise staging 和 crash/race 合同均已进入主线。durable source log 对重复 source epoch + binlog file/pos 只接受 GTID 与全部 parts 完全一致的幂等重放，位置复用/内容不一致直接 fail-closed。当前继续测大事务 rollover、并发 capture/apply、TEMP staging 的 RSS/临时文件成本、WAL/锁时长与 drain tail。
 3. **source cost counters 仍只是阶段工作计量。** 不能用内部 work timer 代替最终 COMMIT/fsync、锁等待、decode/transform/fanout、WAL 与 backlog 的端到端测量。已新增独立 apply、snapshot、overlapped capture/apply，以及 bounded history GC 与 capture/apply 同机竞争的 benchmark；后者直接对照 GC 开/关时 durable commit P50/P95/P99/max、吞吐、GC 写锁耗时与 RSS，不设置共享 CI 上的武断性能阈值。GC worker 对预期 SQLite/I/O 问题仍 advisory 重试，但未预期的 invariant 异常现在进入统一 guarded-worker fail-stop，避免 daemon 在 GC 线程已死时继续长期运行。`.github/workflows/state.yml` 现在对 `source_state.py` 及这些 benchmark 触发，并保留 JSON artifact。下一步用这些固定证据决定 staging/GC batch 是否需要继续调整、TEMP/新布局或更低层实现。
-4. **50M/72h 仍是唯一正式认证缺口。** 短测、100k benchmark、baseline/native/E2E 只能证明局部合同或趋势；在同一最终 SHA、固定服务资源和持久工作目录下完成 `p11-50m-50rps-72h-v4` 之前，不升级生产认证结论。
+4. **正式 P11 规模长跑证据尚缺；这不代表通用 SQL、优化器及运行交付已经全部完成。** 短测、100k benchmark、baseline/native/E2E 只能证明局部合同或趋势；在同一最终 SHA、固定服务资源和持久工作目录下完成 `p11-50m-50rps-72h-v4` 之前，不声称取得该 profile 的正式认证。完整交付的其他缺口仍按第 6、11 节分别收口。
 
 截至当前主线，旧 oracle 域外漏检与 gate 证据 schema 两个 P0 已有代码和负例合同；source base apply 的旧整事务 dict 内存问题也已被 disk staging/set-wise apply 取代。最新阶段仍必须区分“合同测试通过”“benchmark 有数字”和“固定 SHA 正式认证”三个层级；其中正式 50M/72h 尚未完成。
 
@@ -306,3 +306,46 @@ python tools/longhaul_gate.py /data/m2s-p11-run/longhaul-workload.json \
 | [Actual daemon MySQL to StarRocks contract](https://github.com/justgo4/m2s/actions/runs/37078480757) | merge_async/transaction × 两个开关的八格矩阵全部通过，包括并发 backfill/change、强退恢复、共享状态 aggregate/JOIN lifecycle 与 P11 mixed fault smoke |
 
 以上是本次修复的 PR CI 记录；合并后主线自动复跑应按自己的 SHA/运行分别查询，后续 README 证据补记也不改变已验收代码的版本。这里仍未宣称正式 50M/72h 认证。
+
+## 11. 验收成本、受限 v1 出口与剩余工作
+
+**不要求每次改代码都跑 50M/72h。** 50M 检验大基数下的回填、状态/索引/输出空间和查询校验成本；72h 检验泄漏、版本/compaction 债务、持续 SLO 与多次故障后的稳态。二者不能互相替代。若继续声明 `p11-50m-50rps-72h-v4` 通过，冻结版本仍须取得同等规模、时长与资源的真实证据；短测必须保留自己的负载身份，不能降低正式 gate 的阈值后沿用认证名称。
+
+### 11.1 先用分层测试减少失败重跑成本
+
+下表是建议的后续计划，不是已完成的测量。时长指 daemon 状态初始化后持续施加 CDC 的窗口；前置 seed、启动及最终 drain/全行校验另计，初始 snapshot/bootstrap 与 CDC 并行、计入该窗口。前一层不通过，先修复而不直接进入昂贵长跑。
+
+| 层级 | 计划负载与时长 | 解决的问题 |
+|---|---|---|
+| 日常回归 | 现有 baseline/native/真实 E2E；小规模 smoke | 事务、水位、增量语义、hot-add/rebuild、强退恢复；文档或一般小改不重跑 72h |
+| 性能摸底 | 100k–1M 行，30–60 分钟 | CPU、RSS、SQLite/WAL、写锁等待、drain、full-row oracle 成本；先识别瓶颈 |
+| 中型综合 | 5M–10M 行，2–4 小时 | mixed aggregate/JOIN、动态任务、skew/fan-out、sharing A/B 与多次故障 |
+| 分开筛查规模与时间 | 50M 行跑 4–8 小时；另以 1M–10M 行跑 12–24 小时 | 先低成本排查大基数问题和长期累积问题；此组合仍不等于 50M/72h 联合验收 |
+| 首次正式 P11 验收 | 前述层级通过后，固定 SHA/资源跑一次 50M/72h | 形成原声明范围的正式证据；后续状态布局、正确性或性能关键变更再安排相应长跑 |
+
+现有 workload 已支持自定义 `--rows`、`--duration-seconds`、`--rows-per-second`、动态任务和故障间隔。短测不使用 `--certification-profile`，对应 gate 的自定义阈值/报告范围也须一致；正式 profile 与 `--require-profile` 保持原标准。加快 rows/s 或提前触发故障能加速暴露累计量/协议问题，不能换算为已经真实稳定运行 72h。
+
+### 11.2 72h 不需要 AI 连续在线，机器成本才是主要支出
+
+当前 workload、gate 与 daemon 不调用 LLM/OpenAI API。测试机运行 Python、MySQL、StarRocks 72h 本身不产生模型 token；额外 AI 用量来自读日志、分析故障和修改代码。采用独立进程监督、周期性 JSON 指标/异常摘要，阶段结束或异常时再审查即可，无须让聊天会话反复读取完整日志。
+
+正式运行需要固定资源、持久磁盘和独立测试服务，使用测试机上的 systemd/容器或合适的 self-hosted runner。现有 E2E workflow 是 45 分钟限时的小规模 smoke，不能直接承担 72h。当前交互工作区的生命周期也不是 72h 机器存活保证。profile 的 8 GiB 是 m2s 配置预算，不是 MySQL、StarRocks、runner 合计的整机预算。
+
+成本须按真实 fan-out 估算：50 rows/s × 72h 新增 **12,960,000 行**，初始 50M 加上后源表约 **62.96M 行**。canonical mixed 一对一 JOIN 负载具有 1 个初始 JOIN 和 5 个动态 JOIN，另有 raw target；共享 compute 不会消除七个大型目标各自的存储。最终 raw source/target、JOIN source/六个 target 的 full-row oracle 约需九个大表 pass，扫描行量可达 **566.64M**，另有 aggregate 校验。因此先用短测估算 SSD 容量、服务资源与 oracle wall time，不能从小规模 rows/s 直接线性宣称整体达标。总墙钟还包含 50M seed、启动与最终排空/校验，超过 72h。
+
+当前原子 checkpoint 仅保存进度证据，**尚不支持整场 workload runner 中断后的续跑**；daemon 强退恢复是另一项已有能力。runner 没有 resume 参数，重新启动会初始化测试数据库，工作目录要求空目录。昂贵正式运行前应安排稳定的独立监督；如需 runner 续跑，另行实现数据集身份、时间窗口、故障/任务序列与分段证据协议，不能把现有 checkpoint 直接当作该能力，也不能直接对旧目录执行新的初始化命令。
+
+### 11.3 先完成有边界的 v1，再推进完整愿景
+
+**受限 v1** 的范围为单 MySQL→StarRocks、已登记的源表/列和稳定主键、共享源状态、运行时新增/删除/重建任务、投影/过滤、COUNT/SUM/AVG 与受限双源 INNER equi-join，以及明确的故障恢复/隔离边界。上述功能闭环已有，剩余重点是固定资源下的规模与压力证据、实测预算/准入、积压与低磁盘处置、告警/操作手册和版本化升级/回滚验证。破坏性 DDL/未支持 SQL 仍明确拒绝或重建；Merge Commit 未知结果仍隔离目标，在自动对账完成前不承诺自动解隔离。
+
+**完整愿景** 还包括更多 SQL/跨算子通用增量编译、通用 arrangement/factorized state、整图长期成本优化、公平对标以及 P12/P13 的运维控制面/权限/MCP。它们不是受限 v1 的强制前置依赖；“任意 SQL”“达到物理极限”“全面领先”不能成为没有可验收边界的完成定义。Python/SQLite 或 native 的替换也不先验必做。
+
+| 出口 | 条件化规划预算 | 完成的含义 |
+|---|---|---|
+| 受限 v1 可监督试点 | 5–10 个工程工作日 | 机器/范围就绪、分层测试和运行手册收口；如尚无正式长跑则明确声明试点证据范围 |
+| 受限 v1 稳定交付 | 2–4 周 | 完成必要的规模/故障/资源与升级恢复验收；原 50M/72h 声明需包括对应真实运行 |
+| 结构性瓶颈触发状态布局/引擎改造 | 在 v1 预算外增加 2–4 周或更多 | 先有 profile 证据，再实现、迁移与重新验收，不能仅靠 AI 写代码速度压缩 |
+| README 的更广愿景 | 3–6 个月以上，逐项单独验收 | 覆盖扩展 SQL、共享/优化研究、对标和产品控制面；没有测量/排期之前不承诺确定日期 |
+
+这些是按持续工程投入、测试机就绪、v1 范围不扩张且未遇结构性瓶颈给出的预算，**不是已测得的完成日期**。当前最大的未知数仍是目标机器上的 50M bootstrap、状态/目标真实物理字节、WAL/GC 锁等待、JOIN 输出放大、恢复追赶及最终 oracle 耗时。下一步优先取性能摸底/中型综合证据，依据数字更新排期，再决定首次昂贵认证的开始时间。
