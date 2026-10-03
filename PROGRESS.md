@@ -375,3 +375,23 @@ Next independent runtime candidate: honor configured row budget up to bounded
 50000 cap, maintain byte/singleton/restart/last-ack contracts and require real
 daemon strict-small before any performance claim. Bounded durable publication
 remains separate structural work; do not conflate larger batch with shorter locks.
+
+
+## Active local preparation BEGIN recovery
+
+PR18 ef613a90882b62627fb2fe964cb638c6b8128b59 passed baseline37102418772,
+native37102418792,state37102418768 and merged e18c543283f16f0ab686187504bd0d7866bc5bf4.
+PR19 configured batch0d3ffd80a82e9a93764dae33631972ffce98e98c remains under
+full real daemon/smoke/strict-small CI; do not merge before its gates.
+Fresh main5a0f validation37101481261 small artifact11265808134: all seven
+full output oracles/dynamic4/recovery/drain exact,pending0;strict P95/P99
+44.431475206/55.121011750s fails. Million artifact11266297740 now stops at
+prepare_delivery->persist_field_overflows->BEGIN IMMEDIATE before any target
+HTTP. Lock owner still not established; avoiding prior capture stop revealed
+this distinct local boundary, not million success.
+Branch codex/prepare-begin-busy-20261003 based e18c: optional stop on local
+preparation transaction BEGIN only, including reservation/overflow/final parts.
+Pass runtime stop from both delivery protocols/OOM recovery. Default helper
+behavior unchanged; no body/COMMIT/HTTP retry. Next real lock tests at acquisition,
+post-transform overflow/final parts, cancellation/restart, fatal data/storage;
+fresh exact-head full CI required. This is safe recovery, not bounded locking.
