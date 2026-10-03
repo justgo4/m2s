@@ -7957,6 +7957,28 @@ def submit_merge_async(handle, con, mapping, delivery, part, cfg, stop, runtime)
                        f"{last_error}; journal retained")
 
 
+def mark_merge_transaction_visible(con, delivery, txn_id, stop):
+    # The remote transaction is already known VISIBLE. Only retry recording
+    # that fact locally; never return to submit/relabel or replay the HTTP load.
+    last_log=-float("inf")
+    while not stop.is_set():
+        try:
+            with state_transaction(con):
+                con.execute("UPDATE load_parts SET visible=1 WHERE delivery_id=? AND txn_id=?",
+                            (delivery,txn_id))
+            return
+        except sqlite3.OperationalError as exc:
+            if con.in_transaction or (getattr(exc,"sqlite_errorcode",0)&255)!=sqlite3.SQLITE_BUSY:
+                raise
+            now=time.monotonic()
+            if now-last_log>=30:
+                log("MERGE VISIBLE BUSY delivery=%s txn=%s local_record_retry=1"
+                    % (delivery,txn_id))
+                last_log=now
+            stop.wait(0.2)
+    raise RuntimeError("stopped recording known-visible Merge Commit; journal retained")
+
+
 def merge_async_delivery(handle, con, mapping, delivery, cfg, runtime):
     """Send all parts first, then gate journal progress on every merge transaction becoming VISIBLE."""
     stop,table = runtime["stop"],mapping_key(mapping)
@@ -7978,9 +8000,7 @@ def merge_async_delivery(handle, con, mapping, delivery, cfg, runtime):
         for txn_id in txn_ids:
             state,detail = wait_visible(cfg,txn_id,stop)
             if state == "visible":
-                with state_transaction(con):
-                    con.execute("UPDATE load_parts SET visible=1 WHERE delivery_id=? AND txn_id=?",
-                                (delivery,txn_id))
+                mark_merge_transaction_visible(con,delivery,txn_id,stop)
                 continue
 
             failure = load_result_text(detail)
@@ -9924,6 +9944,7 @@ def source_state_apply_worker(cfg, runtime):
     finally:
         con.close()
 
+
 def source_state_snapshot_worker(mapping, cfg, runtime):
     con = open_state(cfg["state"])
     source = None
@@ -11363,9 +11384,28 @@ def stateful_rebuild_test_gate(item,stop):
         stop.wait(0.05)
 
 
+def stateful_worker_busy_retry(con, runtime, task_id, exc):
+    # Durable runner steps resume their committed prefix; registry sync is
+    # independently idempotent. Never retry an open transaction, FULL,
+    # corruption, or a generic "locked" message without SQLite's BUSY code.
+    if con.in_transaction or (getattr(exc,"sqlite_errorcode",0)&255)!=sqlite3.SQLITE_BUSY:
+        raise exc
+    retries=runtime.setdefault("stateful_busy_retries",{})
+    retries[task_id]=int(retries.get(task_id,0))+1
+    now=time.monotonic()
+    timestamps=runtime.setdefault("stateful_busy_log_times",{})
+    if now-timestamps.get(task_id,-float("inf"))>=30:
+        log("STATEFUL BUSY retry task=%s durable_prefix_retained=1 retries=%d"
+            % (task_id,retries[task_id]))
+        timestamps[task_id]=now
+    runtime["stop"].wait(0.2)
+
+
 def stateful_task_worker(item, cfg, runtime):
     con=open_state(cfg["state"])
     stop=runtime["stop"]
+    previous_watermark=None
+    logged_reuse=None
     kind=str(item["kind"])
     task=item["task"]
     mapping=item["mapping"]
@@ -11431,6 +11471,11 @@ def stateful_task_worker(item, cfg, runtime):
                     con,cfg,runtime,item,runner,mapping,
                     bootstrap_limit=max(
                         1,min(int(cfg.get("snapshot_rows",1000)),4096)))
+            except sqlite3.OperationalError as exc:
+                stateful_worker_busy_retry(con,runtime,task["task_id"],exc)
+                # Re-read active task membership, source completeness and
+                # retirement frontier before resuming a durable runner step.
+                continue
             except (RuntimeError,KeyError):
                 with runtime["plan_lock"]:
                     active_ids=runtime.get("stateful_active_task_ids")
@@ -11449,25 +11494,36 @@ def stateful_task_worker(item, cfg, runtime):
                 continue
             wake_loaders(runtime,mapping_key(mapping))
             if result.get("shared_physical"):
-                log(
-                    "STATEFUL PHYSICAL REUSE task=%s sink=%s kind=%s "
-                    "mode=shared_%s leader=%s state=%s"
-                    % (
-                        task["task_id"],mapping_key(mapping),kind,
-                        result.get("shared_reuse_mode","exact"),
-                        result.get("shared_leader_task_id"),
-                        result.get("shared_state_id"),
-                    ))
+                reuse=("shared",result.get("shared_reuse_mode","exact"),
+                       result.get("shared_leader_task_id"),
+                       result.get("shared_state_id"))
+                if reuse!=logged_reuse:
+                    log(
+                        "STATEFUL PHYSICAL REUSE task=%s sink=%s kind=%s "
+                        "mode=shared_%s leader=%s state=%s"
+                        % (task["task_id"],mapping_key(mapping),kind,
+                           reuse[1],reuse[2],reuse[3]))
+                logged_reuse=reuse
             elif result.get("reused_physical"):
-                log(
-                    "STATEFUL PHYSICAL REUSE task=%s sink=%s kind=%s "
-                    "fixed_w=%s mode=atomic_clone"
-                    % (
-                        task["task_id"],mapping_key(mapping),kind,
-                        result["generation"].get("fixed_w"),
-                    ))
-            stateful_physical_registry.sync_runtime_result(
-                con,item,result)
+                reuse=("clone",result["generation"].get("generation_id"),
+                       result["generation"].get("fixed_w"))
+                if reuse!=logged_reuse:
+                    log(
+                        "STATEFUL PHYSICAL REUSE task=%s sink=%s kind=%s "
+                        "fixed_w=%s mode=atomic_clone"
+                        % (task["task_id"],mapping_key(mapping),kind,reuse[2]))
+                logged_reuse=reuse
+            else:
+                logged_reuse=None
+            while not stop.is_set():
+                try:
+                    stateful_physical_registry.sync_runtime_result(
+                        con,item,result)
+                    break
+                except sqlite3.OperationalError as exc:
+                    stateful_worker_busy_retry(con,runtime,task["task_id"],exc)
+            if stop.is_set():
+                break
             consumer=result.get("consumer")
 
             if retire_frontier is not None and consumer is not None:
@@ -11491,16 +11547,17 @@ def stateful_task_worker(item, cfg, runtime):
 
             applied=int(result.get(
                 "source_applied",source_state.base_applied_seq(con)))
-            caught=(
-                consumer is not None
-                and int(consumer["watermark"])>=applied
-            )
-            pending=con.execute("""
-                SELECT 1 FROM active_jobs
-                WHERE table_name=? LIMIT 1
-            """,(mapping_key(mapping),)).fetchone()
-            if caught and pending is None and result.get("phase")=="ready":
+            watermark=(None if consumer is None else int(consumer["watermark"]))
+            # Pending target jobs are owned by delivery workers. Repeating a
+            # caught-up runner step cannot flush them; a lagging shared follower
+            # can likewise be waiting on its leader. Pace both idle cases while
+            # rechecking source/visibility/retirement within 50ms. Bootstrap
+            # chunks and advancing CDC prefixes continue without a wait.
+            if watermark is not None and (
+                watermark>=applied or watermark==previous_watermark
+            ):
                 stop.wait(0.05)
+            previous_watermark=watermark
     finally:
         with runtime["plan_lock"]:
             threads=runtime.get("stateful_worker_threads",{})

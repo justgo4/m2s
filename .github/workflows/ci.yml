@@ -27,7 +27,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.14'
@@ -51,7 +50,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python }}
@@ -89,9 +87,6 @@ jobs:
           python tools/runner_inventory_test.py
           python tools/state_backup_test.py
           python tools/operational_check_test.py
-          python tools/cdc_bundle_test.py
-          python tools/snapshot_bundle_test.py
-          python tools/source_snapshot_budget_test.py
           python tools/longhaul_gate_test.py
           python tools/longhaul_workload_test.py
           python tools/process_resource_probe_test.py
@@ -119,6 +114,7 @@ jobs:
           python tools/join_generation_test.py
           python tools/join_ir_test.py
           python tools/join_job_bridge_test.py
+          python tools/join_bootstrap_stream_test.py
           python tools/join_runtime_test.py
           python tools/join_shared_runtime_test.py
           python tools/join_subview_shared_runtime_test.py
@@ -137,6 +133,11 @@ jobs:
           python tools/source_snapshot_setwise_test.py
           python tools/source_apply_worker_test.py
           python tools/source_apply_contention_test.py
+          python tools/stateful_worker_contention_test.py
+          python tools/stateful_worker_idle_test.py
+          python tools/cdc_bundle_test.py
+          python tools/source_snapshot_budget_test.py
+          python tools/snapshot_bundle_test.py
           python tools/arrow_job_schema_test.py
           python tools/source_pipeline_metrics_test.py
           python tools/source_transaction_spool_test.py
@@ -146,6 +147,7 @@ jobs:
           python tools/resource_startup_test.py
           python tools/merge_quarantine_test.py
           python tools/merge_commit_identity_test.py
+          python tools/merge_visible_contention_test.py
       - name: Verify bundled native ABI and offline recovery
         run: |
           python native/native_abi_selftest.py
@@ -176,7 +178,7 @@ jobs:
         run: python tools/state_layout_benchmark.py --rows 1000 --transactions 10 --changes 20 --repeats 2 --faults
       - name: Synthetic benchmark smoke
         run: |
-          python tools/partition_benchmark.py --rows 10000 --repeats 3 --commit '${{ github.event.pull_request.head.sha || github.sha }}'
+          python tools/partition_benchmark.py --rows 10000 --repeats 3 --commit '${{ github.sha }}'
           python tools/stateful_sharing_ab_benchmark.py --tasks 1,10,100 --output benchmark-results/stateful-sharing-ab.json
           python tools/source_apply_staging_benchmark.py --rows 5000 --part-rows 500 --key-space 2500 --output benchmark-results/source-apply-staging.json
           python tools/source_snapshot_staging_benchmark.py --rows 5000 --batch-rows 500 --output benchmark-results/source-snapshot-staging.json

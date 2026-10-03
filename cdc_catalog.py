@@ -2453,3 +2453,4 @@ if __name__ == "__main__":
     raise SystemExit(shell(
         paths["catalog"],paths["socket"],paths["seed"],
         " ".join(sys.argv[1:]) if len(sys.argv) > 1 else None))
+
