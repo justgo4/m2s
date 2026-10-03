@@ -11,7 +11,8 @@ the goals and evidence boundaries. Read AGENTS.md before continuing.
 - Starting main: `017285bafd1978cdf129ba2beb9a592d4c63ce48`.
 - Active milestone: **V1-02, runner inventory and safe operating procedures**.
 - V1-01 merged as `719159d60c54ce510fb5ffabfcc847b068e4bc51` (PR #5).
-- Active branch: `codex/v1-cdc-bundle-20261003` (preparing).
+- Active branch: `codex/v1-cdc-bundle-20261003`, [PR #9](https://github.com/justgo4/m2s/pull/9).
+- Candidate head `ea8b2cd7642db856da4b8ca6884775bebdc812d2` (CI pending).
 - Operations [PR #8](https://github.com/justgo4/m2s/pull/8) merged as `448f618babc28ec2be71b291c5ea0572b2e1cba0`.
 - Operations head `9de0453b28181b59e1b0443bdf735f01a9dd6194`: baseline `37085918376`
   and native `37085918360` passed, including ten new operating/backup tests.
@@ -119,10 +120,14 @@ rotation. Candidate drafts: `j4.py`, `cdc_catalog.py`, `tools/cdc_bundle_test.py
 `.github/workflows/validation.yml`: configurable CDC bundle cap=16, adapting to
 active writer count; existing row/byte/prepared limits and durable memberships
 unchanged. Four real-SQLite regressions prepared (full imports require CI).
-Syntax and actual AST-loaded width tests pass. Add baseline invocation and README,
-submit PR; require same-head baseline/native/eight E2E and hosted smoke/small.
+Syntax and actual AST-loaded width tests pass. Baseline invocation/README added, PR #9 submitted. Require same-head
+baseline/native/eight E2E and hosted smoke/small before merge. Remote j4 blob
+`678496dd467baecca5438a768ca9a675b2b33b63` matches local after preserving the
+API-returned final blank line. Durable old small numeric report committed at
+`reports/validation-small-20261003.json`.
 No improvement yet claimed; compare against profile-fix main
-[run 37085851322](https://github.com/justgo4/m2s/actions/runs/37085851322), still running.
+[run 37085851322](https://github.com/justgo4/m2s/actions/runs/37085851322), completed with small/million failures; inspect artifacts `11261185396` and
+`11261215092` before any new rerun.
 CPU-only snapshot starvation is a separate measured symptom, not yet fixed.
 
 ## Ordered backlog and exit gates
