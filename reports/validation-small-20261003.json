@@ -1,0 +1,165 @@
+{
+  "artifact_id": 11260627960,
+  "artifact_sha256": "fc47d04897dc68c9a6e9bc27de086f7c4f28cdc8aaaa7b5f450610a72abb4e1a",
+  "code_revision": "719159d60c54ce510fb5ffabfcc847b068e4bc51",
+  "evidence": {
+    "daemon_resources": {
+      "cpu_core_equivalent": 1.1904025609262816,
+      "cpu_seconds": 415.82,
+      "peak_processes": 3,
+      "peak_rss_bytes": 634470400,
+      "peak_rss_fraction_of_configured": 0.14772415161132812,
+      "process_identities_seen": 5,
+      "read_bytes": 20480,
+      "samples": 321,
+      "supported": true,
+      "write_bytes": 2793922560
+    },
+    "debt": {
+      "field_overflow_rows": 0,
+      "max_rowset": 44,
+      "pending_bytes": 0,
+      "per_table_max_rowset": {
+        "starrocks.agg_000": 27,
+        "starrocks.agg_001": 1,
+        "starrocks.agg_003": 1,
+        "starrocks.events": 44,
+        "starrocks.join_000": 26,
+        "starrocks.join_002": 3,
+        "starrocks.join_004": 1
+      },
+      "per_table_version_recovery": {
+        "starrocks.agg_000": false,
+        "starrocks.agg_001": false,
+        "starrocks.agg_003": false,
+        "starrocks.events": false,
+        "starrocks.join_000": false,
+        "starrocks.join_002": false,
+        "starrocks.join_004": false
+      },
+      "prepared_budget_used": 0,
+      "rowset_red": 700,
+      "state_storage_bytes": 370413568,
+      "stateful_payload_bytes": 8968058,
+      "stateful_rows": 117048,
+      "version_recovery_active": false
+    },
+    "dynamic_tasks": {
+      "aggregate_ready": 2,
+      "aggregate_requested": 2,
+      "join_ready": 2,
+      "join_requested": 2,
+      "max_time_to_ready_seconds": 253.87572059999997,
+      "mix": "mixed",
+      "ready": 4,
+      "requested": 4,
+      "time_to_ready_seconds": {
+        "starrocks.agg_001": 253.87572059999997,
+        "starrocks.agg_003": 29.617782975999944,
+        "starrocks.join_002": 197.87134136999998,
+        "starrocks.join_004": 32.35319666800001
+      }
+    },
+    "faults": {
+      "catchup_seconds": [
+        190.19588577500002
+      ],
+      "count": 1,
+      "join_right_updates": [
+        {
+          "bucket": 0,
+          "revision": 1
+        }
+      ],
+      "max_catchup_seconds": 190.19588577500002,
+      "max_restart_seconds": 0.05426684999997633,
+      "restart_seconds": [
+        0.05426684999997633
+      ],
+      "source_frontiers": [
+        {
+          "base_applied_seq": 301,
+          "log_durable_seq": 301
+        }
+      ],
+      "source_rows_during_fault": [
+        9000
+      ]
+    },
+    "final_state": {
+      "base_applied_seq": 301,
+      "deliveries": 0,
+      "log_durable_seq": 301,
+      "pending": 0,
+      "shared_followers": 4
+    },
+    "healthy_observation_seconds": 121.22704061600007,
+    "latency_p95_seconds": 21.25271205200002,
+    "latency_p99_seconds": 41.989322904000005,
+    "latency_samples_per_second": 0.8991393293619155,
+    "pipeline_resources": {
+      "service_cpu_seconds": 432.044467,
+      "service_peak_memory_upper_bound_bytes": 2497011712,
+      "service_read_bytes": 192512,
+      "service_write_bytes": 205803520,
+      "total_cpu_core_equivalent": 2.4272522553874194,
+      "total_cpu_seconds": 847.864467,
+      "total_peak_memory_upper_bound_bytes": 3131482112,
+      "total_read_bytes": 212992,
+      "total_write_bytes": 2999726080,
+      "unique_service_scopes": 2
+    }
+  },
+  "exactness": {
+    "aggregate_exactness": {
+      "all_match": true,
+      "checked_targets": 3
+    },
+    "event_exactness": {
+      "all_match": true,
+      "checked_targets": 1
+    },
+    "join_exactness": {
+      "all_match": true,
+      "checked_targets": 3
+    }
+  },
+  "format_version": 1,
+  "gate": {
+    "failures": [
+      "latency_p95",
+      "latency_p99"
+    ],
+    "ok": false,
+    "thresholds": {
+      "max_p95_seconds": 5.0,
+      "max_p99_seconds": 10.0,
+      "min_cdc_rows_per_second": 49.0,
+      "min_dynamic_tasks": 4,
+      "min_elapsed_seconds": 300.0,
+      "min_faults": 1,
+      "min_initial_rows": 100000,
+      "min_latency_samples_per_second": 0.75,
+      "require_drained": true,
+      "require_profile": null,
+      "require_service_resources": true,
+      "require_sharing": true
+    }
+  },
+  "kind": "m2s_staged_validation_summary",
+  "limits": [
+    "development evidence only",
+    "all gate results refer only to the recorded code revision",
+    "full logs in expiring Actions artifact; no cross-version or formal P11 claim"
+  ],
+  "parameters": {
+    "dynamic_tasks": 4,
+    "initial_rows": 100000,
+    "memory_mb": 4096,
+    "protocol": "merge_async",
+    "rows_per_second": 50,
+    "source_schedule_seconds": 300.0
+  },
+  "profile": "development:small",
+  "run_url": "https://github.com/justgo4/m2s/actions/runs/37084867442"
+}

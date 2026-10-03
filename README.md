@@ -369,6 +369,8 @@ smoke 精确沿用已有 E2E 的 60 秒 cold-start/mixed-fault workload 与开�
 
 首个 100k/5 分钟性能测试 [run 37084867442](https://github.com/justgo4/m2s/actions/runs/37084867442) 的 raw、aggregate、三个 JOIN 的全行 oracle 和动态任务/强退恢复/drain 均正确，sample density=0.899 达标；仅延迟门禁失败，P95≈21.25s、P99≈41.99s。恢复追赶约 190s、m2s 峰值 RSS≈605MiB、累计写入约 2.79GB；日志中有 CPU 压力触发的 snapshot pause 和任务就绪尾延迟。artifact `11260627960` 保留，性能根因仍需分析；这些数据不支持生产 SLO 或 50M/72h 声明，也不直接证明必须更换 SQLite/native。
 
+固定资源的第一项候选改进是 CDC lane bundling：原先一个 writer 服务 16 lane 时每批最多 4 lane，指标显示每次 VISIBLE 约 1.19s，需多次轮转。现在 `CDC_CDC_BUNDLE_MAX_LANES` 默认 16，可设回 4 做对比；宽度仍按 active writer 数分配，既有 row/byte/prepared 上限、逐 lane FIFO、plan version 和持久 membership/ack 规则不变。新增 16-lane restart/FIFO、行字节预算、snapshot/代际边界与显式 cap 回归，PR 分级 workflow 同时跑 smoke/small，核心 runtime 变更也触发分级测试。该候选尚须同 SHA 的真实性能/精确性结果，未宣称已解决 snapshot pause 或达到 SLO；历史失败的持久数值摘要见 [reports/validation-small-20261003.json](reports/validation-small-20261003.json)。
+
 **完整愿景** 还包括更多 SQL/跨算子通用增量编译、通用 arrangement/factorized state、整图长期成本优化、公平对标以及 P12/P13 的运维控制面/权限/MCP。它们不是受限 v1 的强制前置依赖；“任意 SQL”“达到物理极限”“全面领先”不能成为没有可验收边界的完成定义。Python/SQLite 或 native 的替换也不先验必做。
 
 | 出口 | 条件化规划预算 | 完成的含义 |

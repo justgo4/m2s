@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
     paths:
+      - 'j4.py'
+      - 'cdc_catalog.py'
       - 'validation_profiles.py'
       - 'tools/validation_run*.py'
       - 'tools/longhaul_workload.py'
@@ -11,6 +13,8 @@ on:
       - '.github/workflows/validation.yml'
   pull_request:
     paths:
+      - 'j4.py'
+      - 'cdc_catalog.py'
       - 'validation_profiles.py'
       - 'tools/validation_run*.py'
       - 'tools/longhaul_workload.py'
@@ -39,7 +43,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        profile: ${{ fromJSON(github.event_name == 'pull_request' && '["smoke"]' || github.event_name == 'workflow_dispatch' && format('["{0}"]', inputs.profile) || '["small","million"]') }}
+        profile: ${{ fromJSON(github.event_name == 'pull_request' && '["smoke","small"]' || github.event_name == 'workflow_dispatch' && format('["{0}"]', inputs.profile) || '["small","million"]') }}
     env:
       PYTHONUNBUFFERED: '1'
       CDC_RESOURCE_CPU_CORES: '2'
