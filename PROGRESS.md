@@ -277,3 +277,34 @@ and WAL reader isolation, collision rollback, fixed-W recheck under write lock.
 stream~140–142MiB. CPU/wall~2.0–2.45s versus2.27–2.36s: no throughput claim.
 1M-pair synthetic A/B pending. Keep atomic seed; total writer duration unbounded.
 Do not confuse bounded Python pair memory with resumable chunked outbox/jobs.
+
+## Streamed atomic JOIN seed implemented
+
+Branch codex/v1-stream-join-bootstrap-20261003 now integrates maincb153909a979200d246fb516117758ebdb221d41.
+join_state.iter_pairs uses indexed left scan/right equality probes, yields one
+pair projection at a time. join_outbox seeds full/projected bootstrap directly
+into atomic durable rows and hashes canonical ordered durable PK cursor. Existing
+commits verify each source payload/count/digest on exact retry. Rechecks immutable
+state identity/spec/bootstrap/W under the write lock. No schema change, no partial
+bootstrap publication, no output protocol/consumer/pin/frontier change.
+Five real WAL/full-oracle tests PASS; original generation/runtime/job bridge/
+shared/subview/100 follower/GC/2000transaction randomized oracle PASS locally.
+reports/join-stream-local-20261003.json retains raw synthetic A/B and SHA256 of
+algorithm sources. 1M exact pair/digest: cache824152064 RSS/25.751s versus
+stream148361216 RSS/28.469s (82.0% less peak process RSS,10.6% slower wall).
+100k3 repeats similar CPU/wall and~30% lower RSS. Do not declare faster/lock
+resolved: total atomic seed writer time and full job staging remain unbounded.
+A 1M output pair ≠ 1M source rows or true daemon performance evidence.
+Next: fresh full same-SHA CI before merge; bounded durable seeding/job staging
+protocol and real1M/SLO after prior gates. Formal50M72h still absent.
+
+## JOIN candidate CI trigger coverage correction
+
+PR13 runtime head37860bf4 started baseline/native/eight E2E; state/validation
+were excluded by existing path filters even though JOIN seed affects real mixed
+workloads. Extend validation to source/aggregate/JOIN/stateful runtime changes;
+state workflow triggers JOIN and executes stream contract + bounded100k-pair
+A/B2 repeats, with explicit actual-head checkout. Require fresh same-head complete
+CI after this workflow correction rather than mixing prior SHA passes.
+Snapshot PR12 head0660e327 all correctness/smoke passed but strict small failed
+in37097752817 artifact11264873012; retain original report and inspect numbers.

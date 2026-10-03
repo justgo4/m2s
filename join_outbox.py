@@ -284,6 +284,71 @@ def _insert_commit(con,consumer_id,source_seq,kind,rows):
     return True
 
 
+def _seed_bootstrap_stream(con,consumer_id,fixed_w,state_id,spec_hash,rows):
+    """Atomically seed from an iterator; never cache/sort the complete relation.
+
+    The durable output-row PK provides canonical digest order. Existing commits
+    validate every source pair/payload and count before accepting an exact retry.
+    Total write-lock duration remains proportional to output cardinality.
+    """
+    with transaction(con):
+        state=join_state.state_info(con,state_id)
+        if (not state["bootstrap_complete"] or int(state["watermark"])!=int(fixed_w)
+                or state["spec_hash"]!=spec_hash):
+            rows.close()
+            raise RuntimeError("JOIN bootstrap state changed before output seed")
+        existing=con.execute("""
+            SELECT kind,nrows,digest FROM join_output_commits
+            WHERE consumer_id=? AND source_seq=?
+        """,(consumer_id,int(fixed_w))).fetchone()
+        if existing is not None and str(existing[0])!="bootstrap":
+            raise RuntimeError("JOIN output commit retry has different payload")
+        now=time.time()
+        if existing is None:
+            con.execute("""
+                INSERT INTO join_output_commits(
+                    consumer_id,source_seq,kind,nrows,digest,visible,created,updated)
+                VALUES(?,?,'bootstrap',0,'',0,?,?)
+            """,(consumer_id,int(fixed_w),now,now))
+        count=0
+        try:
+            for pair_id,op,payload in rows:
+                _register_pair_identity_locked(con,consumer_id,pair_id)
+                if existing is None:
+                    con.execute("""
+                        INSERT INTO join_output_rows(
+                            consumer_id,source_seq,pair_id,op,row_payload)
+                        VALUES(?,?,?,?,?)
+                    """,(consumer_id,int(fixed_w),bytes(pair_id),int(op),bytes(payload)))
+                else:
+                    stored=con.execute("""
+                        SELECT op,row_payload FROM join_output_rows
+                        WHERE consumer_id=? AND source_seq=? AND pair_id=?
+                    """,(consumer_id,int(fixed_w),bytes(pair_id))).fetchone()
+                    if stored is None or int(stored[0])!=int(op) or bytes(stored[1])!=bytes(payload):
+                        raise RuntimeError("JOIN output commit retry has different payload")
+                count+=1
+        finally:
+            rows.close()
+        ordered=con.execute("""
+            SELECT pair_id,op,row_payload FROM join_output_rows
+            WHERE consumer_id=? AND source_seq=? ORDER BY pair_id
+        """,(consumer_id,int(fixed_w)))
+        try:
+            digest=_digest("bootstrap",ordered)
+        finally:
+            ordered.close()
+        if existing is not None:
+            if int(existing[1])!=count or str(existing[2])!=digest:
+                raise RuntimeError("JOIN output commit retry has different payload")
+        else:
+            con.execute("""
+                UPDATE join_output_commits SET nrows=?,digest=?,updated=?
+                WHERE consumer_id=? AND source_seq=?
+            """,(count,digest,time.time(),consumer_id,int(fixed_w)))
+    return commit_info(con,consumer_id,fixed_w)
+
+
 def seed_bootstrap(
         con,consumer_id,state_id,plan_version,generation_id,fixed_w
 ):
@@ -297,22 +362,14 @@ def seed_bootstrap(
     if int(state["watermark"])!=int(fixed_w):
         raise RuntimeError(
             "JOIN bootstrap outbox watermark differs from state")
-    rows=[
+    rows=(
         (
             bytes(item["pair_id"]),0,
             pickle.dumps(item["row"],protocol=5),
         )
-        for item in join_state.read_pairs(con,state_id)
-    ]
-    with transaction(con):
-        for pair_id,_,_ in rows:
-            _register_pair_identity_locked(
-                con,consumer_id,pair_id)
-        _insert_commit(
-            con,consumer_id,int(fixed_w),
-            "bootstrap",rows)
-    return commit_info(
-        con,consumer_id,fixed_w)
+        for item in join_state.iter_pairs(con,state_id)
+    )
+    return _seed_bootstrap_stream(con,consumer_id,fixed_w,state_id,state["spec_hash"],rows)
 
 
 def _projected_spec(source_spec,target_spec):
@@ -372,25 +429,17 @@ def seed_bootstrap_projected(
     if int(source["watermark"])!=int(fixed_w):
         raise RuntimeError(
             "projected JOIN bootstrap source moved from fixed-W")
-    rows=[
+    rows=(
         (
             bytes(item["pair_id"]),0,
             pickle.dumps(
                 _project_row(target_spec,item["row"]),
                 protocol=5),
         )
-        for item in join_state.read_pairs(
+        for item in join_state.iter_pairs(
             con,source_state_id)
-    ]
-    with transaction(con):
-        for pair_id,_,_ in rows:
-            _register_pair_identity_locked(
-                con,consumer_id,pair_id)
-        _insert_commit(
-            con,consumer_id,int(fixed_w),
-            "bootstrap",rows)
-    return commit_info(
-        con,consumer_id,fixed_w)
+    )
+    return _seed_bootstrap_stream(con,consumer_id,fixed_w,source_state_id,source["spec_hash"],rows)
 
 
 def copy_commit_projected(
