@@ -2,6 +2,7 @@
 """Isolated cached/streamed JOIN bridge A/B; synthetic journal, no SLO claim."""
 import argparse
 import hashlib
+import inspect
 import json
 from pathlib import Path
 import pickle
@@ -149,7 +150,12 @@ def stage_commit(
 '''
 
 
-def measure(mode,rows):
+CONFIGURED_REFERENCE=inspect.getsource(join_job_bridge._mutation_batches).replace(
+    "max(1,min(int(cfg.get(\"batch_rows\",4096)),4096))",
+    "max(1,int(cfg.get(\"batch_rows\",4096)))")
+
+
+def measure(mode,rows,partitions=4,batch_rows=4096,batch_bytes=1024*1024,max_row_bytes=64*1024*1024):
     with tempfile.TemporaryDirectory() as directory:
         path=str(Path(directory)/"state.sqlite3")
         con=j4.init_state(path)
@@ -175,9 +181,14 @@ def measure(mode,rows):
             namespace=dict(vars(join_job_bridge))
             exec(compile(CACHE_REFERENCE,"<cb153909-bridge>","exec"),namespace)
             stage=namespace["stage_commit"]
+        if mode=="configured-stream":
+            namespace=dict(vars(join_job_bridge))
+            exec(compile(CONFIGURED_REFERENCE,"<configured-stream-candidate>","exec"),namespace)
+            exec(compile(inspect.getsource(join_job_bridge.stage_commit),"<stream-stage>","exec"),namespace)
+            stage=namespace["stage_commit"]
         mapping=fixture.mapping()
         cfg=fixture.cfg(path)
-        cfg["batch_rows"]=4096
+        cfg.update(key_partitions=partitions,batch_rows=batch_rows,batch_bytes=batch_bytes,max_row_bytes=max_row_bytes)
         started=time.monotonic()
         cpu=time.process_time()
         result=stage(con,"join-consumer",0,mapping,cfg)
@@ -199,6 +210,9 @@ def measure(mode,rows):
                     logical_bytes=j4.meta_get(con,"pending_bytes",0),atomic_enqueue_lock_bounded=False,
                     source_sha256=hashlib.sha256((ROOT/"join_job_bridge.py").read_bytes()).hexdigest(),
                     cache_reference_sha256=hashlib.sha256(CACHE_REFERENCE.encode()).hexdigest(),
+                    configured_reference_sha256=hashlib.sha256(CONFIGURED_REFERENCE.encode()).hexdigest(),
+                    topology=dict(key_partitions=j4.key_partition_count(cfg),configured_batch_rows=batch_rows,
+                                  batch_bytes=batch_bytes,max_row_bytes=max_row_bytes,stream_mutation_row_limit=(max(1,batch_rows) if mode=="configured-stream" else max(1,min(batch_rows,4096)))),
                     software=dict(python=sys.version,sqlite=sqlite3.sqlite_version))
         con.close()
         return output
@@ -208,19 +222,30 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rows",type=int,default=100000)
     parser.add_argument("--repeats",type=int,default=2)
-    parser.add_argument("--mode",choices=["cache","stream"])
+    parser.add_argument("--mode",choices=["cache","stream","configured-stream"])
     parser.add_argument("--output",type=Path)
+    parser.add_argument("--configured-candidate",action="store_true",
+                        help="also measure isolated configured-row candidate; runtime remains unchanged")
+    parser.add_argument("--partitions",type=int,default=4)
+    parser.add_argument("--batch-rows",type=int,default=4096)
+    parser.add_argument("--batch-bytes",type=int,default=1024*1024)
+    parser.add_argument("--max-row-bytes",type=int,default=64*1024*1024)
     args=parser.parse_args()
-    if min(args.rows,args.repeats)<1:
-        parser.error("rows/repeats must be positive")
+    if min(args.rows,args.repeats,args.partitions,args.batch_rows,args.batch_bytes,args.max_row_bytes)<1:
+        parser.error("rows/repeats/partitions/batch budgets must be positive")
     if args.mode:
-        print(json.dumps(measure(args.mode,args.rows)),flush=True)
+        print(json.dumps(measure(args.mode,args.rows,args.partitions,args.batch_rows,args.batch_bytes,args.max_row_bytes)),flush=True)
         return
     runs=[]
     for _ in range(args.repeats):
-        for mode in ["cache","stream"]:
-            completed=subprocess.run([sys.executable,__file__,"--mode",mode,"--rows",str(args.rows)],
-                                     capture_output=True,text=True,check=True)
+        for mode in (["cache","stream","configured-stream"] if args.configured_candidate else ["cache","stream"]):
+            completed=subprocess.run([sys.executable,__file__,"--mode",mode,"--rows",str(args.rows),
+                                     "--partitions",str(args.partitions),"--batch-rows",str(args.batch_rows),
+                                     "--batch-bytes",str(args.batch_bytes),"--max-row-bytes",str(args.max_row_bytes)],
+                                     capture_output=True,text=True)
+            if completed.returncode:
+                raise RuntimeError("isolated %s worker failed:\n%s\n%s" %
+                                   (mode,completed.stdout,completed.stderr))
             runs.append(json.loads(completed.stdout.splitlines()[-1]))
     if len({x["bag_digest"] for x in runs})!=1:
         raise RuntimeError("cached/streamed full output bags differ")

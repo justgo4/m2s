@@ -66,7 +66,9 @@ jobs:
       - name: Bounded streamed JOIN bridge and isolated output-memory A/B
         run: |
           python tools/join_bridge_stream_test.py
+          python tools/join_bridge_stream_benchmark_test.py
           python tools/join_bridge_stream_benchmark.py --rows 100000 --repeats 2 --output benchmark-results/join-bridge-stream.json
+          python tools/join_bridge_stream_benchmark.py --rows 100000 --repeats 2 --configured-candidate --partitions 16 --batch-rows 50000 --batch-bytes 16777216 --output benchmark-results/join-bridge-production.json
       - name: Sync-WAL atomic commits, process crashes, fixed W and suffix replay
         run: python tools/state_layout_benchmark.py --rows 1000 --transactions 10 --changes 20 --repeats 2 --rocks --faults --output benchmark-results/state-contract.json
       - name: High entropy wide values in independent randomized worker processes
@@ -83,6 +85,9 @@ jobs:
         with:
           name: state-layout-python-${{ matrix.python }}
           path: |
+            benchmark-results/join-bootstrap-stream.json
+            benchmark-results/join-bridge-stream.json
+            benchmark-results/join-bridge-production.json
             benchmark-results/state-contract.json
             benchmark-results/state-wide.json
             benchmark-results/source-apply-staging.json

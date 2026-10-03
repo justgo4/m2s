@@ -336,3 +336,42 @@ in37097752817 artifact11264873012; retain original report and inspect numbers.
 - PR #17 tested6ce77149b55ac0eaa70c1f1afda92e893093c41c: baseline37101089222/native37101089228/state37101089260/eight E2E37101089263/smoke37101089198 PASS; merged5a0f22f300d0d9afbfaa141dfe19df4d6b75d193, identical tree.
 - PR #12 c509d5ae correctness baseline37100671711/native37100671748/state37100671721/eight E2E37100671701 PASS; staged37100671707 smokePASS/strict smallFAIL. Artifact11266017029 actual report SHA verifiedc509: P95=19.065292522/P99=21.066043648s, CPU245.33s/RSS475729920; all output/recovery/drain exact. Earlier7052 artifact11266365888 separately P95=6.147336155/P99=9.118501335s, stillFAIL P95. Neither is certified or controlled A/B.
 - Next executable measurement edits tools/join_bridge_stream_benchmark.py to parameterize partition/row/byte budgets; compare current stream and independent cached baseline at production topology with full output bag. No runtime cap change before measured evidence. Then pursue bounded durable staging protocol with crash/last-ack/GC tests. Continue saving before and after milestones.
+
+
+## Active 2026-10-03 production-topology measurement
+
+Base main3da6cf7152e7ec8fd6a172e98a90e9dafcfa2750; branch
+`codex/join-production-topology-20261003`. Fresh README/AGENTS/progress/open
+PR reconciliation complete; PR12 stays unmerged after strict latency failure.
+First milestone parameterizes isolated JOIN bridge A/B with partitions, configured
+row/byte budgets, records effective4096 stream cap and measures production
+16 partitions/16MiB/50000 configured rows. Retain independent complete bag oracle,
+fresh child processes and original cache reference. Runtime unchanged until
+evidence. Next: implement parameters, run local contracts and100k/1M evidence,
+commit/checkpoint before bounded durable publication work. No formal SLO claim.
+
+Implementation checkpoint: benchmark accepts partitions/batch rows/bytes/max row
+bytes, forwards to fresh workers, reports topology/effective4096 cap. Optional
+configured-stream candidate changes only isolated function namespace, never runtime.
+First100k production A/B full bag exact: cache16 jobs vs stream400; RSS402–409MB
+vs238–239MB. Full1M three-way and100k two-repeat three-way running locally.
+Fixture max-row1MiB falsely rejects large cached batches; now explicit64MiB
+production default and worker failures preserve stdout/stderr. CI now uploads
+JOIN JSON artifacts (previous workflow computed them but omitted upload paths).
+Added real process topology forwarding/full bag and failure diagnostic tests.
+Next: collect reports, preserve curated numeric evidence, submit focused PR with
+fresh state CI. No cap change or bounded enqueue/SLO claim.
+
+Measurement complete: reports/join-production-topology-local-20261003.json
+retains100k two repeats and1M one repeat, ALL output bags equal per row count.
+1M current stream3920 jobs/252301312 RSS/17.424s; isolated configured-row
+candidate320 jobs/368746496 RSS/14.976s; cache16 jobs/1910452224 RSS/18.686s.
+Candidate trades bounded extra batch memory for fewer jobs; this is local bridge
+evidence, not remote/SLO or bounded-lock proof. No runtime change in this PR.
+PR18 head6f8111e9859cb770b6e7f39b0b362328f728ae1f began baseline37102340984,
+native37102341012,state37102340983; fresh report/docs commit needs own checks.
+Local stream4/benchmark2/job bridge/runtime/privacy/diff checks passed.
+Next independent runtime candidate: honor configured row budget up to bounded
+50000 cap, maintain byte/singleton/restart/last-ack contracts and require real
+daemon strict-small before any performance claim. Bounded durable publication
+remains separate structural work; do not conflate larger batch with shorter locks.
