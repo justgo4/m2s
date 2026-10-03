@@ -591,3 +591,26 @@ state.yml includes the new contract. Next submit focused PR, validate same-head
 CI, merge only green, then inspect integrated strict small/million gates.
 Remaining mutable JOIN attach seed and promotion clone transactions are still
 unbounded: no claim that idle-write coalescing resolves all lock ownership.
+
+
+### 2026-10-03 pending shared JOIN attach structural milestone
+
+PR23 aeaf500e08a6bdbda9a4b3794988bffdc53b4810 and PR24
+72b60564efdde49aa048ec69ca1cd371f3225613 are submitted and running CI;
+do not rewrite their tested heads. New codex/shared-join-attach-20261003
+starts at72b6056 for separately reviewed shared output initialization.
+Current shared attach still encloses full seed in BEGIN; promotion encloses
+full copy/clone. Primary output chunks do not bound these legacy paths.
+
+Investigate resumable pending attach at leader W using source MVCC + durable
+pin_at_W (existing consumer protects W against GC). Build independent temporary
+state from source(W), then bounded unpublished output; short final binding
+handoff keeps consumer/pin/ref atomic and checks task/leader semantic identity.
+Do not use the follower's private state ID, pause leader blindly, or seed from
+moving unversioned leader rows. Pending intent must fence private fallback,
+claim/stage and restart; owner retirement/semantic drift cancels and discards
+bounded temporary rows before releasing pin/provisional ref. Actual task drop
+must handle intent even without a generation. New milestone needs real WAL,
+source advance/GC/high-fanout/crash/retire/full-row tests and existing sharing
+contracts before hosted same-head CI. This entry is a design checkpoint,
+not an implemented protocol or strict SLO claim.
