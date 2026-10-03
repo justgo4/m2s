@@ -11,9 +11,24 @@ the goals and evidence boundaries. Read AGENTS.md before continuing.
 - Starting main: `017285bafd1978cdf129ba2beb9a592d4c63ce48`.
 - Active milestone: **V1-01, staged validation and independent run supervision**.
 - Active branch: `codex/v1-staged-validation-20261003`, [PR #5](https://github.com/justgo4/m2s/pull/5).
-- Implementation checkpoint: `db96c9193fd04236a040e5ac47f6a77f24f408da`;
+- Implementation checkpoint: `2837773a2018ffcb3e7a70db4abf099edeabf099`;
   base `ffad2701181a475d44622a16c89539a30b675b3c`. Nine local protocol tests,
   canonical P11/gate contracts, syntax and privacy checks pass. Remote CI pending.
+
+First implementation `db96c9193fd04236a040e5ac47f6a77f24f408da`:
+[baseline](https://github.com/justgo4/m2s/actions/runs/37083541892) and
+[native](https://github.com/justgo4/m2s/actions/runs/37083541616) succeeded;
+[E2E](https://github.com/justgo4/m2s/actions/runs/37083541618) reached seven
+successful cells before the new revision. [Staged smoke](https://github.com/justgo4/m2s/actions/runs/37083541672)
+failed its latency/density gate, with all full-row exactness, dynamic tasks and
+recovery correct: P95/P99 15.09s, density 0.664. Artifact `11260180673` preserves
+the complete report. This is not a 5/10s performance pass.
+
+The follow-up checkpoint aligns only **protocol smoke** with existing E2E:
+sample=0.5s, snapshot chunk=512, fault interval=20s; P95/P99=30/60s and density=0.2.
+Small/million/medium/scale/soak retain 5/10s; canonical P11 and formal gate defaults
+remain unchanged. plan.json explicitly exposes gate_thresholds. Latest PR CI must
+pass independently; do not merge by combining old and new green runs.
 - Working files: `validation_profiles.py`, `tools/validation_run.py`,
   `tools/validation_run_test.py`, `tools/longhaul_workload.py`,
   `tools/longhaul_workload_test.py`, `.github/workflows/validation.yml`,
