@@ -232,3 +232,20 @@ runner operations; retain post-step result for physical registry sync retry.
 FULL/corruption/active transactions remain fatal. Add real SQLite contention,
 atomic bootstrap/outbox, post-commit sync and cancellation regressions before CI.
 Snapshot prefix remains independent PR9 head87ef3616, awaiting fresh checks.
+
+## Stateful BUSY implementation checkpoint
+
+Four full-import real SQLite tests PASS: rollback-safe actual aggregate bootstrap
+resumes to exactly one durable outbox/row and releases its fixed-W pin after target
+ack; stop interrupts contention; post-step registry contention retains the committed
+result without rerunning the runner; FULL/CORRUPT/LOCKED/open-transaction BUSY stay
+fatal. All calls use original30s production busy timeout (only tests10ms).
+Existing aggregate runtime, physical registry and hot-add tests PASS locally.
+Runner retry returns to outer loop to recheck membership/completeness/retire W;
+registry retry retains result. No retry added to remote output or retirement.
+Long JOIN bootstrap/outbox lock cost is still unresolved; this is recovery,
+not a claim of throughput, million success or formal P11 certification.
+Commands: python tools/stateful_worker_contention_test.py; python tools/aggregate_runtime_test.py;
+python tools/stateful_physical_registry_test.py; python tools/stateful_hot_add_test.py.
+New same-SHA CI still required. PR9 ref87ef3616 updated but GitHub returned no new
+workflow runs; reopening once also has not yielded runs. No old run relabeled.

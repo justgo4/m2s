@@ -11334,6 +11334,23 @@ def stateful_rebuild_test_gate(item,stop):
         stop.wait(0.05)
 
 
+def stateful_worker_busy_retry(con, runtime, task_id, exc):
+    # Durable runner steps resume their committed prefix; registry sync is
+    # independently idempotent. Never retry an open transaction, FULL,
+    # corruption, or a generic "locked" message without SQLite's BUSY code.
+    if con.in_transaction or (getattr(exc,"sqlite_errorcode",0)&255)!=sqlite3.SQLITE_BUSY:
+        raise exc
+    retries=runtime.setdefault("stateful_busy_retries",{})
+    retries[task_id]=int(retries.get(task_id,0))+1
+    now=time.monotonic()
+    timestamps=runtime.setdefault("stateful_busy_log_times",{})
+    if now-timestamps.get(task_id,-float("inf"))>=30:
+        log("STATEFUL BUSY retry task=%s durable_prefix_retained=1 retries=%d"
+            % (task_id,retries[task_id]))
+        timestamps[task_id]=now
+    runtime["stop"].wait(0.2)
+
+
 def stateful_task_worker(item, cfg, runtime):
     con=open_state(cfg["state"])
     stop=runtime["stop"]
@@ -11402,6 +11419,11 @@ def stateful_task_worker(item, cfg, runtime):
                     con,cfg,runtime,item,runner,mapping,
                     bootstrap_limit=max(
                         1,min(int(cfg.get("snapshot_rows",1000)),4096)))
+            except sqlite3.OperationalError as exc:
+                stateful_worker_busy_retry(con,runtime,task["task_id"],exc)
+                # Re-read active task membership, source completeness and
+                # retirement frontier before resuming a durable runner step.
+                continue
             except (RuntimeError,KeyError):
                 with runtime["plan_lock"]:
                     active_ids=runtime.get("stateful_active_task_ids")
@@ -11437,8 +11459,15 @@ def stateful_task_worker(item, cfg, runtime):
                         task["task_id"],mapping_key(mapping),kind,
                         result["generation"].get("fixed_w"),
                     ))
-            stateful_physical_registry.sync_runtime_result(
-                con,item,result)
+            while not stop.is_set():
+                try:
+                    stateful_physical_registry.sync_runtime_result(
+                        con,item,result)
+                    break
+                except sqlite3.OperationalError as exc:
+                    stateful_worker_busy_retry(con,runtime,task["task_id"],exc)
+            if stop.is_set():
+                break
             consumer=result.get("consumer")
 
             if retire_frontier is not None and consumer is not None:
