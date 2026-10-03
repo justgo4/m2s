@@ -139,6 +139,7 @@ jobs:
           python tools/arrow_job_schema_test.py
           python tools/source_pipeline_metrics_test.py
           python tools/source_transaction_spool_test.py
+          python tools/capture_begin_contention_test.py
           python tools/source_log_consumer_test.py
           python tools/source_seq_frontier_test.py
           python tools/task_generation_test.py
