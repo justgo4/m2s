@@ -7929,6 +7929,28 @@ def submit_merge_async(handle, con, mapping, delivery, part, cfg, stop, runtime)
                        f"{last_error}; journal retained")
 
 
+def mark_merge_transaction_visible(con, delivery, txn_id, stop):
+    # The remote transaction is already known VISIBLE. Only retry recording
+    # that fact locally; never return to submit/relabel or replay the HTTP load.
+    last_log=-float("inf")
+    while not stop.is_set():
+        try:
+            with state_transaction(con):
+                con.execute("UPDATE load_parts SET visible=1 WHERE delivery_id=? AND txn_id=?",
+                            (delivery,txn_id))
+            return
+        except sqlite3.OperationalError as exc:
+            if con.in_transaction or (getattr(exc,"sqlite_errorcode",0)&255)!=sqlite3.SQLITE_BUSY:
+                raise
+            now=time.monotonic()
+            if now-last_log>=30:
+                log("MERGE VISIBLE BUSY delivery=%s txn=%s local_record_retry=1"
+                    % (delivery,txn_id))
+                last_log=now
+            stop.wait(0.2)
+    raise RuntimeError("stopped recording known-visible Merge Commit; journal retained")
+
+
 def merge_async_delivery(handle, con, mapping, delivery, cfg, runtime):
     """Send all parts first, then gate journal progress on every merge transaction becoming VISIBLE."""
     stop,table = runtime["stop"],mapping_key(mapping)
@@ -7950,9 +7972,7 @@ def merge_async_delivery(handle, con, mapping, delivery, cfg, runtime):
         for txn_id in txn_ids:
             state,detail = wait_visible(cfg,txn_id,stop)
             if state == "visible":
-                with state_transaction(con):
-                    con.execute("UPDATE load_parts SET visible=1 WHERE delivery_id=? AND txn_id=?",
-                                (delivery,txn_id))
+                mark_merge_transaction_visible(con,delivery,txn_id,stop)
                 continue
 
             failure = load_result_text(detail)

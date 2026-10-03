@@ -143,6 +143,7 @@ jobs:
           python tools/resource_startup_test.py
           python tools/merge_quarantine_test.py
           python tools/merge_commit_identity_test.py
+          python tools/merge_visible_contention_test.py
       - name: Verify bundled native ABI and offline recovery
         run: |
           python native/native_abi_selftest.py
