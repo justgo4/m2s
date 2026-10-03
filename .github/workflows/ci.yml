@@ -84,6 +84,7 @@ jobs:
           python tools/metric_slo_test.py
           python tools/p11_profile_test.py
           python tools/validation_run_test.py
+          python tools/runner_inventory_test.py
           python tools/longhaul_gate_test.py
           python tools/longhaul_workload_test.py
           python tools/process_resource_probe_test.py
