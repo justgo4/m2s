@@ -805,6 +805,10 @@ def publish(path, publish_callback=None):
 def prune_plans(path, keep_versions=(), keep_recent=32):
     con = catalog_open(path)
     try:
+        # Serialize the keep-set snapshot with publishers. This connection is
+        # in autocommit mode: ``with con`` alone does not acquire a transaction,
+        # and a plan published after the SELECTs would otherwise be deleted.
+        _transaction(con)
         published = int(_meta_get(con,"published_version","0"))
         keep = {int(v) for v in keep_versions if int(v) > 0}
         if published:
@@ -814,33 +818,42 @@ def prune_plans(path, keep_versions=(), keep_recent=32):
                 "SELECT version FROM plans ORDER BY version DESC LIMIT ?",
                 (max(1,int(keep_recent)),)).fetchall())
         if not keep:
+            _commit(con)
             return 0
         marks = ",".join("?" for _ in keep)
-        with con:
-            before = int(con.execute("SELECT COUNT(*) FROM plans").fetchone()[0])
-            con.execute(
-                f"DELETE FROM plans WHERE version NOT IN ({marks})",
-                tuple(sorted(keep)))
-            after = int(con.execute("SELECT COUNT(*) FROM plans").fetchone()[0])
+        before = int(con.execute("SELECT COUNT(*) FROM plans").fetchone()[0])
+        con.execute(
+            f"DELETE FROM plans WHERE version NOT IN ({marks})",
+            tuple(sorted(keep)))
+        after = int(con.execute("SELECT COUNT(*) FROM plans").fetchone()[0])
+        _commit(con)
         return before-after
+    except BaseException:
+        with contextlib.suppress(sqlite3.Error):
+            _rollback(con)
+        raise
     finally:
         con.close()
+
+
+def _load_plan_from_con(con, version):
+    row = con.execute("""
+        SELECT revision,plan_hash,mappings_json,macros_json,udfs_json,
+               stateful_tasks_json
+        FROM plans WHERE version=?
+    """,(int(version),)).fetchone()
+    if not row:
+        raise RuntimeError(f"catalog plan version {version} is missing")
+    return dict(
+        version=int(version),revision=int(row[0]),plan_hash=row[1],
+        mappings=json.loads(row[2]),macros=json.loads(row[3]),
+        udfs=json.loads(row[4]),stateful_tasks=json.loads(row[5]))
 
 
 def load_plan_version(path, version):
     con = catalog_open(path)
     try:
-        row = con.execute("""
-            SELECT revision,plan_hash,mappings_json,macros_json,udfs_json,
-                   stateful_tasks_json
-            FROM plans WHERE version=?
-        """,(int(version),)).fetchone()
-        if not row:
-            raise RuntimeError(f"catalog plan version {version} is missing")
-        return dict(
-            version=int(version),revision=int(row[0]),plan_hash=row[1],
-            mappings=json.loads(row[2]),macros=json.loads(row[3]),
-            udfs=json.loads(row[4]),stateful_tasks=json.loads(row[5]))
+        return _load_plan_from_con(con,version)
     finally:
         con.close()
 
@@ -849,14 +862,18 @@ def load_plan(path, seed_path=None):
     ensure_seed(path,seed_path)
     con = catalog_open(path)
     try:
+        # Read the published pointer and its manifest in one WAL snapshot.
+        # A concurrent publish/prune must not invalidate this lookup between
+        # two separate connections.
+        con.execute("BEGIN")
         version = int(_meta_get(con,"published_version","0"))
+        if not version:
+            raise RuntimeError(
+                "catalog has no published plan; configure it with 'python j4.py cli' "
+                "or 'python j4.py sql <file.sql>'")
+        return _load_plan_from_con(con,version)
     finally:
         con.close()
-    if not version:
-        raise RuntimeError(
-            "catalog has no published plan; configure it with 'python j4.py cli' "
-            "or 'python j4.py sql <file.sql>'")
-    return load_plan_version(path,version)
 
 
 def _put_object(con, name, kind, sql_text, replace=False):
@@ -2453,4 +2470,3 @@ if __name__ == "__main__":
     raise SystemExit(shell(
         paths["catalog"],paths["socket"],paths["seed"],
         " ".join(sys.argv[1:]) if len(sys.argv) > 1 else None))
-
