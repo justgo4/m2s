@@ -45,7 +45,7 @@ def validate_mapping(mapping):
 
 def _mutation_batches(con,consumer_id,source_seq,mapping,cfg):
     validate_mapping(mapping)
-    row_limit=max(1,min(int(cfg.get("batch_rows",4096)),4096))
+    row_limit=max(1,min(int(cfg.get("batch_rows",4096)),50000))
     byte_limit=max(1,int(cfg["batch_bytes"]))
     cursor=con.execute("""
         SELECT pair_id,op,row_payload FROM join_output_rows
