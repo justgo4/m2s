@@ -11,7 +11,8 @@ the goals and evidence boundaries. Read AGENTS.md before continuing.
 - Starting main: `017285bafd1978cdf129ba2beb9a592d4c63ce48`.
 - Active milestone: **V1-02, runner inventory and safe operating procedures**.
 - V1-01 merged as `719159d60c54ce510fb5ffabfcc847b068e4bc51` (PR #5).
-- Active branch: `codex/v1-profile-budget-20261003` (preparing).
+- Active branch: `codex/v1-profile-budget-20261003`, [PR #7](https://github.com/justgo4/m2s/pull/7).
+- Active profile fix SHA: `52bb1f3686b771f8b4cf3d5683bac26ef375fec1` (CI pending).
 - Runner inventory [PR #6](https://github.com/justgo4/m2s/pull/6) merged as `af67f2e3a4b14d32b969ed8ec7ac6d4c1d2f3d05`.
 - Previous validated implementation: [PR #5](https://github.com/justgo4/m2s/pull/5).
 - Implementation checkpoint: `2837773a2018ffcb3e7a70db4abf099edeabf099`;
@@ -82,8 +83,10 @@ Latest exact-head evidence: [baseline](https://github.com/justgo4/m2s/actions/ru
 [all eight E2E jobs](https://github.com/justgo4/m2s/actions/runs/37084288201), and
 [supervised real-service smoke](https://github.com/justgo4/m2s/actions/runs/37084288352)
 passed. Merge differs from tested PR head only in PROGRESS.md, verified by GitHub
-compare; runtime/workflow trees are unchanged. Main small/million performance
-is running, not yet a pass.
+compare; runtime/workflow trees are unchanged. Main small/million run `37084867442` failed: million topology preflight before
+seed; small full-row/dynamic/recovery correctness passed but P95=21.25s,
+P99=41.99s and density failed. Small artifact `11260627960` retained; exact
+performance root cause still under investigation. No performance pass exists.
 
 ## Completed evidence to preserve
 
