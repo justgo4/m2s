@@ -7603,7 +7603,7 @@ def merge_payload_profile(mapping,payload):
 
 
 def begin_merge_request(
-        con,mapping,delivery,part,label,payload,profile=None
+        con,mapping,delivery,part,label,payload,profile=None,stop=None
 ):
     now = time.time()
     digest = hashlib.sha256(payload).hexdigest()
@@ -7612,7 +7612,9 @@ def begin_merge_request(
         if profile is None else dict(profile))
     replay_safe=int(bool(profile.get("replay_safe")))
     table=mapping_key(mapping)
-    with state_transaction(con):
+    # Persist intent before HTTP. Only acquisition may retry; a body/COMMIT
+    # failure must leave this unsent payload pending and never enter HTTP retry.
+    with state_transaction(con,stop):
         row=con.execute(
             "SELECT lane FROM deliveries WHERE id=?",
             (delivery,)
@@ -7903,7 +7905,7 @@ def submit_merge_async(handle, con, mapping, delivery, part, cfg, stop, runtime)
             if not wait_version_recovery(runtime,mapping_key(mapping),stop):
                 raise RuntimeError("stopped during version recovery with a pending Merge Commit delivery")
         begin_merge_request(
-            con,mapping,delivery,part,label,payload,profile)
+            con,mapping,delivery,part,label,payload,profile,stop=stop)
         try:
             # Drain an already-started request on graceful shutdown so its TxnId can be saved.
             # HTTP's existing load_timeout+30 still bounds the wait; do not manufacture uncertainty

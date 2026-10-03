@@ -111,6 +111,148 @@ class MergeAcceptedContentionTest(unittest.TestCase):
             with patch.object(j4,'curl_request',side_effect=AssertionError('HTTP replay')):
                 self.assertEqual(self.submit(),(99,dict(Status='LOCAL_PENDING',TxnId=99)))
 
+    def request_contention(self,cancel):
+        busy=threading.Event()
+        errors=[]
+        results=[]
+        original_wait=self.stop.wait
+        def wait(timeout):
+            busy.set()
+            return original_wait(timeout)
+        def worker():
+            con=j4.open_state(self.path)
+            con.execute('PRAGMA busy_timeout=10')
+            try:
+                results.append(self.submit(con))
+            except BaseException as exc:
+                errors.append(exc)
+            finally:
+                con.close()
+        def accepted(*args):
+            check=j4.open_state(self.path)
+            try:
+                self.assertEqual(check.execute('SELECT reason FROM merge_uncertain').fetchall(),
+                                 [('request_inflight_no_txn_id',)])
+            finally:
+                check.close()
+            return 200,self.result
+        # Open the second WAL connection before holding the writer lock.
+        started=threading.Event()
+        original_open=j4.open_state
+        def opened(path):
+            con=original_open(path)
+            started.set()
+            locked.wait(5)
+            return con
+        locked=threading.Event()
+        with patch.object(j4,'open_state',side_effect=opened), \
+             patch.object(j4,'curl_request',side_effect=accepted) as send, \
+             patch.object(self.stop,'wait',side_effect=wait):
+            thread=threading.Thread(target=worker)
+            thread.start()
+            try:
+                self.assertTrue(started.wait(5))
+                self.con.execute('BEGIN IMMEDIATE')
+                locked.set()
+                wait_for(lambda:busy.is_set() or errors)
+                self.assertEqual(errors,[])
+                self.assertTrue(busy.is_set())
+                self.assertEqual(send.call_count,0)
+                self.assertEqual(self.marker(),[])
+                if cancel:
+                    self.stop.set()
+                else:
+                    self.con.rollback()
+                thread.join(5)
+                self.assertFalse(thread.is_alive())
+            finally:
+                self.stop.set()
+                locked.set()
+                if self.con.in_transaction:
+                    self.con.rollback()
+                thread.join(5)
+        self.stop.clear()
+        if cancel:
+            self.assertEqual(len(errors),1)
+            self.assertIn('journal retained',str(errors[0]))
+            self.assertEqual(send.call_count,0)
+            self.assertEqual(self.marker(),[])
+            restored=original_open(self.path)
+            try:
+                with patch.object(j4,'curl_request',side_effect=accepted) as restarted:
+                    self.assertEqual(self.submit(restored),(99,self.result))
+                    self.assertEqual(restarted.call_count,1)
+            finally:
+                restored.close()
+        else:
+            self.assertEqual(errors,[])
+            self.assertEqual(results,[(99,self.result)])
+            self.assertEqual(send.call_count,1)
+        self.assertEqual(self.marker(),[])
+
+    def test_request_begin_busy_waits_before_single_http_send(self):
+        self.request_contention(False)
+
+    def test_request_begin_cancel_does_not_send_or_quarantine_unsent_payload(self):
+        self.request_contention(True)
+
+    def test_request_intent_body_failure_never_sends(self):
+        self.con.execute("CREATE TRIGGER reject_intent BEFORE INSERT ON merge_uncertain "
+                         "BEGIN SELECT RAISE(ABORT,'synthetic intent failure'); END")
+        with patch.object(j4,'curl_request') as send, patch.object(self.stop,'wait') as wait:
+            with self.assertRaises(sqlite3.IntegrityError):
+                self.submit()
+        self.assertEqual(send.call_count,0)
+        self.assertEqual(wait.call_count,0)
+        self.assertEqual(self.marker(),[])
+        self.assertFalse(self.con.in_transaction)
+
+    def test_request_fatal_begin_or_active_transaction_never_sends(self):
+        for code,active in [(sqlite3.SQLITE_FULL,False),(sqlite3.SQLITE_CORRUPT,False),
+                            (sqlite3.SQLITE_LOCKED,False),(sqlite3.SQLITE_BUSY,True)]:
+            with self.subTest(code=code,active=active):
+                con=self.con
+                class FaultConnection:
+                    @property
+                    def in_transaction(self):
+                        return active
+                    def execute(self,sql,*args):
+                        if sql=='BEGIN IMMEDIATE':
+                            exc=sqlite3.OperationalError('synthetic intent begin failure')
+                            exc.sqlite_errorcode=code
+                            raise exc
+                        return con.execute(sql,*args)
+                with patch.object(j4,'curl_request') as send, patch.object(self.stop,'wait') as wait:
+                    with self.assertRaises(sqlite3.OperationalError):
+                        self.submit(FaultConnection())
+                self.assertEqual(send.call_count,0)
+                self.assertEqual(wait.call_count,0)
+                self.assertEqual(self.marker(),[])
+
+    def test_request_intent_commit_busy_never_sends_or_retries_body(self):
+        con=self.con
+        statements=[]
+        class FaultConnection:
+            @property
+            def in_transaction(self):
+                return con.in_transaction
+            def execute(self,sql,*args):
+                statements.append(sql)
+                if sql=='COMMIT':
+                    exc=sqlite3.OperationalError('synthetic intent commit busy')
+                    exc.sqlite_errorcode=sqlite3.SQLITE_BUSY
+                    raise exc
+                return con.execute(sql,*args)
+        with patch.object(j4,'curl_request') as send, patch.object(self.stop,'wait') as wait:
+            with self.assertRaises(sqlite3.OperationalError):
+                self.submit(FaultConnection())
+        self.assertEqual(send.call_count,0)
+        self.assertEqual(wait.call_count,0)
+        self.assertEqual(statements.count('BEGIN IMMEDIATE'),1)
+        self.assertEqual(statements.count('COMMIT'),1)
+        self.assertEqual(self.marker(),[])
+        self.assertFalse(con.in_transaction)
+
     def test_local_begin_busy_records_identity_without_http_replay(self):
         self.contention(False)
 

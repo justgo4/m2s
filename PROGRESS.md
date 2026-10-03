@@ -650,3 +650,41 @@ asserts binding count; no binding-GC predicate. Unchanged transaction path canno
 execute this PR's Merge Commit change. Retrying that isolated job on the same SHA
 after diagnosing evidence; independently fix the test polling boundary rather
 than weaken the remaining-subview assertion or modify runtime retirement.
+## Active request-intent lock recovery (2026-10-03)
+
+Owner renewed repository authorization in this session. Reconciled main
+05e8f168396179d74427bbe663877201ce158d67 and open PR1/2/3/12/19;
+PR23/24/25 are merged. Branch codex/merge-request-intent-busy-20261003.
+Latest staged37118283696 at0932b9c: small completed workload but gate failed;
+million artifact11272977528 fails begin_merge_request BEGIN IMMEDIATE BEFORE
+HTTP, no complete oracle/gate. Do not conflate with accepted-response recovery.
+Implement optional stop-aware BEGIN-only acquisition using existing transaction
+helper; body/COMMIT remain one-shot and request intent must commit before HTTP.
+Next real WAL contention/cancel/restart and fatal/body/commit tests, then exact
+head hosted CI. Strict SLO and persistent-host50M72h remain open.
+
+Implementation: begin_merge_request accepts optional stop and opts into existing
+BEGIN-only BUSY retry; submit_merge_async supplies runtime stop before HTTP scope.
+Local pinned dependencies installed in /workspace/m2s-deps. Commands:
+PYTHONPATH=/workspace/m2s-deps python tools/merge_accepted_contention_test.py
+(11 tests); merge_visible_contention_test.py(3), merge_commit_identity_test.py,
+merge_quarantine_test.py, privacy_check.py and git diff --check PASS. Tests cover
+real WAL independent writer, intent visible before single send, cancel with no
+UNKNOWN/no send and exact restart, body rollback, COMMIT BUSY and fatal/active
+BEGIN. Original pre-request path cannot retry acquisition; no claim of bounded
+lock duration or improved SLO. Next submit focused PR and require same-head CI.
+
+
+### Integrated recovery and timing verification
+
+PR26 headb8e6d7a passed baseline37132902557/native37132902485/
+state37132902475/smoke37132902472 and eight E2E37132902430 after
+isolated re-run of known retirement polling race; merged436a6f6b0fe332c21cddb630521e3cff697ec9b2.
+PR27 eb3bb3a passed all five workflow families37137479058/37137479027/
+37137479025/37137479082/37137479054. Integrate latest main without
+changing either behavior, preserve both PROGRESS histories and require fresh
+exact-head checks. PR28 db1eea passed baseline37137663125/native37137663110/
+eight E2E37137663128; its main integration is separate.
+Synthetic100k inserts/100 FULL WAL commits: diagnostic off0.1369s/on0.2553s
+with exact digest equality. Explicit profiling adds overhead, especially short
+per-row calls; no fair SLO comparison to uninstrumented runs is claimed.
