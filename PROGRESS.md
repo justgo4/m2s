@@ -561,33 +561,59 @@ Next submit focused PR22, preserve its head during CI, and inspect current main
 small/million while profiling remaining shared bootstrap/promotion and hot-path
 write amplification. Formal50M72h remains open pending persistent isolated host.
 
-### 2026-10-03 shared idle-write reduction candidate
 
-PR22 a47179b five required CI families PASS; merged9f4560b19510f1096a235ceb529f8f7b314d55e7.
-Parallel recovery PR23 https://github.com/justgo4/m2s/pull/23 head
- aeaf500e08a6bdbda9a4b3794988bffdc53b4810 retains that main ancestry;
-its CI is running. Keep head fixed. Network quarantine test needs actual
-isolated MySQL/StarRocks services: unavailable locally; hosted actual-daemon
-matrix owns that test. Offline quarantine/identity/visibility and six new
-accepted-response tests PASS. Do not claim a local network oracle passed.
+### 2026-10-03 streaming/reconnection checkpoint
 
-Separate branch codex/shared-idle-observations-20261003 starts at9f4560b.
-stateful_share_policy.observe adds opt-in unchanged_interval; default0 retains
-old API. Aggregate/JOIN shared runtimes use1s for unchanged observations.
-New lag maxima and copied_sequences always persist immediately; no process
-cache, all checks read durable rows. updated is not used as an admission
-staleness clock. Backwards clocks cause writes. samples counts durable
-observations, not runtime poll calls. Maxima and copied work remain exact.
+PR22 https://github.com/justgo4/m2s/pull/22 head
+a47179b529859190fec81776c72d21a1dcc0f8cb is submitted; preserve its head during CI.
+Baseline37115887643, native37115887559, state37115887577 and staged smoke
+37115887652 PASS. Actual daemon37115887635: seven of eight jobs PASS;
+transaction/OFF/OFF mixed P11 smoke still running at this observation.
+Merge only after all required workflows on that exact head pass.
 
-New real WAL test3 PASS: unchanged polls can read while a writer holds BEGIN;
-new peaks still require write; every max/copy survives independent connection;
-default API/count, heartbeat and invalid intervals checked. Existing policy,
-100 aggregate/JOIN exact/subview, runtime/promotion/registry/follower-GC
-contracts PASS. Curated synthetic report
-reports/share-observation-idle-local-20261003.json:100 followers x40 idle polls,
-FULL WAL updates4000->200, WAL frames4100->300, wall0.120->0.039s. Different
-process timings are observations, not strict daemon SLO or controlled hosted A/B.
-state.yml includes the new contract. Next submit focused PR, validate same-head
-CI, merge only green, then inspect integrated strict small/million gates.
-Remaining mutable JOIN attach seed and promotion clone transactions are still
-unbounded: no claim that idle-write coalescing resolves all lock ownership.
+Main30058ba staged development37115278373 million job111180796242 FAILS
+before complete oracle/gate: successful HTTP Merge Commit response returned
+TxnId/Label, then submit_merge_async's local BEGIN IMMEDIATE to save TxnId and
+clear merge_uncertain raised SQLite BUSY. Artifact11271405731 retains the
+failure. This is distinct from prepare-BEGIN contention and from the older
+146499d2 million correctness PASS/strict latency FAIL. Do not combine evidence.
+Lock ownership is not established by this traceback.
+
+Next branch codex/merge-accepted-persistence-20261003 starts at PR22 head.
+Implement only safe local accepted-response identity persistence retry:
+never repeat HTTP because local SQLite is busy, never retry transaction body
+or COMMIT, retain uncertainty marker if persistence cannot complete, preserve
+unknown-output quarantine. Add real WAL contention/single-send/restart and
+failure tests; inspect existing state_transaction and response exception scope
+before editing. Then required same-head CI and focused PR. Primary chunks
+remain separate evidence; shared bootstrap/promotion/fan-out and strict SLO
+remain open. Formal50M72h still needs a configured persistent isolated host.
+
+### 2026-10-03 parallel recovery/performance milestone
+
+Owner explicitly requests parallel work until recovery/long-write and strict
+latency items finish. PR22 tested a47179b ALL five required workflows PASS,
+including full eight E2E37115887635; merged9f4560b19510f1096a235ceb529f8f7b314d55e7.
+Accepted-response branch includes that main plus883c5b0 durable checkpoint.
+
+j4.submit_merge_async now exits HTTP retry handling after parsed acceptance.
+record_merge_acceptance retries only real SQLITE_BUSY at BEGIN before entering
+any body, then writes TxnId/removes UNKNOWN atomically once. Body/COMMIT/fatal
+storage/active-transaction failures never trigger HTTP or local body replay.
+Shutdown saves acceptance if lock is immediately available; cancellation while
+contended leaves the pre-request UNKNOWN marker for restart quarantine.
+Identity conflicts fail closed. New merge_accepted_contention_test:6 PASS real
+WAL writer contention/single-send/restart reuse/cancel quarantine/graceful stop,
+actual trigger body rollback and injected COMMIT/fatal-BEGIN boundaries.
+merge_visible_contention_test:3 PASS; merge_commit_identity_test and
+merge_quarantine_test PASS; compile/diff PASS. Network uncertainty contract
+requires --isolated and is running with that explicit flag. Required hosted CI
+on the submitted recovery head remains pending; no SLO certification implied.
+
+Independent performance work investigates shared follower idle observation
+writes. New telemetry optimization is being validated separately and is not
+included in the focused acceptance-persistence PR. Next submit recovery PR,
+complete same-head checks; submit verified idle-write reduction separately and
+compare full strict small workload on integrated main. Remaining mutable
+shared initialization/owner promotion and high fan-out transactions still need
+bounded/versioned protocols if profile establishes material cost.
