@@ -371,6 +371,12 @@ smoke 精确沿用已有 E2E 的 60 秒 cold-start/mixed-fault workload 与开�
 
 固定资源的第一项候选改进是 CDC lane bundling：原先一个 writer 服务 16 lane 时每批最多 4 lane，指标显示每次 VISIBLE 约 1.19s，需多次轮转。现在 `CDC_CDC_BUNDLE_MAX_LANES` 默认 16，可设回 4 做对比；宽度仍按 active writer 数分配，既有 row/byte/prepared 上限、逐 lane FIFO、plan version 和持久 membership/ack 规则不变。新增 16-lane restart/FIFO、行字节预算、snapshot/代际边界与显式 cap 回归，PR 分级 workflow 同时跑 smoke/small，核心 runtime 变更也触发分级测试。该候选尚须同 SHA 的真实性能/精确性结果，未宣称已解决 snapshot pause 或达到 SLO；历史失败的持久数值摘要见 [reports/validation-small-20261003.json](reports/validation-small-20261003.json)。
 
+第一版候选的 [run 37086484023](https://github.com/justgo4/m2s/actions/runs/37086484023) 全行/动态/恢复/drain 正确，P95≈9.10s、P99≈11.10s、density≈0.975；相比同拓扑前次约 26.32/33.10s 有改善，但仍未通过 5/10s。这不是同机严格 A/B 或正式认证；恢复追赶仍约 181s。进一步发现 shared backfill 另有固定 4096-row cap，100k narrow 数据需许多独立 snapshot 提交。候选改为遵守 `CDC_SNAPSHOT_ROWS` 与 `CDC_SNAPSHOT_CHUNK_BYTES` 的行/序列化字节双重上界；单行超预算拒绝且保留 pin，预算截断必须保持 `budget_limited` 并继续固定 W/cursor，不能提前完成回填。相关字节/cursor/restart 回归和真实 CI 尚须取证。日志中的 CPU `snapshot_pause` 是 legacy worker 控制，不能据此认定 shared backfill 被该开关暂停。
+
+测试计划修正后的 million 在 [run 37085851322](https://github.com/justgo4/m2s/actions/runs/37085851322) 约 180s 时退出：source apply 的 `sync_source_base_catalog` 在 BEGIN IMMEDIATE 等待写锁超出 30s，artifact `11261215092` 保留。竞争锁持有者尚未实证；代码中 JOIN 初始化/共享 follower 出口会在一个外层事务中枚举、缓存全部 pair 和登记身份，属于需测量和改造的规模风险。当前不能把它称为 1M 通过或仅提高 timeout 来收口。
+
+Actions 旧版默认 checkout PR 的临时 merge commit，不等于页面 `head_sha`：上述候选报告实际 SHA 为 `ee10ce8e`，已用 GitHub compare 确认其 tree 与 head `ea8b2cd7` 完全一致。后续 baseline/native/E2E/source-state/staged workflow 显式 checkout PR head SHA，push 使用实际 push SHA；真实报告中的 code_revision 始终保留。旧结果不改写版本，也不与新检查拼成认证。
+
 **完整愿景** 还包括更多 SQL/跨算子通用增量编译、通用 arrangement/factorized state、整图长期成本优化、公平对标以及 P12/P13 的运维控制面/权限/MCP。它们不是受限 v1 的强制前置依赖；“任意 SQL”“达到物理极限”“全面领先”不能成为没有可验收边界的完成定义。Python/SQLite 或 native 的替换也不先验必做。
 
 | 出口 | 条件化规划预算 | 完成的含义 |

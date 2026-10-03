@@ -10026,12 +10026,14 @@ def shared_snapshot_worker(mapping, cfg, runtime):
             pin["watermark"],pin["pin_id"])
         cursor_blob = state[1] if state[1] is not None else state[0]
         cursor = unpack(cursor_blob) if cursor_blob is not None else None
-        count = min(int(cfg["snapshot_rows"]),4096)
+        count = max(1,int(cfg["snapshot_rows"]))
 
         while not stop.is_set():
-            rows,next_cursor = source_state.read_snapshot_batch(
-                con,pin["pin_id"],relation,cursor,limit=count)
-            is_last = rows.num_rows < count
+            rows,next_cursor,read_info = source_state.read_snapshot_batch(
+                con,pin["pin_id"],relation,cursor,limit=count,
+                max_bytes=int(cfg.get("snapshot_chunk_bytes",32*1024**2)),
+                return_info=True)
+            is_last = not read_info["budget_limited"] and rows.num_rows < count
             if rows.num_rows == 0:
                 next_cursor = cursor
                 is_last = True
@@ -12970,4 +12972,3 @@ if __name__ == "__main__":
         log(f"FAILED: {error}")
         traceback.print_exc(file=sys.stdout)
         sys.exit(1)
-
