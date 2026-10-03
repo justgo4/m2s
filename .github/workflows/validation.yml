@@ -5,6 +5,10 @@ on:
     branches: [main]
     paths:
       - 'j4.py'
+      - 'source_state.py'
+      - 'aggregate_*.py'
+      - 'join_*.py'
+      - 'stateful_*.py'
       - 'tools/source_apply_contention_test.py'
       - 'validation_profiles.py'
       - 'tools/validation_run*.py'
@@ -14,6 +18,10 @@ on:
   pull_request:
     paths:
       - 'j4.py'
+      - 'source_state.py'
+      - 'aggregate_*.py'
+      - 'join_*.py'
+      - 'stateful_*.py'
       - 'tools/source_apply_contention_test.py'
       - 'validation_profiles.py'
       - 'tools/validation_run*.py'
