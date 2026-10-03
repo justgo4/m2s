@@ -114,6 +114,7 @@ jobs:
           python tools/join_generation_test.py
           python tools/join_ir_test.py
           python tools/join_job_bridge_test.py
+          python tools/join_bridge_stream_test.py
           python tools/join_bootstrap_stream_test.py
           python tools/join_runtime_test.py
           python tools/join_shared_runtime_test.py

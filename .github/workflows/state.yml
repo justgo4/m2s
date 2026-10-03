@@ -15,6 +15,7 @@ on:
       - j4.py
       - 'join_*.py'
       - 'tools/join_bootstrap_stream*.py'
+      - 'tools/join_bridge_stream*.py'
       - .github/workflows/state.yml
   pull_request:
     paths:
@@ -29,6 +30,7 @@ on:
       - j4.py
       - 'join_*.py'
       - 'tools/join_bootstrap_stream*.py'
+      - 'tools/join_bridge_stream*.py'
       - .github/workflows/state.yml
   workflow_dispatch:
 
@@ -61,6 +63,10 @@ jobs:
         run: |
           python tools/join_bootstrap_stream_test.py
           python tools/join_bootstrap_stream_benchmark.py --left 1000 --right 100 --repeats 2 --output benchmark-results/join-bootstrap-stream.json
+      - name: Bounded streamed JOIN bridge and isolated output-memory A/B
+        run: |
+          python tools/join_bridge_stream_test.py
+          python tools/join_bridge_stream_benchmark.py --rows 100000 --repeats 2 --output benchmark-results/join-bridge-stream.json
       - name: Sync-WAL atomic commits, process crashes, fixed W and suffix replay
         run: python tools/state_layout_benchmark.py --rows 1000 --transactions 10 --changes 20 --repeats 2 --rocks --faults --output benchmark-results/state-contract.json
       - name: High entropy wide values in independent randomized worker processes
