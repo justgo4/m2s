@@ -233,3 +233,17 @@ Live git checkout is now available at /workspace/scratch/eb808b527222/m2s.
 Continue bounded same-plan snapshot prefixes across page groups, with actual
 SQLite membership/FIFO, out-of-order group frontier, budgets, restart and OOM
 shrink regressions; no performance claim until fresh same-SHA measurements.
+
+## Snapshot prefix implementation checkpoint
+
+Six real SQLite/Arrow snapshot bundle tests and four CDC bundle tests PASS
+locally with installed pinned requirements. Multi-page same-plan FIFO prefixes
+are now bounded by rows/bytes/adaptive transform cap, lane width and 4096 total
+jobs; every page ID retained. Tests cover restart, CDC/version/group/assignment
+fences, out-of-order visible stage prefixes, real Arrow prepare/invisible part
+rejection, prepared admission and OOM prefix shrinking. Baseline invokes new
+tools/snapshot_bundle_test.py. Full local j4 selftest cannot open AF_UNIX due
+sandbox socket EPERM; full CI remains required, no claim of full selftest pass.
+Main million artifact11261727031 proves NEW fatal stateful_task_worker SQLite
+lock timeout (not source apply worker); investigate separately. Next: fresh
+PR9 CI/small; then focused stateful retry / bounded JOIN staging work.

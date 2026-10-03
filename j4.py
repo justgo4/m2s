@@ -3110,7 +3110,7 @@ def lane_blocking_delivery(con, table, lane):
 
 
 def claim_snapshot_bundle(con, table, primary_lane, cfg, runtime):
-    """Coalesce head snapshot jobs from several logical lanes into one physical delivery.
+    """Coalesce bounded snapshot FIFO prefixes across lanes and staged pages.
 
     Logical lane identity is unchanged. Later CDC in every included lane remains blocked
     by the assigned head snapshot job until this delivery is VISIBLE and acknowledged.
@@ -3142,36 +3142,61 @@ def claim_snapshot_bundle(con, table, primary_lane, cfg, runtime):
             return None
 
         candidates = con.execute("""
-            SELECT j.id,j.lane,j.nrows,j.logical_bytes
+            SELECT j.lane
             FROM active_jobs j
             JOIN (
                 SELECT lane,MIN(id) AS first_id
                 FROM active_jobs WHERE table_name=? GROUP BY lane
             ) h ON h.lane=j.lane AND h.first_id=j.id
             LEFT JOIN job_assignments a ON a.job_id=j.id
-            WHERE j.table_name=? AND j.kind='snapshot' AND j.group_id=?
+            WHERE j.table_name=? AND j.kind='snapshot' AND j.group_id IS NOT NULL
               AND j.plan_version=? AND a.job_id IS NULL
-        """,(table,table,group_id,int(plan_version))).fetchall()
+        """,(table,table,int(plan_version))).fetchall()
         if not candidates:
             return None
 
         partitions = key_partition_count(cfg)
-        candidates.sort(key=lambda r: ((int(r[1])-int(primary_lane)) % partitions, int(r[1])))
+        candidates = sorted(
+            (int(row[0]) for row in candidates),
+            key=lambda lane: ((lane-int(primary_lane)) % partitions,lane))
         width = snapshot_bundle_width(cfg,runtime,table)
         transform_bytes_cap = min(
             int(cfg["batch_bytes"]),
             snapshot_transform_bytes_cap(cfg,runtime,table))
-        selected,rows,bytes_ = [],0,0
-        for job_id,lane,nrows,nbytes in candidates:
-            if len(selected) >= width:
+        selected,selected_lanes,rows,bytes_ = [],[],0,0
+        for lane in candidates:
+            if len(selected_lanes) >= width or len(selected) >= 4096:
                 break
-            if selected and (
-                    rows+nrows > cfg["batch_rows"]
-                    or bytes_+nbytes > transform_bytes_cap):
+            # Never skip an assigned job, CDC, a generation/plan boundary, or
+            # a group-less job to reach another page. Page IDs remain on the
+            # jobs; acknowledgement retires only completed stage prefixes.
+            lane_selected = []
+            for job_id,kind,job_group,nrows,nbytes,version,assigned in con.execute("""
+                SELECT j.id,j.kind,j.group_id,j.nrows,j.logical_bytes,
+                       j.plan_version,a.delivery_id
+                FROM active_jobs j LEFT JOIN job_assignments a ON a.job_id=j.id
+                WHERE j.table_name=? AND j.lane=?
+                ORDER BY j.id LIMIT 4096
+            """,(table,lane)):
+                if (assigned is not None or kind != "snapshot" or
+                        job_group is None or int(version) != int(plan_version)):
+                    break
+                nrows,nbytes = int(nrows),int(nbytes)
+                if (len(selected)+len(lane_selected) >= 4096 or
+                        (selected or lane_selected) and (
+                            rows+nrows > cfg["batch_rows"] or
+                            bytes_+nbytes > transform_bytes_cap)):
+                    break
+                lane_selected.append((int(job_id),lane))
+                rows += nrows
+                bytes_ += nbytes
+                if rows >= cfg["batch_rows"] or bytes_ >= transform_bytes_cap:
+                    break
+            if lane_selected:
+                selected.extend(lane_selected)
+                selected_lanes.append(lane)
+            if rows >= cfg["batch_rows"] or bytes_ >= transform_bytes_cap:
                 break
-            selected.append((job_id,int(lane)))
-            rows += int(nrows)
-            bytes_ += int(nbytes)
         if not selected or selected[0][1] != int(primary_lane):
             return None
 
