@@ -17,6 +17,7 @@ import select
 import shutil
 import signal
 import sqlite3
+import sqlite_write_timing
 import struct
 import subprocess
 import zlib
@@ -446,6 +447,8 @@ def metrics_status_record(runtime, cfg, prepared, state):
             elapsed_seconds=now-metrics["started"],state=state,
             source_reader=cfg.get("source_reader","native_c_v1"),tables=tables,
         )
+    if os.environ.get("CDC_SQLITE_WRITE_TIMING", "0")=="1":
+        record["sqlite_write_timing"]=sqlite_write_timing.PROCESS.snapshot()
     metrics_path,summary_path = report_paths(cfg)
     append_report(metrics_path,record,cfg.get("metrics_max_bytes",64*1024*1024))
     write_summary(summary_path,record)
@@ -587,6 +590,8 @@ def final_run_summary(runtime, cfg, prepared, con, reason):
         source_run=source_run,
         stateful=stateful_runtime_summary(con),
     )
+    if os.environ.get("CDC_SQLITE_WRITE_TIMING", "0")=="1":
+        summary["sqlite_write_timing"]=sqlite_write_timing.PROCESS.snapshot()
     metrics_path,summary_path = report_paths(cfg)
     append_report(metrics_path,summary,cfg.get("metrics_max_bytes",64*1024*1024))
     write_summary(summary_path,summary)
@@ -1698,7 +1703,10 @@ STATE_WAL_CHECKPOINT_INTERVAL = 0.5
 
 
 def open_state(path):
-    con = sqlite3.connect(path, timeout=30, isolation_level=None)
+    options={}
+    if os.environ.get("CDC_SQLITE_WRITE_TIMING", "0")=="1":
+        options["factory"]=sqlite_write_timing.TimingConnection
+    con = sqlite3.connect(path, timeout=30, isolation_level=None,**options)
     con.execute("PRAGMA busy_timeout=30000")
     con.execute("PRAGMA journal_mode=WAL")
     con.execute("PRAGMA synchronous=FULL")

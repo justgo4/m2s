@@ -105,3 +105,30 @@ catalog 改动，正常停止 daemon，分别备份 catalog 和 state，再保�
 `tools/operational_check_test.py` 验证阈值、durable 未知输出不会被健康 runtime
 掩盖、终止摘要/陈旧/非法值和 CLI 的 0/1/2 边界。这些不是生产故障演练或
 正式规模证明，工具结果需按自己的代码 SHA 与 CI 记录评估。
+
+
+### Optional SQLite writer timing
+
+Set `CDC_SQLITE_WRITE_TIMING=1` before launching the daemon to add
+`sqlite_write_timing` to periodic metrics and the final run summary. Default
+is disabled and uses the original SQLite connection. Development staged Actions
+enable this diagnostic; formal P11 thresholds and profile remain unchanged.
+
+`acquire` measures explicit BEGIN IMMEDIATE/EXCLUSIVE call time, including
+waiting, scheduling and SQLite overhead. `hold` measures from successful BEGIN
+return through COMMIT/rollback return, including durable fsync and scheduling.
+Each operation records count, total and maximum; these are process-lifetime
+cumulative counters, not interval values or percentiles. Operation labels contain
+module/function names only. SQL, parameters, row values and database paths are
+not retained. At most128 metric buckets and128 open-transaction descriptions
+are retained; overflow totals and active_unlisted report truncated detail.
+
+Coverage is limited to `Connection.execute` writer BEGIN boundaries. Deferred
+transactions, implicit writes, cursor-based controls and scripts are excluded.
+A script crossing an observed transaction invalidates its hold sample and
+increments excluded_holds. Active entries report unfinished observations; they
+are not proof of a currently held OS lock if excluded APIs are used. Instrumented
+calls add overhead, so compare performance with that setting recorded. Do not
+interpret one operation's waiting time as identifying another process's lock
+owner. Preserve per-process summaries across daemon restarts when comparing
+phases, because counters reset with each process.

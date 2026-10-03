@@ -149,6 +149,7 @@ jobs:
           python tools/merge_commit_identity_test.py
           python tools/merge_visible_contention_test.py
           python tools/merge_accepted_contention_test.py
+          python tools/sqlite_write_timing_test.py
           python tools/catalog_plan_gc_test.py
       - name: Verify bundled native ABI and offline recovery
         run: |
