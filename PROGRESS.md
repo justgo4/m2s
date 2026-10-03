@@ -731,3 +731,59 @@ Base main622d39ef2473c3c752c561c712ab2e64226af5d4; branch codex/shared-leader-re
 Code reads leader consumer and state in separate autocommit SELECTs although leader publishes both atomically. A concurrent commit between these reads can look like corruption. Plan a short deferred read snapshot covering follower binding/leader descriptor/consumer/state validation, ended before follower journal writes; preserve true mismatch failure and caller-owned transactions. Deterministic real WAL writer must advance both watermarks between the two SELECTs while follower succeeds on old coherent snapshot, then observes the new watermark next step. Test both operators and genuine persisted mismatch, cleanup, and existing sharing/promotion/GC contracts.
 
 Implementation complete: short source_state.read_snapshot (BEGIN deferred, no writer lock) covers binding/descriptor/leader consumer/state validation and ends before journal copying/staging. Caller-owned transactions are reused and never closed. Four real WAL tests PASS: aggregate and JOIN writer atomically publishes seq1 between the two SELECTs while follower sees coherent seq0 then exact seq1 digest on next step; actual persisted mismatch remains fatal; exception cleanup and outer-transaction ownership. Original runtime functions fail both races with watermarks diverged. Existing exact/subview/restart/owner promotion and idle/contention contracts PASS. Next focused main-only correctness PR and same-head baseline/native/state/eight E2E/smoke; performance branches remain frozen and need this validated fix before another strict small attempt.
+
+## Active JOIN affected-row read measurement (2026-10-03)
+
+Base436a6f6b0fe332c21cddb630521e3cff697ec9b2; branch
+codex/perf-join-affected-row-reads-20261003. Main canonical workload joins events
+to1024 dimensions on bucket. apply_transaction projects only changed PK pairs
+but _rows_for_keys_locked reads ALL rows on both sides for each affected key,
+before and after. Small50-row left transactions at1M therefore repeatedly read
+~50k unchanged left rows although each changed left matches one dimension.
+Candidate: snapshot changed PKs by key; scan the whole opposite side only when
+changed rows on that key can affect it. Retain full opposite fan-out for right
+updates, bilateral net diffs, rekey/NULL/bag semantics and atomic state/outbox.
+First independent full-state oracle/randomized and actual row-read measurement;
+then exact-head contracts and strict small before performance merge. No claim
+that legitimate high fan-out or shared initialization transactions are bounded.
+
+Implementation/measurement: changed PK point reads grouped by key, complete
+opposite ranges only where required. 4 new tests PASS, including150 randomized
+bilateral source transactions with repeated PK/NULL/rekey/delete/insert, full bag
+and independent net-delta oracle,11 fault rollbacks/retries, left/right asymmetric
+read bounds. Actual original helper in join_state globals fails both forbidden
+unchanged-range scan tests. Existing state/incremental/runtime/shared/subview
+contracts PASS. Attempted join_log_consumer_test.py does not exist; runtime test
+exercises that layer instead.
+Fresh independent child full-range/candidate100k and1M full bags match complete
+independent oracle. For ten50-left-row commits at1M, unnecessary left RANGE
+rows977000->0 (changed PKs still point-read), right rows1000 both; total apply
+2.486598s->0.034148s, max txn0.312853s->0.003753s, FULL WAL commits.
+100k0.175836s->0.039498s. Report reports/join-affected-reads-local-20261003.json.
+This is synthetic compute only, not daemon/remote/SLO or a bounded fan-out claim.
+Performance branches codex/perf-* now run smoke+strict small as PR checks; formal
+thresholds unchanged. Next submit exact-head PR and retain failed gates if any.
+PR27 integrated1218c28 passed all five families and merged01996589c90b90b985e62b17cc0f3926c3f9b3cf.
+PR28 integrationf714d735 remains under baseline/native/eight E2E checks.
+
+
+Performance candidate is based on retirement-poll integration fca66009ddc271083586964d31769cf1918d070b (PR28), which includes validated main01996589/PR27 timing. Submit with strict small PR gate. Preserve exact head during checks. These histories refer to their own SHAs; no combined certification.
+
+## 2026-10-03 checkpoint: JOIN compute candidate failed strict gate; narrow CDC lane candidate
+
+- PR29 exact dc6500e10e7e00236883aa2fa26fc8a05361526e passed baseline37139384369/native37139384198/state37139384220/all eight E2E37139384235/smoke job111250474785. Strict small run37139384246/job111250474900/artifact11279428154 FAIL only latency_p95/latency_p99: 27.130015355/37.835452662s,110 samples,density0.9083. All seven full-output oracles/four dynamic tasks/strong-exit recovery/drain pass. Keep PR29 unmerged; synthetic benefit does not establish SLO. This optional-instrumented hosted run is not controlled A/B against uninstrumented main436a6f6.
+- Optional telemetry after restart captured join_shared_runtime:try_bind hold max6.407146766s, count5621,total22.992190079s; its acquire total48.812321637s. capture_binlog_native acquire max6.435430805s and mark_merge_transaction_visible max5.936379005s. These process-lifetime aggregate timings do not prove a particular waiting call was blocked by that same hold; shared follower bootstrap remains a demonstrated long transaction candidate.
+- Gate markers measure raw events queryable latency (tools/longhaul_workload.py visible_markers), not each stateful target SLO. Raw output cdc_age P95≈41.929s, visible commit avg1.251s; unchanged hard lane-width4 can split sixteen-partition CDC into serial physical deliveries with constrained writers. Narrow follow-on codex/perf-cdc-lane-cap-20261003 combines the tested affected-row code with configurable CDC_CDC_BUNDLE_MAX_LANES default16/max64 and existing automatic ceil(partitions/active_writers). Row/byte/prepared budgets, per-lane FIFO, kind/plan barriers and visible watermarks stay intact; no snapshot page or JOIN batch changes from old PR12/#19 imported.
+- Local PYTHONPATH=/workspace/m2s-deps python tools/cdc_bundle_test.py: five actual SQLite/Arrow tests PASS: wide durable membership/restart/ack fence, row/byte/reservation budgets, plan/snapshot barriers, explicit cap/writer parallelism/catalog config, actual Arrow preparation/OOM lane shrink/restart/full-row visibility guard. Old four-lane helper fails wide membership negative control as expected. prepare_begin_contention5/merge_visible_contention3/merge_accepted_contention11/source_pipeline_metrics and diff check PASS.
+- PR30 docs exact1bbe6412900b297b1f86a5d32bc62b0795aab286 baseline37139977210/native37139977214 PASS; merged622d39ef2473c3c752c561c712ab2e64226af5d4. Preserve that README/progress in fresh combined performance tree and both parent histories. Next exact-head all contracts + strict small; do not merge until the unchanged gate passes. Formal persistent50M72h and shared bootstrap/promotion still open.
+
+## Active private-state sharing-check lock correction (2026-10-03)
+
+Base combined candidate b2f822cd0cc601f6430e19d1422d02227218b44f; branch codex/perf-private-state-share-check-20261003. PR31's strict small/E2E remain in progress; do not modify its tested head. Profiling shows thousands of try_bind transactions while private-state owners remain candidate awaiting target visibility. Actual WAL reproduction for aggregate and JOIN: existing private bootstrap state + independent writer + busy_timeout=0 causes try_bind to raise database is locked even though its locked branch only returns None.
+Plan a read-only existing-private-state fast path after checking durable follower binding, retaining state integrity validation and all existing checks again under writer lock before any new binding creation. Cover complete/incomplete states, WAL competing writer, no writes/BEGIN, state creation between fast read and locked recheck, and semantic corruption fail-closed. Full correctness and unchanged strict-small required before merging a performance combination; no claim that follower bootstrap itself is now bounded.
+
+## Integrated private-state/CDC/JOIN candidate after coherent-read correction
+
+PR31 b2f822cd small failed runtime during strong-exit recovery, NOT merely latency, artifact11280535911: false leader state/consumer divergence is deterministically reproduced by old aggregate/JOIN helpers when a real WAL writer commits between reads. No final oracle/gate result from that run. All four correctness families and smoke passed. Keep31/29 unmerged; do not re-run without structural read correction.
+Main-only PR32 deda38e2e5e39afca85ee6d86fcd9876190b76e7 is under exact-head baseline/native/state/eight E2E/smoke. Combine its short deferred read snapshot with private-state sharing-check fast path, budgeted configurable CDC lanes and affected-row JOIN reads for a fresh strict performance attempt. No snapshot-page or wide JOIN bridge batch changes imported. Tests source_state.read_snapshot4/private-state3/affected-read4/CDC5 all PASS on locally merged implementation; exact/subview/promotion/idle/contention contracts passed for their fixes.
+Branch codex/perf-private-state-share-check-20261003 preserves main622d39ef and PR32 parent histories. CI includes every new regression and perf branch strict-small matrix. Merge only when coherent-read main fix and this exact combined head pass required contracts AND unchanged strict small P95<=5s/P99<=10s. Follower bootstrap6.407s observed long transaction still remains; fast path only removes unnecessary empty acquisitions, not bootstrap or high-fanout cost. Persistent50M72h remains unavailable. Next inspect hosted gates; retain failed evidence without overclaiming.
