@@ -12,7 +12,7 @@ the goals and evidence boundaries. Read AGENTS.md before continuing.
 - Active milestone: **V1-02, runner inventory and safe operating procedures**.
 - V1-01 merged as `719159d60c54ce510fb5ffabfcc847b068e4bc51` (PR #5).
 - Active branch: `codex/v1-cdc-bundle-20261003`, [PR #9](https://github.com/justgo4/m2s/pull/9).
-- Current candidate head `5b382ef4c648809c717d71113cdec5db8a83b937`: new checks pending.
+- Current candidate head `5b382ef4c648809c717d71113cdec5db8a83b937`: baseline/native/state/all eight E2E passed; staged reports rejected for revision mismatch (see below).
 - Previous candidate `ea8b2cd7642db856da4b8ca6884775bebdc812d2`: baseline `37086484043`,
   native `37086484091`, source-state `37086484038` passed. all eight E2E `37086484049` and supervised smoke passed. Small `37086484023`
   failed only latency: P95=9.10/P99=11.10, density=.975, all oracles/dynamic/recovery
@@ -208,3 +208,7 @@ must be split into explicit acceptance criteria before coding.
 4. Commit code, tests and this checkpoint together; record remote results/merge.
 5. If the next task is blocked by a machine, record the exact dependency and
    continue independent code work. Never mark blocked testing as passed.
+
+## Immediate correction checkpoint
+
+PR #9 staged run `37087609367` failed both profiles solely at supervisor report revision identity; artifacts `11261655549` (smoke) and `11261028417` (small). PR #10 staged run `37087862226` similarly failed, artifact `11261248141`. Actual checkout is PR head, but longhaul_workload.code_revision() incorrectly prefers GITHUB_SHA (temporary PR merge) over git HEAD. Do not label these reports accepted or rewrite them. Fix identity discovery to use actual git HEAD first; add regressions for divergent event/checkout and archive fallback. Apply the same focused workload/test fix to both PR branches, then require fresh checks. PR #10 baseline `37087862148`, native `37087862223`, state `37087862129` passed; two E2E cells still pending at this checkpoint. No merge yet. Local PROGRESS refreshed from remote.
