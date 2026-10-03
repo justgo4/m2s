@@ -617,3 +617,28 @@ complete same-head checks; submit verified idle-write reduction separately and
 compare full strict small workload on integrated main. Remaining mutable
 shared initialization/owner promotion and high fan-out transactions still need
 bounded/versioned protocols if profile establishes material cost.
+
+
+## Active request-intent lock recovery (2026-10-03)
+
+Owner renewed repository authorization in this session. Reconciled main
+05e8f168396179d74427bbe663877201ce158d67 and open PR1/2/3/12/19;
+PR23/24/25 are merged. Branch codex/merge-request-intent-busy-20261003.
+Latest staged37118283696 at0932b9c: small completed workload but gate failed;
+million artifact11272977528 fails begin_merge_request BEGIN IMMEDIATE BEFORE
+HTTP, no complete oracle/gate. Do not conflate with accepted-response recovery.
+Implement optional stop-aware BEGIN-only acquisition using existing transaction
+helper; body/COMMIT remain one-shot and request intent must commit before HTTP.
+Next real WAL contention/cancel/restart and fatal/body/commit tests, then exact
+head hosted CI. Strict SLO and persistent-host50M72h remain open.
+
+Implementation: begin_merge_request accepts optional stop and opts into existing
+BEGIN-only BUSY retry; submit_merge_async supplies runtime stop before HTTP scope.
+Local pinned dependencies installed in /workspace/m2s-deps. Commands:
+PYTHONPATH=/workspace/m2s-deps python tools/merge_accepted_contention_test.py
+(11 tests); merge_visible_contention_test.py(3), merge_commit_identity_test.py,
+merge_quarantine_test.py, privacy_check.py and git diff --check PASS. Tests cover
+real WAL independent writer, intent visible before single send, cancel with no
+UNKNOWN/no send and exact restart, body rollback, COMMIT BUSY and fatal/active
+BEGIN. Original pre-request path cannot retry acquisition; no claim of bounded
+lock duration or improved SLO. Next submit focused PR and require same-head CI.
