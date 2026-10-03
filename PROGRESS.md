@@ -614,3 +614,25 @@ must handle intent even without a generation. New milestone needs real WAL,
 source advance/GC/high-fanout/crash/retire/full-row tests and existing sharing
 contracts before hosted same-head CI. This entry is a design checkpoint,
 not an implemented protocol or strict SLO claim.
+
+
+### 2026-10-03 small failure evidence and parallel work ownership
+
+Main30058ba staged37115278373 small111180796030 completedFAIL10:40:45Z,
+artifact11272186113. Restart daemon-002 immediately fails
+catalog_bootstrap_ready -> cdc_catalog.load_plan -> load_plan_version:
+catalog plan version3 is missing. Recovery1800s timeout therefore cannot be
+assumed to measure SQLite lock duration. Ninety-second checkpoint latency
+23.141/28.789s is partial evidence, not a full strict gate. New main9f4560b
+staged37116753264 now starts small/million after old run released concurrency.
+Inspect exact complete artifacts before attributing any improvement.
+
+Parallel owners: root handles accepted-response CI/integration, shared-build
+agent implements pinned fixed-W pending JOIN attach, strict-latency agent
+investigates missing catalog plan without silent fallback or discarded tasks.
+Recovery PR23 baseline/native/state/staged smoke PASS, daemon matrix still
+running at last check. PR24 state PASS, other families pending/running.
+Original main9f4560b accepted-response contention negative reproduces actual
+OperationalError(database is locked), while PR23's new six tests pass.
+Local network quarantine run cannot reach isolated StarRocks (connection
+refused); this is unavailable local service, not a passed network test.
