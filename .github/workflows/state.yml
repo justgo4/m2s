@@ -59,6 +59,8 @@ jobs:
           python-version: ${{ matrix.python }}
       - run: python -m pip install -r requirements.txt -r requirements-state-benchmark.txt
       - run: python tools/privacy_check.py
+      - name: Shared follower idle observations preserve durable peaks
+        run: python tools/stateful_share_observation_test.py
       - name: Exact streamed JOIN bootstrap and isolated pair-memory A/B
         run: |
           python tools/join_bootstrap_stream_test.py

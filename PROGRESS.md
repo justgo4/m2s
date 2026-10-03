@@ -560,3 +560,34 @@ or daemon/SLO evidence. Full hosted CI on the final SHA is still required.
 Next submit focused PR22, preserve its head during CI, and inspect current main
 small/million while profiling remaining shared bootstrap/promotion and hot-path
 write amplification. Formal50M72h remains open pending persistent isolated host.
+
+### 2026-10-03 shared idle-write reduction candidate
+
+PR22 a47179b five required CI families PASS; merged9f4560b19510f1096a235ceb529f8f7b314d55e7.
+Parallel recovery PR23 https://github.com/justgo4/m2s/pull/23 head
+ aeaf500e08a6bdbda9a4b3794988bffdc53b4810 retains that main ancestry;
+its CI is running. Keep head fixed. Network quarantine test needs actual
+isolated MySQL/StarRocks services: unavailable locally; hosted actual-daemon
+matrix owns that test. Offline quarantine/identity/visibility and six new
+accepted-response tests PASS. Do not claim a local network oracle passed.
+
+Separate branch codex/shared-idle-observations-20261003 starts at9f4560b.
+stateful_share_policy.observe adds opt-in unchanged_interval; default0 retains
+old API. Aggregate/JOIN shared runtimes use1s for unchanged observations.
+New lag maxima and copied_sequences always persist immediately; no process
+cache, all checks read durable rows. updated is not used as an admission
+staleness clock. Backwards clocks cause writes. samples counts durable
+observations, not runtime poll calls. Maxima and copied work remain exact.
+
+New real WAL test3 PASS: unchanged polls can read while a writer holds BEGIN;
+new peaks still require write; every max/copy survives independent connection;
+default API/count, heartbeat and invalid intervals checked. Existing policy,
+100 aggregate/JOIN exact/subview, runtime/promotion/registry/follower-GC
+contracts PASS. Curated synthetic report
+reports/share-observation-idle-local-20261003.json:100 followers x40 idle polls,
+FULL WAL updates4000->200, WAL frames4100->300, wall0.120->0.039s. Different
+process timings are observations, not strict daemon SLO or controlled hosted A/B.
+state.yml includes the new contract. Next submit focused PR, validate same-head
+CI, merge only green, then inspect integrated strict small/million gates.
+Remaining mutable JOIN attach seed and promotion clone transactions are still
+unbounded: no claim that idle-write coalescing resolves all lock ownership.
