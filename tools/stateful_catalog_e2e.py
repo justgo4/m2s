@@ -297,6 +297,7 @@ def state(path):
             "file:"+str(path)+"?mode=ro",
             uri=True,timeout=2)
         try:
+            con.execute("BEGIN")
             agg=con.execute("""
                 SELECT task_id,sink_key,status
                 FROM aggregate_task_descriptors
@@ -933,8 +934,14 @@ def wait_stateful_retired(
                 row for row in rows
                 if row[1]==sink
             ]
+            sink_task_ids={row[0] for row in sink_rows}
+            bindings=current[
+                "aggregate_shared" if kind=="aggregate" else "join_shared"]
             if (
                 sink_rows
+                and not any(
+                    row[0] in sink_task_ids or row[1] in sink_task_ids
+                    for row in bindings)
                 and all(
                     row[2] in {"retired","failed"}
                     for row in sink_rows)

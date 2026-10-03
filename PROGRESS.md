@@ -688,3 +688,69 @@ eight E2E37137663128; its main integration is separate.
 Synthetic100k inserts/100 FULL WAL commits: diagnostic off0.1369s/on0.2553s
 with exact digest equality. Explicit profiling adds overhead, especially short
 per-row calls; no fair SLO comparison to uninstrumented runs is claimed.
+
+
+## Active retirement evidence polling correction (2026-10-03)
+
+Base05e8f168396179d74427bbe663877201ce158d67; branch
+codex/retired-follower-gc-wait-20261003. PR26 E2E37132902430 failed
+transaction/ON/ON at wait_stateful_retired: retired descriptor observed while
+JOIN shared binding awaited background GC. Artifact11277780160 retained.
+Runtime intentionally leaves binding until outbox/consumer drain is verified by
+GC; immediate binding-count assertion raced that boundary. Keep exact remaining
+subview assertions and timeout. Require binding cleanup as part of the existing
+retirement wait and read each multi-table observation in one SQLite snapshot.
+Next real WAL regressions for retired-before-GC, exact task IDs, owner references,
+consistent snapshot and bounded timeout; then hosted E2E on focused test PR.
+PR26 remains frozen; PR27 telemetry head eb3bb3a is independently submitted.
+
+Polling implementation complete: each state() observation starts a read-only
+SQLite transaction; wait_stateful_retired also requires no binding whose exact
+follower/leader task ID matches a retired sink descriptor. Existing timeout,
+drain/intent checks, remaining-subview assertions and full-row oracles unchanged.
+PYTHONPATH=/workspace/m2s-deps python tools/stateful_retirement_poll_test.py:
+5 PASS actual WAL fixtures (both operator kinds retired-before-GC, owner
+promotion references, unrelated exact IDs, stuck-binding timeout, concurrent
+writer committing between two reads). Original helper fails delayed-GC and
+snapshot consistency regressions. Next focused PR and real eight E2E required.
+
+
+PR28 f714d735 passed baseline37138496463/native37138496455/eight E2E37138496449. Integrate current main01996589 (validated optional timing PR27) and retain all checkpoint history. Fresh same-head checks required.
+
+
+## Active JOIN affected-row read measurement (2026-10-03)
+
+Base436a6f6b0fe332c21cddb630521e3cff697ec9b2; branch
+codex/perf-join-affected-row-reads-20261003. Main canonical workload joins events
+to1024 dimensions on bucket. apply_transaction projects only changed PK pairs
+but _rows_for_keys_locked reads ALL rows on both sides for each affected key,
+before and after. Small50-row left transactions at1M therefore repeatedly read
+~50k unchanged left rows although each changed left matches one dimension.
+Candidate: snapshot changed PKs by key; scan the whole opposite side only when
+changed rows on that key can affect it. Retain full opposite fan-out for right
+updates, bilateral net diffs, rekey/NULL/bag semantics and atomic state/outbox.
+First independent full-state oracle/randomized and actual row-read measurement;
+then exact-head contracts and strict small before performance merge. No claim
+that legitimate high fan-out or shared initialization transactions are bounded.
+
+Implementation/measurement: changed PK point reads grouped by key, complete
+opposite ranges only where required. 4 new tests PASS, including150 randomized
+bilateral source transactions with repeated PK/NULL/rekey/delete/insert, full bag
+and independent net-delta oracle,11 fault rollbacks/retries, left/right asymmetric
+read bounds. Actual original helper in join_state globals fails both forbidden
+unchanged-range scan tests. Existing state/incremental/runtime/shared/subview
+contracts PASS. Attempted join_log_consumer_test.py does not exist; runtime test
+exercises that layer instead.
+Fresh independent child full-range/candidate100k and1M full bags match complete
+independent oracle. For ten50-left-row commits at1M, unnecessary left RANGE
+rows977000->0 (changed PKs still point-read), right rows1000 both; total apply
+2.486598s->0.034148s, max txn0.312853s->0.003753s, FULL WAL commits.
+100k0.175836s->0.039498s. Report reports/join-affected-reads-local-20261003.json.
+This is synthetic compute only, not daemon/remote/SLO or a bounded fan-out claim.
+Performance branches codex/perf-* now run smoke+strict small as PR checks; formal
+thresholds unchanged. Next submit exact-head PR and retain failed gates if any.
+PR27 integrated1218c28 passed all five families and merged01996589c90b90b985e62b17cc0f3926c3f9b3cf.
+PR28 integrationf714d735 remains under baseline/native/eight E2E checks.
+
+
+Performance candidate is based on retirement-poll integration fca66009ddc271083586964d31769cf1918d070b (PR28), which includes validated main01996589/PR27 timing. Submit with strict small PR gate. Preserve exact head during checks. These histories refer to their own SHAs; no combined certification.

@@ -121,6 +121,7 @@ jobs:
           python tools/join_subview_shared_runtime_test.py
           python tools/join_state_test.py
           python tools/join_incremental_delta_test.py
+          python tools/join_affected_reads_test.py
           python tools/join_state_oracle.py
           python tools/join_target_mapping_test.py
           python tools/join_task_catalog_test.py
@@ -151,6 +152,7 @@ jobs:
           python tools/merge_accepted_contention_test.py
           python tools/sqlite_write_timing_test.py
           python tools/catalog_plan_gc_test.py
+          python tools/stateful_retirement_poll_test.py
       - name: Verify bundled native ABI and offline recovery
         run: |
           python native/native_abi_selftest.py
