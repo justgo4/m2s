@@ -560,3 +560,31 @@ or daemon/SLO evidence. Full hosted CI on the final SHA is still required.
 Next submit focused PR22, preserve its head during CI, and inspect current main
 small/million while profiling remaining shared bootstrap/promotion and hot-path
 write amplification. Formal50M72h remains open pending persistent isolated host.
+
+
+### 2026-10-03 streaming/reconnection checkpoint
+
+PR22 https://github.com/justgo4/m2s/pull/22 head
+a47179b529859190fec81776c72d21a1dcc0f8cb is submitted; preserve its head during CI.
+Baseline37115887643, native37115887559, state37115887577 and staged smoke
+37115887652 PASS. Actual daemon37115887635: seven of eight jobs PASS;
+transaction/OFF/OFF mixed P11 smoke still running at this observation.
+Merge only after all required workflows on that exact head pass.
+
+Main30058ba staged development37115278373 million job111180796242 FAILS
+before complete oracle/gate: successful HTTP Merge Commit response returned
+TxnId/Label, then submit_merge_async's local BEGIN IMMEDIATE to save TxnId and
+clear merge_uncertain raised SQLite BUSY. Artifact11271405731 retains the
+failure. This is distinct from prepare-BEGIN contention and from the older
+146499d2 million correctness PASS/strict latency FAIL. Do not combine evidence.
+Lock ownership is not established by this traceback.
+
+Next branch codex/merge-accepted-persistence-20261003 starts at PR22 head.
+Implement only safe local accepted-response identity persistence retry:
+never repeat HTTP because local SQLite is busy, never retry transaction body
+or COMMIT, retain uncertainty marker if persistence cannot complete, preserve
+unknown-output quarantine. Add real WAL contention/single-send/restart and
+failure tests; inspect existing state_transaction and response exception scope
+before editing. Then required same-head CI and focused PR. Primary chunks
+remain separate evidence; shared bootstrap/promotion/fan-out and strict SLO
+remain open. Formal50M72h still needs a configured persistent isolated host.
