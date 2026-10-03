@@ -7,6 +7,7 @@ as an internal text column named _j4_pair_id. Writer mappings for JOIN targets
 must use that column as their sole Primary Key.
 """
 import pickle
+import hashlib
 import tempfile
 import time
 
@@ -84,12 +85,74 @@ def _already_staged(con,consumer_id,source_seq):
     ]
 
 
+def _staging_info(con,consumer_id,source_seq):
+    return con.execute("""
+        SELECT spool_digest,record_count,next_record,spool_offset,sealed
+        FROM join_job_staging WHERE consumer_id=? AND source_seq=?
+    """,(consumer_id,source_seq)).fetchone()
+
+
+def _validate_spool(spool,table,cfg):
+    # Validate before making any durable partial jobs; read in bounded buffers.
+    count=0
+    spool.seek(0)
+    while True:
+        record=j4.read_spool_record(spool)
+        if record is None:
+            break
+        name,lane,payload,nrows,logical_bytes=record
+        if (name!=table or not 0<=int(lane)<j4.key_partition_count(cfg)
+                or int(nrows)<=0 or int(logical_bytes)<0):
+            raise RuntimeError("JOIN bridge routed an invalid durable job")
+        count+=1
+    digest=hashlib.sha256()
+    spool.seek(0)
+    while True:
+        block=spool.read(1024**2)
+        if not block:
+            break
+        digest.update(block)
+    spool.seek(0)
+    return digest.hexdigest(),count
+
+
+def _register_chunk(con,consumer_id,source_seq,stream,records,expected,end_offset,done):
+    with j4.state_transaction(con):
+        current=_staging_info(con,consumer_id,source_seq)
+        if current!=expected:
+            return False
+        logical_total=0
+        now=time.time()
+        for table,lane,payload,nrows,logical_bytes in records:
+            cur=con.execute("""
+                INSERT INTO jobs(
+                    table_name,lane,kind,payload,nrows,logical_bytes,plan_version,
+                    source_file,source_pos,source_seq,source_time,created)
+                VALUES(?,?,'cdc',?,?,?,?,NULL,NULL,?,?,?)
+            """,(table,int(lane),bytes(payload),int(nrows),int(logical_bytes),
+                  stateful_task_plan.writer_plan_version(stream["plan_version"]),
+                  source_seq,now,now))
+            con.execute("""
+                INSERT INTO join_job_links(job_id,consumer_id,source_seq)
+                VALUES(?,?,?)
+            """,(int(cur.lastrowid),consumer_id,source_seq))
+            logical_total+=int(logical_bytes)
+        j4.meta_set(con,"pending_bytes",j4.meta_get(con,"pending_bytes",0)+logical_total)
+        con.execute("""
+            UPDATE join_job_staging SET next_record=?,spool_offset=?,sealed=?,updated=?
+            WHERE consumer_id=? AND source_seq=?
+        """,(int(expected[2])+len(records),end_offset,int(done),now,consumer_id,source_seq))
+    return True
+
+
 def stage_commit(
         con,consumer_id,source_seq,mapping,cfg,engine=None
 ):
     consumer_id=_text(consumer_id,"consumer_id")
     source_seq=int(source_seq)
     validate_mapping(mapping)
+    if con.in_transaction:
+        raise RuntimeError("JOIN job staging requires independent bounded transactions")
     commit=join_outbox.commit_info(
         con,consumer_id,source_seq)
     if commit["visible"]:
@@ -100,11 +163,18 @@ def stage_commit(
 
     existing=_already_staged(
         con,consumer_id,source_seq)
-    if existing:
+    staging=_staging_info(con,consumer_id,source_seq)
+    if existing and (staging is None or staging[4]):
         return dict(
             consumer_id=consumer_id,
             source_seq=source_seq,
             visible=False,job_ids=existing)
+
+    if con.execute("""
+        SELECT 1 FROM join_job_staging
+        WHERE consumer_id=? AND source_seq<? AND sealed=0 LIMIT 1
+    """,(consumer_id,source_seq)).fetchone():
+        raise RuntimeError("earlier JOIN output jobs are not sealed")
 
     if int(commit["nrows"])==0:
         if con.execute("""
@@ -133,40 +203,53 @@ def stage_commit(
             spool.seek(0)
             stream=join_outbox.stream_info(con,consumer_id)
             table=j4.mapping_key(mapping)
-            now=time.time()
-            job_ids=[]
-            logical_total=0
+            spool_digest,record_count=_validate_spool(spool,table,cfg)
+            if not record_count:
+                raise RuntimeError("JOIN output rows produced no routed durable jobs")
             with j4.state_transaction(con):
-                if _already_staged(con,consumer_id,source_seq):
-                    raise RuntimeError("JOIN outbox commit was staged concurrently")
+                if con.execute("""
+                    SELECT 1 FROM join_job_staging
+                    WHERE consumer_id=? AND source_seq<? AND sealed=0 LIMIT 1
+                """,(consumer_id,source_seq)).fetchone():
+                    raise RuntimeError("earlier JOIN output jobs are not sealed")
+                current=_staging_info(con,consumer_id,source_seq)
+                if current is None:
+                    if _already_staged(con,consumer_id,source_seq):
+                        return dict(consumer_id=consumer_id,source_seq=source_seq,visible=False,
+                                    job_ids=_already_staged(con,consumer_id,source_seq))
+                    con.execute("""
+                        INSERT INTO join_job_staging(
+                            consumer_id,source_seq,spool_digest,record_count,updated)
+                        VALUES(?,?,?,?,?)
+                    """,(consumer_id,source_seq,spool_digest,record_count,time.time()))
+            # A sealed manifest publishes all chunks through active_jobs without
+            # rewriting their payloads. Recreated spools must match byte-exactly.
+            job_limit=max(1,min(int(cfg.get("join_enqueue_jobs",32)),32))
+            byte_limit=max(1,min(int(cfg.get("join_enqueue_bytes",16*1024**2)),16*1024**2))
+            while True:
+                current=_staging_info(con,consumer_id,source_seq)
+                if current[:2]!=(spool_digest,record_count):
+                    raise RuntimeError("JOIN staging spool changed across restart")
+                if current[4]:
+                    break
+                spool.seek(int(current[3]))
+                records=[]
+                size=0
                 while True:
+                    position=spool.tell()
                     record=j4.read_spool_record(spool)
                     if record is None:
                         break
-                    record_table,lane,payload,nrows,logical_bytes=record
-                    if record_table!=table:
-                        raise RuntimeError("JOIN bridge routed an unexpected table")
-                    cur=con.execute("""
-                        INSERT INTO jobs(
-                            table_name,lane,kind,payload,nrows,
-                            logical_bytes,plan_version,
-                            source_file,source_pos,source_seq,
-                            source_time,created)
-                        VALUES(?,?,'cdc',?,?,?,?,NULL,NULL,?,?,?)
-                    """,(
-                        table,int(lane),bytes(payload),int(nrows),int(logical_bytes),
-                        stateful_task_plan.writer_plan_version(stream["plan_version"]),
-                        source_seq,now,now))
-                    job_id=int(cur.lastrowid)
-                    con.execute("""
-                        INSERT INTO join_job_links(job_id,consumer_id,source_seq)
-                        VALUES(?,?,?)
-                    """,(job_id,consumer_id,source_seq))
-                    job_ids.append(job_id)
-                    logical_total+=int(logical_bytes)
-                if not job_ids:
-                    raise RuntimeError("JOIN output rows produced no routed durable jobs")
-                j4.meta_set(con,"pending_bytes",j4.meta_get(con,"pending_bytes",0)+logical_total)
+                    if records and (len(records)>=job_limit or size+len(record[2])>byte_limit):
+                        spool.seek(position)
+                        break
+                    records.append(record)
+                    size+=len(record[2])
+                done=int(current[2])+len(records)==record_count
+                if not records and not done:
+                    raise RuntimeError("JOIN staging cursor did not advance")
+                _register_chunk(con,consumer_id,source_seq,stream,records,current,spool.tell(),done)
+            job_ids=_already_staged(con,consumer_id,source_seq)
             return dict(consumer_id=consumer_id,source_seq=source_seq,visible=False,job_ids=job_ids)
     finally:
         if own_engine:

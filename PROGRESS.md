@@ -469,3 +469,38 @@ identity. Next implement bounded durable job registration with a sealed manifest
 claim/ack isolation and restart/real-writer tests; then bootstrap chunking with
 fixed-W pins. Existing candidates remain unmerged; formal thresholds unchanged.
 No generic BEGIN retry is presented as throughput or final certification.
+
+
+### 2026-10-03 bounded job publication implementation checkpoint
+
+Both complete artifacts were downloaded and gate/workload identities verified at
+146499d2: small11267510189 and million11267972137 fail ONLY latency_p95/p99.
+All seven full output targets, four dynamic tasks, strong-exit recovery and drain
+pass. Sample densities0.901890/0.971664; daemon write bytes2,780,401,664 and
+33,826,349,056 respectively. Million is now completed development correctness
+evidence, not a performance pass or formal50M72h. Lock owner remains unproven.
+
+Implementation in j4.py/join_job_bridge.py: persistent spool fingerprint, cursor,
+record count and sealed manifest; at most32 jobs/16MiB payload per write chunk
+(config may lower), with a singleton bounded by existing max_row_bytes. Spool
+validation/Arrow routing/read happen outside the write transaction. Jobs,links,
+cursor and pending bytes commit together. active_jobs hides incomplete chunks;
+ack rejects even manually assigned unsealed jobs; final seal is a metadata update.
+Exact recreated spool resumes prior jobs; stale registration is a no-op and changed
+spool fails closed. Legacy completed links remain accepted; view upgrade preserves
+existing data; manifest is cascade-deleted with its output commit. This bounds
+write work, not elapsed lock wait or disk latency. Bootstrap seed remains unbounded
+and is the next separate structural milestone.
+
+Local Python3.12/SQLite3.53.1, pinned DuckDB1.5.5/sqlglot30.18.0:
+python tools/join_publication_test.py (15 tests including existing4 twice and
+7 new WAL/crash/ack/upgrade contracts), job_bridge/runtime/shared/generation,
+100 exact/subview/follower-GC and physical registry contracts PASS.
+Original83b57fa bridge fails real independent-writer spool-read regression with
+actual SQLite BUSY. Benchmark subprocess tests2 PASS;100k production-topology
+cache/current full bag exact, current400jobs/RSS246624256bytes/wall1.410s,
+cache16jobs/RSS418217984bytes/wall1.546s; local synthetic only.
+Direct cdc_selftest still blocked at resource_tree_stats /proc assertion locally;
+required hosted baseline/native/state/eight E2E/smoke must validate full change.
+Next commit focused job-publication PR and preserve its exact SHA while CI runs;
+continue fixed-W bootstrap staging on a separate branch.

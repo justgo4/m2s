@@ -66,6 +66,7 @@ jobs:
       - name: Bounded streamed JOIN bridge and isolated output-memory A/B
         run: |
           python tools/join_bridge_stream_test.py
+          python tools/join_publication_test.py
           python tools/join_bridge_stream_benchmark_test.py
           python tools/join_bridge_stream_benchmark.py --rows 100000 --repeats 2 --output benchmark-results/join-bridge-stream.json
           python tools/join_bridge_stream_benchmark.py --rows 100000 --repeats 2 --configured-candidate --partitions 16 --batch-rows 50000 --batch-bytes 16777216 --output benchmark-results/join-bridge-production.json
