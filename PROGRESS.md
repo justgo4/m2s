@@ -314,3 +314,18 @@ in37097752817 artifact11264873012; retain original report and inspect numbers.
 - PR #15 tested `330005b4c60d9150e29c67faaec0d3dfd4410545`: baseline37099529873/native37099529883/state37099529877/all eight E2E37099529894/smoke37099529902 PASS; merged `efd9a0498de5cf8afa8816015b1ccf8db96aac79`, identical tree.
 - PR #16 previous d15f009a state/native passed; integrate main recovery change and preserve all tests/docs now. Require fresh complete CI on the integrated head, do not reuse prior-head green checks as final acceptance.
 - Main7fe6 small37099489202/artifact11266005315: all full output oracles/recovery/drain pass, latencyFAIL25.344531/33.751959s; CPU120.93s and only4 physical-reuse logs after restart (versus29,298 in older snapshot candidate), RSS618,950,656. Different hosted runs are not controlled A/B. Million same run/artifact11265104301 fails native capture -> commit_spool -> BEGIN IMMEDIATE. Formal thresholds unchanged and lock owner not proven.
+
+
+## 2026-10-03 checkpoint: stop-aware source capture write-lock acquisition
+
+- Main f586798c includes validated bridge; final batching combination c509d5ae is under fresh CI/strict small. Earlier7052 measurement is separate; validation concurrency preserves evidence.
+- Million7fe6 run37099489202/artifact11265104301 proves native capture -> commit_spool -> BEGIN IMMEDIATE failed before entering the transaction. Earlier914c failed the non-transaction-event cursor write at the same boundary. Immutable source spool/cursor have not been consumed/advanced at BEGIN failure; there is no target HTTP operation here.
+- Branch codex/v1-capture-begin-busy-20261003 will optionally retry ONLY BEGIN acquisition on SQLite BUSY with no active transaction, stop-aware. Native capture commit_spool/cursor opt in; default behavior unchanged. Never retry transaction body/COMMIT, other storage errors or an active transaction; no replay of one-shot iterators. Verify actual SQLite lock/spool/source cursor/exact prefix, cancellation before body, fatal body/default behavior and original negative regression before hosted CI. This does not bound long JOIN locks or certify latency; resumable bounded publication remains needed.
+- First checkpoint API disconnected; verified branch/ref/file remained unchanged before this retry. Never assume an ambiguous write succeeded or blindly repeat it without read-back.
+
+
+### 2026-10-03 source BEGIN retry implementation/test checkpoint
+
+- j4.state_transaction optional stop retries ONLY BEGIN IMMEDIATE BUSY with no open transaction; default remains immediate error after original SQLite timeout. Native capture opts in at commit_spool and non-transaction-event cursor. Transaction body/COMMIT execute once, body error rolls back and is fatal; source spool is not read before successful BEGIN. Production timeout remains30s, so cancellation during SQLite's own BEGIN wait is still bounded by that timeout; subsequent0.2s backoff is interruptible.
+- `python tools/capture_begin_contention_test.py`: four PASS with real writer lock/rolled disk source spool: release consumes sealed parts byte-exact once and source seq/cursor atomically; cancel consumes zero parts and leaves old cursor; default BUSY stays fatal; body/COMMIT/FULL/CORRUPT/LOCKED/BUSY-active never retry. Original BEGIN behavior via AST plus optional-keyword adapter fails both real-lock regressions with actual SQLITE_BUSY (not TypeError).
+- Existing source_transaction_spool/source_apply_contention/stateful_worker_contention/merge identity/quarantine plus compile/diff checks PASS locally. Fresh same-SHA baseline/native/state/eight daemon/supervised smoke required. Current source lock contention remains a performance limitation; no SLO, bounded-lock or 1M pass claimed.

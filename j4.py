@@ -1710,8 +1710,25 @@ def open_state(path):
 
 
 @contextlib.contextmanager
-def state_transaction(con):
-    con.execute("BEGIN IMMEDIATE")
+def state_transaction(con, stop=None):
+    last_log=-float("inf")
+    while True:
+        if stop is not None and stop.is_set():
+            raise RuntimeError("stopped acquiring SQLite write lock; durable journal retained")
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            break
+        except sqlite3.OperationalError as exc:
+            if (stop is None or con.in_transaction or
+                    (getattr(exc,"sqlite_errorcode",0)&255)!=sqlite3.SQLITE_BUSY):
+                raise
+            # BEGIN failed before any body/iterator/cursor effect. Never retry
+            # the body or COMMIT; callers explicitly opt in for local capture.
+            now=time.monotonic()
+            if now-last_log>=30:
+                log("CAPTURE BEGIN BUSY local_lock_retry=1 durable_prefix_retained=1")
+                last_log=now
+            stop.wait(0.2)
     try:
         yield
         con.execute("COMMIT")
@@ -2688,11 +2705,11 @@ def insert_touched_column(con, table, column):
 def commit_spool(
         con, spool, position, source_time, mapping_by_name, gtid=None,
         plan_version=0, source_parts=None, source_spool=None,
-        source_epoch=None):
+        source_epoch=None, stop=None):
     """All rows of a committed source transaction and its read cursor commit together."""
     spool.seek(0)
     now = time.time()
-    with state_transaction(con):
+    with state_transaction(con,stop=stop):
         if source_parts is not None and source_spool is not None:
             raise RuntimeError(
                 "source-state commit received both in-memory and spooled parts")
@@ -9752,7 +9769,7 @@ def capture_binlog_native(cfg, prepared, runtime):
                                     source_spool
                                     if shared_source_state
                                     else None),
-                                source_epoch=runtime.get("source_uuid"))
+                                source_epoch=runtime.get("source_uuid"),stop=stop)
                             if shared_source_state:
                                 runtime["source_apply_event"].set()
                             if changed_tables:
@@ -9810,7 +9827,7 @@ def capture_binlog_native(cfg, prepared, runtime):
                             while meta_get(con,"pending_bytes",0) >= cfg["max_backlog_bytes"] and not stop.is_set():
                                 stop.wait(0.05)
                         elif not in_transaction:
-                            with state_transaction(con):
+                            with state_transaction(con,stop=stop):
                                 cursor_advance(con,position)
                             failures = 0
                             decoder_failures = 0
