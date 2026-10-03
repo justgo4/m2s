@@ -336,3 +336,16 @@ in37097752817 artifact11264873012; retain original report and inspect numbers.
 - PR #17 tested6ce77149b55ac0eaa70c1f1afda92e893093c41c: baseline37101089222/native37101089228/state37101089260/eight E2E37101089263/smoke37101089198 PASS; merged5a0f22f300d0d9afbfaa141dfe19df4d6b75d193, identical tree.
 - PR #12 c509d5ae correctness baseline37100671711/native37100671748/state37100671721/eight E2E37100671701 PASS; staged37100671707 smokePASS/strict smallFAIL. Artifact11266017029 actual report SHA verifiedc509: P95=19.065292522/P99=21.066043648s, CPU245.33s/RSS475729920; all output/recovery/drain exact. Earlier7052 artifact11266365888 separately P95=6.147336155/P99=9.118501335s, stillFAIL P95. Neither is certified or controlled A/B.
 - Next executable measurement edits tools/join_bridge_stream_benchmark.py to parameterize partition/row/byte budgets; compare current stream and independent cached baseline at production topology with full output bag. No runtime cap change before measured evidence. Then pursue bounded durable staging protocol with crash/last-ack/GC tests. Continue saving before and after milestones.
+
+
+## Active 2026-10-03 production-topology measurement
+
+Base main3da6cf7152e7ec8fd6a172e98a90e9dafcfa2750; branch
+`codex/join-production-topology-20261003`. Fresh README/AGENTS/progress/open
+PR reconciliation complete; PR12 stays unmerged after strict latency failure.
+First milestone parameterizes isolated JOIN bridge A/B with partitions, configured
+row/byte budgets, records effective4096 stream cap and measures production
+16 partitions/16MiB/50000 configured rows. Retain independent complete bag oracle,
+fresh child processes and original cache reference. Runtime unchanged until
+evidence. Next: implement parameters, run local contracts and100k/1M evidence,
+commit/checkpoint before bounded durable publication work. No formal SLO claim.
