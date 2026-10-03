@@ -617,3 +617,28 @@ complete same-head checks; submit verified idle-write reduction separately and
 compare full strict small workload on integrated main. Remaining mutable
 shared initialization/owner promotion and high fan-out transactions still need
 bounded/versioned protocols if profile establishes material cost.
+
+
+## Active retirement evidence polling correction (2026-10-03)
+
+Base05e8f168396179d74427bbe663877201ce158d67; branch
+codex/retired-follower-gc-wait-20261003. PR26 E2E37132902430 failed
+transaction/ON/ON at wait_stateful_retired: retired descriptor observed while
+JOIN shared binding awaited background GC. Artifact11277780160 retained.
+Runtime intentionally leaves binding until outbox/consumer drain is verified by
+GC; immediate binding-count assertion raced that boundary. Keep exact remaining
+subview assertions and timeout. Require binding cleanup as part of the existing
+retirement wait and read each multi-table observation in one SQLite snapshot.
+Next real WAL regressions for retired-before-GC, exact task IDs, owner references,
+consistent snapshot and bounded timeout; then hosted E2E on focused test PR.
+PR26 remains frozen; PR27 telemetry head eb3bb3a is independently submitted.
+
+Polling implementation complete: each state() observation starts a read-only
+SQLite transaction; wait_stateful_retired also requires no binding whose exact
+follower/leader task ID matches a retired sink descriptor. Existing timeout,
+drain/intent checks, remaining-subview assertions and full-row oracles unchanged.
+PYTHONPATH=/workspace/m2s-deps python tools/stateful_retirement_poll_test.py:
+5 PASS actual WAL fixtures (both operator kinds retired-before-GC, owner
+promotion references, unrelated exact IDs, stuck-binding timeout, concurrent
+writer committing between two reads). Original helper fails delayed-GC and
+snapshot consistency regressions. Next focused PR and real eight E2E required.
