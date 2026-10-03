@@ -7,11 +7,10 @@ authorized by the owner without expiry, subject to actual configured access.
 
 ## Immediate next action
 
-1. Main `8ccf21e8b33f93183faf17d2df1b7f43630b1aed` includes PR #26 intent-BEGIN recovery, #27 bounded optional SQLite write timing and #28 WAL-snapshot retirement polling. Required CI passed at respective exact heads; see latest checkpoints.
-2. PR #29 `dc6500e10e7e00236883aa2fa26fc8a05361526e` is a performance candidate, NOT merged. Local randomized/full-bag/rollback and 1M synthetic reference A/B pass. All correctness/eight E2E/smoke PASS, strict small FAIL27.130/37.835s. PR31's combined CDC cap headb2f822cd also passed all contracts/smoke but failed small during recovery with a mixed-snapshot shared-leader watermark assertion; no final gate/oracle exists. Keep both unmerged. Prioritize the main-only coherent-read correctness fix below, then integrate it into the next strict performance attempt.
-3. Main436a6f6 small run37138133724/artifact11279537301 has all seven full-output oracles, all four hot-adds, strong-exit live-tail recovery and final drain PASS; latency P95=26.107232/P99=32.453451s FAIL. Do not mistake synthetic compute speedup or smoke for end-to-end acceptance. Main019965 optional-timing staged run37138973645 is pending behind earlier main validation; avoid duplicate queues.
-4. PR #12/#19 remain unmerged failed-small candidates; re-evaluate only focused changes against latest structural baseline with fresh strict CI. Shared mutable-leader bootstrap/promotion and genuine high fan-out incremental transactions remain scale limitations.
-5. Formal unchanged p11-50m-50rps-72h-v4 still requires an independently configured persistent isolated host; none is configured. No final v1/P11 certification claimed. Repository authorization persists, but does not supply host/cloud credentials.
+1. Main335bf1d35300ba57d5947162955115ff8b82f45f includes validated PR26 intent recovery, PR27 optional bounded timing, PR28 retirement polling and PR32 short coherent shared-leader read snapshots. Tested/merge SHAs recorded below; owner authorization persists.
+2. Fresh branch codex/perf-join-bootstrap-bulk-20261003 combines affected-row JOIN reads, budgeted configurable CDC lane cap, read-only existing-private-owner checks and bounded-buffer bootstrap identity/output SQL. Local full-output/reference/rollback/collision contracts pass. Require new exact-head baseline/native/state/eight E2E/smoke AND unchanged strict-small5/10s before merge. Earlier failed PR29/31/33 remain unmerged.
+3. PR33 strict-small artifact11280652603 all full oracles/four hot-adds/recovery/drain PASS; P95=7.087626s FAIL, P99=8.104414s PASS. Genuine JOIN follower try_bind count2/maxhold7.428060s. Bulk SQL narrows demonstrated cost but still holds one cardinality-proportional transaction; resumable follower bootstrap/promotion and genuine high fan-out need further work.
+4. Main436a6f6 real million run37138133724/artifact11279748960 completes all seven oracles, dynamic tasks, live-tail recovery and drain; fails strict latency73.715749/116.724544s. This is distinct from million-output microbenchmarks. Fixed-resource scale/low-space/upgrade and formal persistent50M72h remain open; no host/cloud identity is configured and no certification claimed.
 
 ## Current implementation boundaries
 
@@ -731,3 +730,81 @@ Base main622d39ef2473c3c752c561c712ab2e64226af5d4; branch codex/shared-leader-re
 Code reads leader consumer and state in separate autocommit SELECTs although leader publishes both atomically. A concurrent commit between these reads can look like corruption. Plan a short deferred read snapshot covering follower binding/leader descriptor/consumer/state validation, ended before follower journal writes; preserve true mismatch failure and caller-owned transactions. Deterministic real WAL writer must advance both watermarks between the two SELECTs while follower succeeds on old coherent snapshot, then observes the new watermark next step. Test both operators and genuine persisted mismatch, cleanup, and existing sharing/promotion/GC contracts.
 
 Implementation complete: short source_state.read_snapshot (BEGIN deferred, no writer lock) covers binding/descriptor/leader consumer/state validation and ends before journal copying/staging. Caller-owned transactions are reused and never closed. Four real WAL tests PASS: aggregate and JOIN writer atomically publishes seq1 between the two SELECTs while follower sees coherent seq0 then exact seq1 digest on next step; actual persisted mismatch remains fatal; exception cleanup and outer-transaction ownership. Original runtime functions fail both races with watermarks diverged. Existing exact/subview/restart/owner promotion and idle/contention contracts PASS. Next focused main-only correctness PR and same-head baseline/native/state/eight E2E/smoke; performance branches remain frozen and need this validated fix before another strict small attempt.
+
+## Active JOIN affected-row read measurement (2026-10-03)
+
+Base436a6f6b0fe332c21cddb630521e3cff697ec9b2; branch
+codex/perf-join-affected-row-reads-20261003. Main canonical workload joins events
+to1024 dimensions on bucket. apply_transaction projects only changed PK pairs
+but _rows_for_keys_locked reads ALL rows on both sides for each affected key,
+before and after. Small50-row left transactions at1M therefore repeatedly read
+~50k unchanged left rows although each changed left matches one dimension.
+Candidate: snapshot changed PKs by key; scan the whole opposite side only when
+changed rows on that key can affect it. Retain full opposite fan-out for right
+updates, bilateral net diffs, rekey/NULL/bag semantics and atomic state/outbox.
+First independent full-state oracle/randomized and actual row-read measurement;
+then exact-head contracts and strict small before performance merge. No claim
+that legitimate high fan-out or shared initialization transactions are bounded.
+
+Implementation/measurement: changed PK point reads grouped by key, complete
+opposite ranges only where required. 4 new tests PASS, including150 randomized
+bilateral source transactions with repeated PK/NULL/rekey/delete/insert, full bag
+and independent net-delta oracle,11 fault rollbacks/retries, left/right asymmetric
+read bounds. Actual original helper in join_state globals fails both forbidden
+unchanged-range scan tests. Existing state/incremental/runtime/shared/subview
+contracts PASS. Attempted join_log_consumer_test.py does not exist; runtime test
+exercises that layer instead.
+Fresh independent child full-range/candidate100k and1M full bags match complete
+independent oracle. For ten50-left-row commits at1M, unnecessary left RANGE
+rows977000->0 (changed PKs still point-read), right rows1000 both; total apply
+2.486598s->0.034148s, max txn0.312853s->0.003753s, FULL WAL commits.
+100k0.175836s->0.039498s. Report reports/join-affected-reads-local-20261003.json.
+This is synthetic compute only, not daemon/remote/SLO or a bounded fan-out claim.
+Performance branches codex/perf-* now run smoke+strict small as PR checks; formal
+thresholds unchanged. Next submit exact-head PR and retain failed gates if any.
+PR27 integrated1218c28 passed all five families and merged01996589c90b90b985e62b17cc0f3926c3f9b3cf.
+PR28 integrationf714d735 remains under baseline/native/eight E2E checks.
+
+
+Performance candidate is based on retirement-poll integration fca66009ddc271083586964d31769cf1918d070b (PR28), which includes validated main01996589/PR27 timing. Submit with strict small PR gate. Preserve exact head during checks. These histories refer to their own SHAs; no combined certification.
+
+## 2026-10-03 checkpoint: JOIN compute candidate failed strict gate; narrow CDC lane candidate
+
+- PR29 exact dc6500e10e7e00236883aa2fa26fc8a05361526e passed baseline37139384369/native37139384198/state37139384220/all eight E2E37139384235/smoke job111250474785. Strict small run37139384246/job111250474900/artifact11279428154 FAIL only latency_p95/latency_p99: 27.130015355/37.835452662s,110 samples,density0.9083. All seven full-output oracles/four dynamic tasks/strong-exit recovery/drain pass. Keep PR29 unmerged; synthetic benefit does not establish SLO. This optional-instrumented hosted run is not controlled A/B against uninstrumented main436a6f6.
+- Optional telemetry after restart captured join_shared_runtime:try_bind hold max6.407146766s, count5621,total22.992190079s; its acquire total48.812321637s. capture_binlog_native acquire max6.435430805s and mark_merge_transaction_visible max5.936379005s. These process-lifetime aggregate timings do not prove a particular waiting call was blocked by that same hold; shared follower bootstrap remains a demonstrated long transaction candidate.
+- Gate markers measure raw events queryable latency (tools/longhaul_workload.py visible_markers), not each stateful target SLO. Raw output cdc_age P95≈41.929s, visible commit avg1.251s; unchanged hard lane-width4 can split sixteen-partition CDC into serial physical deliveries with constrained writers. Narrow follow-on codex/perf-cdc-lane-cap-20261003 combines the tested affected-row code with configurable CDC_CDC_BUNDLE_MAX_LANES default16/max64 and existing automatic ceil(partitions/active_writers). Row/byte/prepared budgets, per-lane FIFO, kind/plan barriers and visible watermarks stay intact; no snapshot page or JOIN batch changes from old PR12/#19 imported.
+- Local PYTHONPATH=/workspace/m2s-deps python tools/cdc_bundle_test.py: five actual SQLite/Arrow tests PASS: wide durable membership/restart/ack fence, row/byte/reservation budgets, plan/snapshot barriers, explicit cap/writer parallelism/catalog config, actual Arrow preparation/OOM lane shrink/restart/full-row visibility guard. Old four-lane helper fails wide membership negative control as expected. prepare_begin_contention5/merge_visible_contention3/merge_accepted_contention11/source_pipeline_metrics and diff check PASS.
+- PR30 docs exact1bbe6412900b297b1f86a5d32bc62b0795aab286 baseline37139977210/native37139977214 PASS; merged622d39ef2473c3c752c561c712ab2e64226af5d4. Preserve that README/progress in fresh combined performance tree and both parent histories. Next exact-head all contracts + strict small; do not merge until the unchanged gate passes. Formal persistent50M72h and shared bootstrap/promotion still open.
+
+## Active private-state sharing-check lock correction (2026-10-03)
+
+Base combined candidate b2f822cd0cc601f6430e19d1422d02227218b44f; branch codex/perf-private-state-share-check-20261003. PR31's strict small/E2E remain in progress; do not modify its tested head. Profiling shows thousands of try_bind transactions while private-state owners remain candidate awaiting target visibility. Actual WAL reproduction for aggregate and JOIN: existing private bootstrap state + independent writer + busy_timeout=0 causes try_bind to raise database is locked even though its locked branch only returns None.
+Plan a read-only existing-private-state fast path after checking durable follower binding, retaining state integrity validation and all existing checks again under writer lock before any new binding creation. Cover complete/incomplete states, WAL competing writer, no writes/BEGIN, state creation between fast read and locked recheck, and semantic corruption fail-closed. Full correctness and unchanged strict-small required before merging a performance combination; no claim that follower bootstrap itself is now bounded.
+
+## Integrated private-state/CDC/JOIN candidate after coherent-read correction
+
+PR31 b2f822cd small failed runtime during strong-exit recovery, NOT merely latency, artifact11280535911: false leader state/consumer divergence is deterministically reproduced by old aggregate/JOIN helpers when a real WAL writer commits between reads. No final oracle/gate result from that run. All four correctness families and smoke passed. Keep31/29 unmerged; do not re-run without structural read correction.
+Main-only PR32 deda38e2e5e39afca85ee6d86fcd9876190b76e7 is under exact-head baseline/native/state/eight E2E/smoke. Combine its short deferred read snapshot with private-state sharing-check fast path, budgeted configurable CDC lanes and affected-row JOIN reads for a fresh strict performance attempt. No snapshot-page or wide JOIN bridge batch changes imported. Tests source_state.read_snapshot4/private-state3/affected-read4/CDC5 all PASS on locally merged implementation; exact/subview/promotion/idle/contention contracts passed for their fixes.
+Branch codex/perf-private-state-share-check-20261003 preserves main622d39ef and PR32 parent histories. CI includes every new regression and perf branch strict-small matrix. Merge only when coherent-read main fix and this exact combined head pass required contracts AND unchanged strict small P95<=5s/P99<=10s. Follower bootstrap6.407s observed long transaction still remains; fast path only removes unnecessary empty acquisitions, not bootstrap or high-fanout cost. Persistent50M72h remains unavailable. Next inspect hosted gates; retain failed evidence without overclaiming.
+
+## Active JOIN bootstrap bulk registration measurement (2026-10-03)
+
+PR33 exact02355671fa198e322b7e88a334a360584e8ab1ca passed baseline37141299413/native37141299422/state37141299409/all eight E2E37141299443/smoke. Strict small37141299410/artifact11280652603 FAIL only P95=7.087625722s (limit5), P99=8.104413981s passes10. All seven complete oracles/four dynamic tasks/strong-exit right-side update/live-tail catchup180.316s/drain pass. Counts for join_shared_runtime:try_bind dropped to2 genuine bindings; maxhold7.42805956s,total14.584220264s. Do not merge33 because partial latency success is insufficient.
+Local cProfile real100k pair bootstrap:4.418s profiled,400012 Connection.execute calls,100000 identity helper calls (1.984 cumulative),100001 stream_info calls (.531 cumulative). This supports avoiding redundant per-row metadata reads and SQL round trips, but profiling is synthetic and adds overhead.
+Plan bounded count/byte buffers for new bootstrap output insertion, batch TEMP identity staging and one indexed collision validation per batch, preserving all-or-nothing writer transaction, canonical digest, exact legacy/hash identities, retry semantics and whole-seed rollback. This is a lock-cost optimization, NOT resumable follower bootstrap or a cardinality-independent writer bound. Measure full output/identity oracle and independent original reference before publishing a fresh strict candidate; do not modify failed33head.
+
+## 2026-10-03 checkpoint: recovery main completed real million-row workload
+
+Main436a6f6b0fe332c21cddb630521e3cff697ec9b2 run37138133724 million job111246770182/artifact11279748960 completed actual workload and full gate evaluation; no further BEGIN BUSY worker exit. The gate FAIL only latency P95/P99=73.715749376/116.724544062s. Initial1,000,000 +90,000 live rows; raw/three aggregate/three JOIN full-output oracles all match, four dynamic tasks ready, strong-exit right-side JOIN update and live-tail catchup1212.999231844s pass, final source/apply1801 with pending/deliveries0. Healthy samples459 /600.0077s density0.76499. Daemon peakRSS566591488 bytes, CPU2454.32s and writes39275618304 bytes; state storage3433115648 bytes. These are real synthetic-fixture million source rows, not the prior million-output microbenchmark, and not50M72h/SLO certification.
+PR33 combined head02355671fa198e322b7e88a334a360584e8ab1ca is under fresh full CI/strict small; do not mutate that tested head. PR32 main-only read snapshot head deda38e2e5e39afca85ee6d86fcd9876190b76e7 under separate required CI. Performance PR29/31 remain unmerged failed evidence. No persistent host provided in this session; optional host-location question does not require new repository permission.
+
+Implementation complete: new-bootstrap only buffers <=1000 rows and <=1MiB estimated pair/payload/identity bytes (one originally accepted oversized row remains singleton); SQL TEMP identity stage, INSERT SELECT with conflict handling and indexed exact pair collision validation, then bounded executemany output rows. Re-read stream format only once inside the existing writer transaction; exact retries retain row-by-row validation. Whole transaction and canonical digest unchanged; no unsealed result is exposed. Hash/base64 identity formats, same-output bags, same/across-batch collisions/preexisting collisions, SQL failure after1100 inserts, rollback and exact retry tested.
+Five new tests, existing streamed-bootstrap5, primary bounded-output11, bridge-stream4, exact/subview sharing and read-snapshot4 PASS; diff check PASS. Independent old _seed_bootstrap_stream reference in separate children at100k: full output/identity oracle and canonical digest equal. SQL statements400012->200513, stream SELECTs100001->2, measuredwall3.638920->2.572513s, RSS142286848->143253504bytes. Trace-counter overhead included equally; synthetic local measurement, NOT daemon/SLO or cardinality-independent writer bound. Report reports/join-bootstrap-bulk-local-20261003.json; benchmark CI uses1000 rows.
+PR32 exactdeda38e2 passed all five families37141179663/37141179553/37141179598/37141179566/37141179529; merged335bf1d35300ba57d5947162955115ff8b82f45f. Candidate preserves all validated main and earlier failed performance heads via ancestry. Next fresh all contracts/eight E2E/smoke/unchanged strict small; preserve new tested head during checking and do not merge on partial gate success.
+
+## PR34 TEMP compatibility correction; fresh exact head required
+
+Initial05cca4e0395d751c265ececf2a50343beb42a4af baseline37142849196 fails in100-task JOIN sharing: the new TEMP identity stage existed before a manual/default-mode connection could select required FILE TEMP for source apply. Native37142849177/state37142849194/eight E2E37142849200 pass, but those are not final acceptance for corrected code. Staged37142849209 failed; preserve its artifacts and inspect separately, do not reuse checks across heads.
+Fix preserves unconfigured/manual callers on original per-row seed path, without creating/changing their TEMP objects. Production stateful_task_worker selects existing required FILE mode once before its loop and before TEMP/transaction writes; configured FILE callers use bulk and clear batch staging rows. Avoid DROP while iter_pairs cursor is active (SQLite schema lock) and avoid changing temp_store after a writer has already written. Caller-owned TEMP/default modes remain intact.
+Seven bulk tests PASS including default-mode seed followed by source TEMP configuration and existing caller TEMP preservation; source100-task JOIN sharing/GC/subview, seed5, worker idle3/contention4, private-state3 and coherent-read4 PASS. Missing source_apply_staging_test.py was only an attempted command, not evidence; real100-task test runs source apply and reproduced/fixed the CI fault.
+Re-ran independent100k both variants with FILE mode: output/identity/full oracle equal, original400012 SQL /100001 stream SELECT, bulk200514/2, wall4.410113->2.842980s, RSS139300864->143482880bytes. Prior million A/B was on initial05cca algorithm (full digest equal,45.426/38.028s, RSS144.8/143.3MB), not the corrected head; do not conflate. Next new exact-head all contracts/eight E2E/smoke/strict small5/10s.

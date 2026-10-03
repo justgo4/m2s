@@ -293,6 +293,45 @@ def _insert_commit(con,consumer_id,source_seq,kind,rows):
     return True
 
 
+def _insert_bootstrap_batch_locked(con,consumer_id,fixed_w,identity_format,rows):
+    """Insert a bounded new-output batch with exact identity collision checks."""
+    if identity_format!=IDENTITY_FORMAT_LEGACY:
+        con.execute("""
+            CREATE TEMP TABLE IF NOT EXISTS join_bootstrap_identity_stage(
+                target_id TEXT NOT NULL,pair_id BLOB NOT NULL)
+        """)
+        con.execute("DELETE FROM join_bootstrap_identity_stage")
+        try:
+            con.executemany("""
+                INSERT INTO join_bootstrap_identity_stage(target_id,pair_id)
+                VALUES(?,?)
+            """,[(target_id(pair_id,identity_format),bytes(pair_id))
+                 for pair_id,_,_ in rows])
+            con.execute("""
+                INSERT INTO join_output_identities(consumer_id,target_id,pair_id,created)
+                SELECT ?,target_id,pair_id,? FROM join_bootstrap_identity_stage WHERE 1
+                ON CONFLICT(consumer_id,target_id) DO NOTHING
+            """,(consumer_id,time.time()))
+            collision=con.execute("""
+                SELECT s.target_id FROM join_bootstrap_identity_stage AS s
+                LEFT JOIN join_output_identities AS i
+                  ON i.consumer_id=? AND i.target_id=s.target_id
+                WHERE i.pair_id IS NULL OR i.pair_id!=s.pair_id
+                LIMIT 1
+            """,(consumer_id,)).fetchone()
+            if collision is not None:
+                raise RuntimeError(
+                    "JOIN target identity collision; exact pair identity differs "
+                    "for target_id="+str(collision[0]))
+        finally:
+            con.execute("DELETE FROM join_bootstrap_identity_stage")
+    con.executemany("""
+        INSERT INTO join_output_rows(consumer_id,source_seq,pair_id,op,row_payload)
+        VALUES(?,?,?,?,?)
+    """,[(consumer_id,int(fixed_w),bytes(pair_id),int(op),bytes(payload))
+         for pair_id,op,payload in rows])
+
+
 def _seed_bootstrap_stream(con,consumer_id,fixed_w,state_id,spec_hash,rows):
     """Atomically seed from an iterator; never cache/sort the complete relation.
 
@@ -323,22 +362,40 @@ def _seed_bootstrap_stream(con,consumer_id,fixed_w,state_id,spec_hash,rows):
             """,(consumer_id,int(fixed_w),now,now))
         count=0
         try:
+            identity_format=stream_info(con,consumer_id)["identity_format"]
+            # Legacy/manual callers may not have selected a safe TEMP mode.
+            # Keep their original path rather than changing caller TEMP state.
+            bulk=existing is None and int(con.execute("PRAGMA temp_store").fetchone()[0])==1
+            batch=[]
+            batch_bytes=0
             for pair_id,op,payload in rows:
-                _register_pair_identity_locked(con,consumer_id,pair_id)
-                if existing is None:
-                    con.execute("""
-                        INSERT INTO join_output_rows(
-                            consumer_id,source_seq,pair_id,op,row_payload)
-                        VALUES(?,?,?,?,?)
-                    """,(consumer_id,int(fixed_w),bytes(pair_id),int(op),bytes(payload)))
+                if bulk:
+                    size=len(pair_id)+len(payload)+80
+                    if batch and (len(batch)>=1000 or batch_bytes+size>1024*1024):
+                        _insert_bootstrap_batch_locked(
+                            con,consumer_id,fixed_w,identity_format,batch)
+                        batch=[]
+                        batch_bytes=0
+                    batch.append((pair_id,op,payload))
+                    batch_bytes+=size
                 else:
-                    stored=con.execute("""
-                        SELECT op,row_payload FROM join_output_rows
-                        WHERE consumer_id=? AND source_seq=? AND pair_id=?
-                    """,(consumer_id,int(fixed_w),bytes(pair_id))).fetchone()
-                    if stored is None or int(stored[0])!=int(op) or bytes(stored[1])!=bytes(payload):
-                        raise RuntimeError("JOIN output commit retry has different payload")
+                    _register_pair_identity_locked(con,consumer_id,pair_id)
+                    if existing is None:
+                        con.execute("""
+                            INSERT INTO join_output_rows(consumer_id,source_seq,pair_id,op,row_payload)
+                            VALUES(?,?,?,?,?)
+                        """,(consumer_id,int(fixed_w),bytes(pair_id),int(op),bytes(payload)))
+                    else:
+                        stored=con.execute("""
+                            SELECT op,row_payload FROM join_output_rows
+                            WHERE consumer_id=? AND source_seq=? AND pair_id=?
+                        """,(consumer_id,int(fixed_w),bytes(pair_id))).fetchone()
+                        if stored is None or int(stored[0])!=int(op) or bytes(stored[1])!=bytes(payload):
+                            raise RuntimeError("JOIN output commit retry has different payload")
                 count+=1
+            if batch:
+                _insert_bootstrap_batch_locked(
+                    con,consumer_id,fixed_w,identity_format,batch)
         finally:
             rows.close()
         ordered=con.execute("""

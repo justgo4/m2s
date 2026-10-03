@@ -1,0 +1,59 @@
+{
+  "kind": "join_bootstrap_bulk_local_v1",
+  "runs": [
+    {
+      "variant": "original",
+      "rows": 100000,
+      "wall_seconds": 4.410112957999445,
+      "cpu_seconds": 4.326032724000001,
+      "peak_process_rss_bytes": 139300864,
+      "counts": {
+        "sql_statements": 400012,
+        "stream_selects": 100001
+      },
+      "digest": "dc8451a3ce7740bc2d968c539f6380a5e3e9999d0113699d4eefea50dfbabb09",
+      "full_bag": {
+        "count": 100000,
+        "sha256_sum": "aa12207f1b8634941b19f1ae1bd6c63c8c332a37e760e2cb2cd2cc201ec6431e"
+      },
+      "full_bag_oracle": {
+        "count": 100000,
+        "sha256_sum": "aa12207f1b8634941b19f1ae1bd6c63c8c332a37e760e2cb2cd2cc201ec6431e"
+      },
+      "identity_rows": 100000,
+      "exact": true,
+      "scope": "synthetic FULL WAL atomic seed; includes SQL trace counter overhead; no remote/SLO",
+      "write_transaction_bounded": false
+    },
+    {
+      "variant": "bulk",
+      "rows": 100000,
+      "wall_seconds": 2.842979977998766,
+      "cpu_seconds": 2.842508073,
+      "peak_process_rss_bytes": 143482880,
+      "counts": {
+        "sql_statements": 200514,
+        "stream_selects": 2
+      },
+      "digest": "dc8451a3ce7740bc2d968c539f6380a5e3e9999d0113699d4eefea50dfbabb09",
+      "full_bag": {
+        "count": 100000,
+        "sha256_sum": "aa12207f1b8634941b19f1ae1bd6c63c8c332a37e760e2cb2cd2cc201ec6431e"
+      },
+      "full_bag_oracle": {
+        "count": 100000,
+        "sha256_sum": "aa12207f1b8634941b19f1ae1bd6c63c8c332a37e760e2cb2cd2cc201ec6431e"
+      },
+      "identity_rows": 100000,
+      "exact": true,
+      "scope": "synthetic FULL WAL atomic seed; includes SQL trace counter overhead; no remote/SLO",
+      "write_transaction_bounded": false
+    }
+  ],
+  "exact": true,
+  "not_certification": true,
+  "software": {
+    "python": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+    "sqlite": "3.53.1"
+  }
+}

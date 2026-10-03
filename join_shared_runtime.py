@@ -171,6 +171,15 @@ def try_bind(con,task,cfg=None):
     if existing is not None:
         return existing
 
+    # Existing private builds keep their ownership while outputs catch up.
+    # Binding creation still rechecks state after acquiring the writer below.
+    try:
+        join_state.state_info(con,task["state_id"])
+    except KeyError:
+        pass
+    else:
+        return None
+
     with join_state.transaction(con):
         existing=maybe_binding(
             con,task["task_id"])

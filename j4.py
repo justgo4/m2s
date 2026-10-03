@@ -1344,6 +1344,7 @@ def read_config():
         catalog_config_revision=cdc_catalog.config_revision(
             catalog_paths["catalog"]),
         key_partitions=env_int("CDC_KEY_PARTITIONS", 16, maximum=64),
+        cdc_bundle_max_lanes=env_int("CDC_CDC_BUNDLE_MAX_LANES",16,maximum=64),
         writer_min=env_int("CDC_WRITE_WORKERS_MIN", 1, maximum=32),
         writer_initial=env_int("CDC_WRITE_WORKERS_INITIAL", min(4,resource_target), maximum=32),
         writer_max=env_int("CDC_WRITE_WORKERS_MAX", min(8,resource_cap), maximum=32),
@@ -3147,7 +3148,9 @@ def cdc_bundle_width(cfg, runtime, table):
     partitions = key_partition_count(cfg)
     active = max(1,writer_target(runtime,table))
     automatic = max(1,(partitions+active-1)//active)
-    return min(automatic,4)
+    # Keep logical lanes and their FIFO fences; coalesce only within the
+    # existing row, byte and prepared-reservation budgets.
+    return min(automatic,max(1,int(cfg.get("cdc_bundle_max_lanes",16))))
 
 
 def lane_blocking_delivery(con, table, lane):
@@ -11492,6 +11495,7 @@ def stateful_task_worker(item, cfg, runtime):
         else list(task["source_relations"])
     )
     try:
+        source_state.require_file_temp_store(con)
         while not stop.is_set():
             stateful_rebuild_test_gate(
                 item,stop)
