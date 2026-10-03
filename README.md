@@ -369,6 +369,12 @@ smoke 精确沿用已有 E2E 的 60 秒 cold-start/mixed-fault workload 与开�
 
 首个 100k/5 分钟性能测试 [run 37084867442](https://github.com/justgo4/m2s/actions/runs/37084867442) 的 raw、aggregate、三个 JOIN 的全行 oracle 和动态任务/强退恢复/drain 均正确，sample density=0.899 达标；仅延迟门禁失败，P95≈21.25s、P99≈41.99s。恢复追赶约 190s、m2s 峰值 RSS≈605MiB、累计写入约 2.79GB；日志中有 CPU 压力触发的 snapshot pause 和任务就绪尾延迟。artifact `11260627960` 保留，性能根因仍需分析；这些数据不支持生产 SLO 或 50M/72h 声明，也不直接证明必须更换 SQLite/native。
 
+近期继续改造：[PR #10](https://github.com/justgo4/m2s/pull/10) 仅对 `source_state_apply_worker` 的明确 `SQLITE_BUSY` 且事务已退出情况做停止可打断的重试；已提交的 source apply 前缀即使没有新输入，也必须补做 physical catalog 同步。FULL/损坏/仍有活动事务等错误保持 fail-stop，busy timeout 不提高。四个真实 SQLite 连接用例覆盖提交后登记争用、释放锁后同步、争用中取消与非 BUSY/活动事务错误。当前仍待新 SHA 的完整 CI，未宣称 million 或长期锁争用问题已经解决。
+
+[PR #9](https://github.com/justgo4/m2s/pull/9) 的批次候选 `5b382ef4` 和 PR #10 初版 `ea913d53` 已完成 workload，但监督器因报告版本不一致拒绝证据（runs [37087609367](https://github.com/justgo4/m2s/actions/runs/37087609367)、[37087862226](https://github.com/justgo4/m2s/actions/runs/37087862226)；artifacts `11261655549`/`11261028417`/`11261248141`）。原因是报告函数优先取 `GITHUB_SHA`，而 workflow 已检出 PR head；两者在 PR 事件中不同。修复为真实 Git HEAD 优先、无 Git 时仅允许显式 source archive 身份，附真实临时 Git 回归；旧报告不改写 SHA，新 checks 分别对应 `bdff6c88`/`d988e1e5`。被拒绝的小型报告观察到 P95≈11.17/P99≈13.19s，不能据此宣布新批次改善或门禁通过。
+
+恢复报告的 `catchup_seconds` 也有测量边界：`recover_after_fault()` 持续造数并把新 marker 加入待校验集合，等待所有 marker 可见且 source log/apply 水位相等后才返回。约 180s 的数字可能包含持续追逐移动尾部直至负载结束，不能直接等同于进程停机时间或证明某个锁持有 180s。修改这一测量协议需要独立定义/回归，当前正式 P11 和恢复判据保持原样。
+
 **完整愿景** 还包括更多 SQL/跨算子通用增量编译、通用 arrangement/factorized state、整图长期成本优化、公平对标以及 P12/P13 的运维控制面/权限/MCP。它们不是受限 v1 的强制前置依赖；“任意 SQL”“达到物理极限”“全面领先”不能成为没有可验收边界的完成定义。Python/SQLite 或 native 的替换也不先验必做。
 
 | 出口 | 条件化规划预算 | 完成的含义 |
