@@ -11,8 +11,10 @@ the goals and evidence boundaries. Read AGENTS.md before continuing.
 - Starting main: `017285bafd1978cdf129ba2beb9a592d4c63ce48`.
 - Active milestone: **V1-02, runner inventory and safe operating procedures**.
 - V1-01 merged as `719159d60c54ce510fb5ffabfcc847b068e4bc51` (PR #5).
-- Active branch: `codex/v1-operations-20261003`, [PR #8](https://github.com/justgo4/m2s/pull/8).
-- Operations head `9de0453b28181b59e1b0443bdf735f01a9dd6194` (CI pending).
+- Active branch: `codex/v1-cdc-bundle-20261003` (preparing).
+- Operations [PR #8](https://github.com/justgo4/m2s/pull/8) merged as `448f618babc28ec2be71b291c5ea0572b2e1cba0`.
+- Operations head `9de0453b28181b59e1b0443bdf735f01a9dd6194`: baseline `37085918376`
+  and native `37085918360` passed, including ten new operating/backup tests.
 - Profile budget [PR #7](https://github.com/justgo4/m2s/pull/7) merged as `7dc814ab4d7e5a6b9e93a701c8ebeab0bfdb5dd6`.
 - Profile fix SHA: `52bb1f3686b771f8b4cf3d5683bac26ef375fec1`; baseline `37085454135`,
   native `37085454170` and supervised smoke `37085454133` passed.
@@ -59,7 +61,7 @@ pass independently; do not merge by combining old and new green runs.
   real topology-budget regression covers every named plan at cap=2. Local runner
   nine tests/P11/AST-loaded real topology calculation pass. Full workload test uses CI.
   Backup drafts: `tools/state_backup.py`, `tools/state_backup_test.py`; five real
-  SQLite WAL/timeout/tamper/interruption tests pass. Operations committed in PR #8; remote checks pending.
+  SQLite WAL/timeout/tamper/interruption tests pass. Operations committed and merged in PR #8. Cross-version and deployed fault drills remain pending.
   Inventory implementation: `tools/runner_inventory.py`, `tools/runner_inventory_test.py`,
   `.github/workflows/runner-inventory.yml`; four sanitized inventory tests pass.
   Actual inventory [run 37084999017](https://github.com/justgo4/m2s/actions/runs/37084999017)
@@ -113,7 +115,13 @@ performance root cause still under investigation. No performance pass exists.
 Performance follow-up under investigation: existing CDC bundles cap width at four
 lanes even when one writer serves sixteen lanes. Small metrics show ~1.19s VISIBLE
 per delivery and four-lane CDC bundles; larger bounded bundles may reduce queue
-rotation. No improvement yet claimed; compare against profile-fix main
+rotation. Candidate drafts: `j4.py`, `cdc_catalog.py`, `tools/cdc_bundle_test.py`,
+`.github/workflows/validation.yml`: configurable CDC bundle cap=16, adapting to
+active writer count; existing row/byte/prepared limits and durable memberships
+unchanged. Four real-SQLite regressions prepared (full imports require CI).
+Syntax and actual AST-loaded width tests pass. Add baseline invocation and README,
+submit PR; require same-head baseline/native/eight E2E and hosted smoke/small.
+No improvement yet claimed; compare against profile-fix main
 [run 37085851322](https://github.com/justgo4/m2s/actions/runs/37085851322), still running.
 CPU-only snapshot starvation is a separate measured symptom, not yet fixed.
 
