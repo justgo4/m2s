@@ -27,6 +27,10 @@ def parameters(name, protocol=None):
             fault_every_seconds=faults, memory_mb=memory,
             checkpoint_seconds=min(300, max(10, seconds//10)),
         )
+        if name == "smoke":
+            # Match the existing live E2E's deliberately short cold-start/fault
+            # workload. This is a protocol smoke, not the performance gate.
+            values.update(sample_seconds=0.5, snapshot_rows=512, fault_every_seconds=20)
     if protocol is not None:
         if protocol not in ("merge_async", "transaction"):
             raise ValueError("invalid output protocol")
@@ -56,6 +60,11 @@ def plan(name, root, directory, protocol=None, service_pids=None):
         "--output", str(directory/"workload.json"),
     ])
     gate = [sys.executable, str(root/"tools/longhaul_gate.py"), str(directory/"workload.json")]
+    thresholds = dict(max_p95_seconds=5, max_p99_seconds=10,
+                      min_cdc_rows_per_second=49, min_latency_samples_per_second=0.90 if name == "p11" else 0.75)
+    if name == "smoke":
+        thresholds.update(max_p95_seconds=30, max_p99_seconds=60,
+                          min_cdc_rows_per_second=40, min_latency_samples_per_second=0.2)
     if name == "p11":
         gate.append("--require-profile")
     else:
@@ -64,12 +73,12 @@ def plan(name, root, directory, protocol=None, service_pids=None):
             "--min-snapshot-rows", str(values["rows"]),
             "--min-dynamic-tasks", str(values["dynamic_tasks"]),
             "--min-faults", "1",
-            "--min-cdc-rows-per-second", "49",
-            "--min-latency-samples-per-second", "0.75",
         ])
+        for key, value in thresholds.items():
+            gate.extend(["--" + key.replace("_", "-"), str(value)])
     gate.extend(["--output", str(directory/"gate.json")])
     return dict(
-        profile=name, formal=name == "p11", parameters=values,
+        profile=name, formal=name == "p11", parameters=values, gate_thresholds=thresholds,
         workload_command=workload, gate_command=gate,
         scope=p11_profile.NAME if name == "p11" else "development:" + name,
     )

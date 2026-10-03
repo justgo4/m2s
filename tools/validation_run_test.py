@@ -73,6 +73,9 @@ class ValidationRunTest(unittest.TestCase):
         self.assertIn("--certification-profile", formal["workload_command"])
         self.assertIn("--require-profile", formal["gate_command"])
         self.assertNotIn("--require-profile", self.expected()["gate_command"])
+        self.assertEqual(self.expected()["gate_thresholds"]["max_p95_seconds"], 30)
+        self.assertEqual(validation_profiles.plan("million", ROOT, self.directory)["gate_thresholds"]["max_p95_seconds"], 5)
+        self.assertEqual(formal["gate_thresholds"]["max_p99_seconds"], 10)
 
     def test_existing_run_is_never_initialized_again(self):
         self.directory.mkdir()

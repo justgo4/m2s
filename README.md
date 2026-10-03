@@ -355,6 +355,8 @@ python tools/validation_run.py resume-gate --run-directory /data/m2s/run-001
 
 `.github/workflows/validation.yml` 在 PR 跑真实 smoke，合并相关代码后跑 small/million，并支持手动 medium；它保留失败状态/日志/报告 artifact。公开仓库标准 hosted runner 的免费分钟数不消除单 job 时长、磁盘/内存和临时生命周期限制。soak/p11/scale-short 不映射到该 hosted workflow，不能通过分段换机冒充连续 72h；self-hosted 的注册/云测试机创建还依赖对应管理权限和资源，仓库连接器并不自动提供它们。
 
+smoke 精确沿用已有 E2E 的 60 秒 cold-start/mixed-fault workload 与开发门槛（P95≤30s、P99≤60s、sample density≥0.2），只验收协议/恢复/精确性，**不宣称达到正式 SLO**。small/million/medium/scale-short/soak 保留 P95≤5s、P99≤10s 的性能门槛；p11 使用原正式 gate 默认值和 require-profile。所有 plan.json 显式列出 gate_thresholds，不能把不同层级的绿色结果混为一谈。首次新增 smoke 用正式延迟门槛运行时，[run 37083541672](https://github.com/justgo4/m2s/actions/runs/37083541672) 精确性全过，但 P95/P99≈15.09s、density≈0.664 未达 5/10s 与 0.75；该失败 artifact 保留，性能瓶颈仍应由后续分层测量判断，而非通过修改正式 gate 消除。
+
 ### 11.3 先完成有边界的 v1，再推进完整愿景
 
 **受限 v1** 的范围为单 MySQL→StarRocks、已登记的源表/列和稳定主键、共享源状态、运行时新增/删除/重建任务、投影/过滤、COUNT/SUM/AVG 与受限双源 INNER equi-join，以及明确的故障恢复/隔离边界。上述功能闭环已有，剩余重点是固定资源下的规模与压力证据、实测预算/准入、积压与低磁盘处置、告警/操作手册和版本化升级/回滚验证。破坏性 DDL/未支持 SQL 仍明确拒绝或重建；Merge Commit 未知结果仍隔离目标，在自动对账完成前不承诺自动解隔离。
