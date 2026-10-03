@@ -116,6 +116,8 @@ jobs:
           python tools/join_job_bridge_test.py
           python tools/join_bridge_stream_test.py
           python tools/join_bootstrap_stream_test.py
+          python tools/join_bootstrap_bulk_test.py
+          python tools/join_bootstrap_bulk_benchmark.py --rows 1000
           python tools/join_runtime_test.py
           python tools/join_shared_runtime_test.py
           python tools/shared_leader_snapshot_test.py
