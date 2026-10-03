@@ -308,3 +308,10 @@ A/B2 repeats, with explicit actual-head checkout. Require fresh same-head comple
 CI after this workflow correction rather than mixing prior SHA passes.
 Snapshot PR12 head0660e327 all correctness/smoke passed but strict small failed
 in37097752817 artifact11264873012; retain original report and inspect numbers.
+
+
+## 2026-10-03 checkpoint: persist known-visible merge result under SQLite BUSY
+
+- Main `914c163a` contains validated PR #11 stateful BUSY and PR #13 streamed JOIN initialization. PR #14 idle-worker pacing is under fresh CI at `ff41867d`.
+- Million run 37098049769 / artifact 11264953117 on `ef6ea539` fails at merge_async_delivery after wait_visible reported visible, entering local state_transaction BEGIN IMMEDIATE to mark load_parts visible. Remote submit already succeeded. Retrying the whole worker/request would risk replay; raising timeout does not bound large JOIN write transactions.
+- Branch `codex/v1-merge-visible-busy-20261003` will retry only this known-visible local transaction on SQLite BUSY after rollback, preserving the exact delivery/txn identity. Stop retains the durable pending journal for existing restart recovery. FULL/CORRUPT/LOCKED/active-transaction errors remain fatal. Verify a real SQLite lock plus one mocked successful remote submit/visibility check, release/stop/error cases and original regression before full hosted CI. No generic HTTP replay or uncertain-output relaxation.
