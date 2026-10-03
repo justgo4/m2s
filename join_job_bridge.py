@@ -155,6 +155,8 @@ def stage_commit(
         raise RuntimeError("JOIN job staging requires independent bounded transactions")
     commit=join_outbox.commit_info(
         con,consumer_id,source_seq)
+    if not commit["sealed"]:
+        raise RuntimeError("cannot stage unsealed JOIN output")
     if commit["visible"]:
         return dict(
             consumer_id=consumer_id,

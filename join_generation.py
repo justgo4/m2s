@@ -10,6 +10,7 @@ import join_bootstrap
 import join_ir
 import join_log_consumer
 import join_outbox
+import join_output_build
 import join_physical_state
 import join_state
 import source_state
@@ -167,7 +168,8 @@ def process_next_chunk(
 
 def activate_catchup(
         con,sink_key,plan_version,consumer_id,ir,state_id,
-        fault_after_consumer=None
+        fault_after_consumer=None,output_limit=None,output_bytes=16*1024**2,
+        max_row_bytes=64*1024**2
 ):
     join_ir.validate_ir(ir)
     sink_key=_text(sink_key,"sink_key")
@@ -221,12 +223,21 @@ def activate_catchup(
             "JOIN bootstrap must finish exactly at generation fixed-W")
 
     join_outbox.ensure_installed(con)
+    if output_limit is not None:
+        built=join_output_build.step(
+            con,consumer_id,state_id,generation["plan_version"],
+            generation["generation_id"],generation["fixed_w"],
+            row_limit=output_limit,scan_limit=4*max(1,int(output_limit)),
+            byte_limit=output_bytes,max_row_bytes=max_row_bytes)
+        if not built["done"]:
+            return dict(generation=generation,consumer=None,output_build=built)
     with task_generation.transaction(con):
         consumer=join_log_consumer.ensure_consumer(
             con,consumer_id,
             generation["plan_version"],ir,state_id,
             generation["fixed_w"],
-            generation_id=generation["generation_id"])
+            generation_id=generation["generation_id"],
+            bootstrap_seeded=output_limit is not None)
         if fault_after_consumer is not None:
             fault_after_consumer()
         generation=task_generation.finalize_history_and_release_pin(

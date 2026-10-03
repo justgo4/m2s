@@ -504,3 +504,59 @@ Direct cdc_selftest still blocked at resource_tree_stats /proc assertion locally
 required hosted baseline/native/state/eight E2E/smoke must validate full change.
 Next commit focused job-publication PR and preserve its exact SHA while CI runs;
 continue fixed-W bootstrap staging on a separate branch.
+
+
+## Active resumable fixed-W JOIN output build
+
+PR21 https://github.com/justgo4/m2s/pull/21 tests cb181e3cd0c2fb0d47e714574963711a81a03c62;
+all five workflow families running37114618420/37114618497/37114618465/37114618445/37114618424.
+Do not rewrite that head during CI. Branch codex/join-output-build-20261003 starts
+at cb181e3 for the separate bootstrap milestone. Implement bounded unpublished
+primary-generation pair enumeration with left+right durable cursors, input scan
+and byte caps, output commit sealed state, canonical digest outside write lock,
+and fixed-W pin retained until atomic consumer/generation activation. Shared
+follower initialization still uses its existing atomic path until its mutable
+leader frontier can be safely frozen; do not pretend primary chunks bound it.
+Next files join_output_build.py/join_outbox.py/join_generation.py/
+join_log_consumer.py/join_runtime.py and real WAL/high-fanout/pin/crash tests.
+
+
+### 2026-10-03 primary output build implementation and PR21 integration
+
+PR21 tested cb181e3 all five workflow families PASS: baseline37114618420,
+native37114618497, state37114618465, eight E2E37114618445, smoke37114618424.
+Merged30058ba22fb37277d2dd48a048d5bbd1d6fc46f1; its tree is identical to tested head.
+New output-build branch retains that main in its ancestry at final commit.
+
+join_output_build.py now supplies private-generation fixed-W seed chunks with
+both left/right cursors, max1000 output rows/4000 scan work/16MiB serialized
+bytes per chunk (singleton <= configured max_row_bytes, hard64MiB). Indexed
+left pagination and right range cursors include unmatched/NULL rows in scan
+budgets. Reads/projection happen outside writes; identities/output rows/cursor/
+count commit together. Canonical full-row digest runs outside the write lock;
+final seal updates metadata only. Outbox sealed=0 hides incomplete commits from
+pending/read/copy/stage/visibility; legacy rows migrate sealed=1. Daemon private
+JOIN activation opts in; the fixed-W source pin remains until sealed output,
+source consumer and generation activation form the final atomic handoff.
+Cancellation uses an abandoned manifest to fence stale builders, deletes rows
+and identities in restartable row/byte bounded transactions before pin release.
+Shared follower initialization and owner promotion keep their original atomic
+contracts: their mutable leader needs a separate durable snapshot/version protocol.
+This PR does not claim those paths or incremental fan-out state transactions bounded.
+
+python tools/join_output_build_test.py:11 PASS, real WAL/high fan-out/NULL and
+unmatched work bound, byte singleton/rejection, partial reads/claims/copies/ack
+fences, chunk/body/seal crash and stale CAS, exact full bag, canonical read
+interleaving, old sealed-column migration, pin retained across source advance
+and handoff crash, actual retirement cleanup crash+intent+pin+restart.
+Original atomic seed reproduces actual SQLite BUSY for a competing writer during
+canonical digest; new chunks/digest allow that writer. Runtime/generation/shared,
+100 exact/subview/follower GC and physical registry contracts PASS; privacy/diff/
+compile checks PASS. Curated100k independent cached/stream/chunked process
+report reports/join-output-build-local-20261003.json has all digests/counts exact:
+cache 1.894347s max txn / 1.894362s total; stream 1.959653s max txn / 1.959669s total; chunked 0.017705s max txn / 1.967813s total. These measured transaction intervals include BEGIN wait and
+COMMIT/fsync return; they are observations, not a universal duration guarantee
+or daemon/SLO evidence. Full hosted CI on the final SHA is still required.
+Next submit focused PR22, preserve its head during CI, and inspect current main
+small/million while profiling remaining shared bootstrap/promotion and hot-path
+write amplification. Formal50M72h remains open pending persistent isolated host.

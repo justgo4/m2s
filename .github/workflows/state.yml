@@ -62,6 +62,7 @@ jobs:
       - name: Exact streamed JOIN bootstrap and isolated pair-memory A/B
         run: |
           python tools/join_bootstrap_stream_test.py
+          python tools/join_output_build_test.py
           python tools/join_bootstrap_stream_benchmark.py --left 1000 --right 100 --repeats 2 --output benchmark-results/join-bootstrap-stream.json
       - name: Bounded streamed JOIN bridge and isolated output-memory A/B
         run: |

@@ -57,6 +57,7 @@ def install(con):
             kind TEXT NOT NULL,
             nrows INTEGER NOT NULL,
             digest TEXT NOT NULL,
+            sealed INTEGER NOT NULL DEFAULT 1 CHECK(sealed IN (0,1)),
             visible INTEGER NOT NULL DEFAULT 0,
             created REAL NOT NULL,
             updated REAL NOT NULL,
@@ -92,6 +93,10 @@ def install(con):
             "ALTER TABLE join_output_streams "
             "ADD COLUMN identity_format TEXT NOT NULL "
             "DEFAULT 'pair-base64-v1'")
+    commit_columns={str(row[1]) for row in con.execute(
+        "PRAGMA table_info(join_output_commits)")}
+    if "sealed" not in commit_columns:
+        con.execute("ALTER TABLE join_output_commits ADD COLUMN sealed INTEGER NOT NULL DEFAULT 1")
 
 
 def ensure_installed(con):
@@ -107,7 +112,9 @@ def ensure_installed(con):
         str(row[1]) for row in con.execute(
             "PRAGMA table_info(join_output_streams)").fetchall()
     } if stream else set()
-    if stream and identities and "identity_format" in columns:
+    commit_columns={str(row[1]) for row in con.execute(
+        "PRAGMA table_info(join_output_commits)")}
+    if stream and identities and "identity_format" in columns and "sealed" in commit_columns:
         return
     if con.in_transaction:
         raise RuntimeError(
@@ -251,11 +258,13 @@ def _insert_commit(con,consumer_id,source_seq,kind,rows):
     rows=sorted(rows,key=lambda item:item[0])
     digest=_digest(kind,rows)
     existing=con.execute("""
-        SELECT kind,nrows,digest
+        SELECT kind,nrows,digest,sealed
         FROM join_output_commits
         WHERE consumer_id=? AND source_seq=?
     """,(consumer_id,source_seq)).fetchone()
     if existing:
+        if not int(existing[3]):
+            raise RuntimeError("cannot replace unsealed JOIN output")
         if (
             str(existing[0])!=str(kind)
             or int(existing[1])!=len(rows)
@@ -298,11 +307,13 @@ def _seed_bootstrap_stream(con,consumer_id,fixed_w,state_id,spec_hash,rows):
             rows.close()
             raise RuntimeError("JOIN bootstrap state changed before output seed")
         existing=con.execute("""
-            SELECT kind,nrows,digest FROM join_output_commits
+            SELECT kind,nrows,digest,sealed FROM join_output_commits
             WHERE consumer_id=? AND source_seq=?
         """,(consumer_id,int(fixed_w))).fetchone()
         if existing is not None and str(existing[0])!="bootstrap":
             raise RuntimeError("JOIN output commit retry has different payload")
+        if existing is not None and not int(existing[3]):
+            raise RuntimeError("cannot replace unsealed JOIN output")
         now=time.time()
         if existing is None:
             con.execute("""
@@ -457,6 +468,8 @@ def copy_commit_projected(
             "JOIN projected copy source and target consumers must differ")
     source_commit=commit_info(
         con,source_consumer_id,source_seq)
+    if not source_commit["sealed"]:
+        raise RuntimeError("cannot copy unsealed JOIN output")
     source_stream=stream_info(
         con,source_consumer_id)
     target_stream=stream_info(
@@ -561,6 +574,8 @@ def copy_commit(
             "JOIN output copy source and target consumers must differ")
     source=commit_info(
         con,source_consumer_id,source_seq)
+    if not source["sealed"]:
+        raise RuntimeError("cannot copy unsealed JOIN output")
     source_stream=stream_info(
         con,source_consumer_id)
     target_stream=stream_info(
@@ -608,7 +623,7 @@ def copy_commit(
 
 def commit_info(con,consumer_id,source_seq):
     row=con.execute("""
-        SELECT kind,nrows,digest,visible,created,updated
+        SELECT kind,nrows,digest,visible,created,updated,sealed
         FROM join_output_commits
         WHERE consumer_id=? AND source_seq=?
     """,(
@@ -622,11 +637,13 @@ def commit_info(con,consumer_id,source_seq):
         source_seq=int(source_seq),
         kind=str(row[0]),nrows=int(row[1]),
         digest=str(row[2]),visible=bool(row[3]),
-        created=float(row[4]),updated=float(row[5]),
+        created=float(row[4]),updated=float(row[5]),sealed=bool(row[6]),
     )
 
 
 def commit_rows(con,consumer_id,source_seq):
+    if not commit_info(con,consumer_id,source_seq)["sealed"]:
+        raise RuntimeError("cannot read unsealed JOIN output")
     return [
         dict(
             pair_id=bytes(pair_id),op=int(op),
@@ -649,7 +666,7 @@ def pending_commits(con,consumer_id,limit=100):
         commit_info(con,consumer_id,row[0])
         for row in con.execute("""
             SELECT source_seq FROM join_output_commits
-            WHERE consumer_id=? AND visible=0
+            WHERE consumer_id=? AND visible=0 AND sealed=1
             ORDER BY source_seq LIMIT ?
         """,(
             _text(consumer_id,"consumer_id"),
@@ -665,11 +682,13 @@ def mark_visible(con,consumer_id,source_seq):
     with transaction(con):
         stream=stream_info(con,consumer_id)
         row=con.execute("""
-            SELECT visible FROM join_output_commits
+            SELECT visible,sealed FROM join_output_commits
             WHERE consumer_id=? AND source_seq=?
         """,(consumer_id,source_seq)).fetchone()
         if not row:
             raise KeyError("JOIN output commit does not exist")
+        if not int(row[1]):
+            raise RuntimeError("cannot mark unsealed JOIN output visible")
         if not int(row[0]):
             con.execute("""
                 UPDATE join_output_commits

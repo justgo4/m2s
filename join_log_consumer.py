@@ -48,7 +48,7 @@ def consumer_metadata(
 
 def ensure_consumer(
         con,consumer_id,plan_version,ir,state_id,watermark,
-        generation_id=None
+        generation_id=None,bootstrap_seeded=False
 ):
     consumer_id=_text(consumer_id,"consumer_id")
     state_id=_text(state_id,"state_id")
@@ -75,9 +75,14 @@ def ensure_consumer(
     join_outbox.ensure_stream(
         con,consumer_id,state_id,int(plan_version),
         generation_id,watermark)
-    join_outbox.seed_bootstrap(
-        con,consumer_id,state_id,int(plan_version),
-        generation_id,watermark)
+    if bootstrap_seeded:
+        output=join_outbox.commit_info(con,consumer_id,watermark)
+        if not output["sealed"] or output["kind"]!="bootstrap":
+            raise RuntimeError("JOIN consumer requires sealed bootstrap output")
+    else:
+        join_outbox.seed_bootstrap(
+            con,consumer_id,state_id,int(plan_version),
+            generation_id,watermark)
     metadata=_metadata(
         plan_version,ir,state_id,generation_id)
     try:
