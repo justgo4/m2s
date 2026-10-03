@@ -588,3 +588,32 @@ failure tests; inspect existing state_transaction and response exception scope
 before editing. Then required same-head CI and focused PR. Primary chunks
 remain separate evidence; shared bootstrap/promotion/fan-out and strict SLO
 remain open. Formal50M72h still needs a configured persistent isolated host.
+
+### 2026-10-03 parallel recovery/performance milestone
+
+Owner explicitly requests parallel work until recovery/long-write and strict
+latency items finish. PR22 tested a47179b ALL five required workflows PASS,
+including full eight E2E37115887635; merged9f4560b19510f1096a235ceb529f8f7b314d55e7.
+Accepted-response branch includes that main plus883c5b0 durable checkpoint.
+
+j4.submit_merge_async now exits HTTP retry handling after parsed acceptance.
+record_merge_acceptance retries only real SQLITE_BUSY at BEGIN before entering
+any body, then writes TxnId/removes UNKNOWN atomically once. Body/COMMIT/fatal
+storage/active-transaction failures never trigger HTTP or local body replay.
+Shutdown saves acceptance if lock is immediately available; cancellation while
+contended leaves the pre-request UNKNOWN marker for restart quarantine.
+Identity conflicts fail closed. New merge_accepted_contention_test:6 PASS real
+WAL writer contention/single-send/restart reuse/cancel quarantine/graceful stop,
+actual trigger body rollback and injected COMMIT/fatal-BEGIN boundaries.
+merge_visible_contention_test:3 PASS; merge_commit_identity_test and
+merge_quarantine_test PASS; compile/diff PASS. Network uncertainty contract
+requires --isolated and is running with that explicit flag. Required hosted CI
+on the submitted recovery head remains pending; no SLO certification implied.
+
+Independent performance work investigates shared follower idle observation
+writes. New telemetry optimization is being validated separately and is not
+included in the focused acceptance-persistence PR. Next submit recovery PR,
+complete same-head checks; submit verified idle-write reduction separately and
+compare full strict small workload on integrated main. Remaining mutable
+shared initialization/owner promotion and high fan-out transactions still need
+bounded/versioned protocols if profile establishes material cost.
