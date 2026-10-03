@@ -642,3 +642,33 @@ PYTHONPATH=/workspace/m2s-deps python tools/stateful_retirement_poll_test.py:
 promotion references, unrelated exact IDs, stuck-binding timeout, concurrent
 writer committing between two reads). Original helper fails delayed-GC and
 snapshot consistency regressions. Next focused PR and real eight E2E required.
+## Active request-intent lock recovery (2026-10-03)
+
+Owner renewed repository authorization in this session. Reconciled main
+05e8f168396179d74427bbe663877201ce158d67 and open PR1/2/3/12/19;
+PR23/24/25 are merged. Branch codex/merge-request-intent-busy-20261003.
+Latest staged37118283696 at0932b9c: small completed workload but gate failed;
+million artifact11272977528 fails begin_merge_request BEGIN IMMEDIATE BEFORE
+HTTP, no complete oracle/gate. Do not conflate with accepted-response recovery.
+Implement optional stop-aware BEGIN-only acquisition using existing transaction
+helper; body/COMMIT remain one-shot and request intent must commit before HTTP.
+Next real WAL contention/cancel/restart and fatal/body/commit tests, then exact
+head hosted CI. Strict SLO and persistent-host50M72h remain open.
+
+Implementation: begin_merge_request accepts optional stop and opts into existing
+BEGIN-only BUSY retry; submit_merge_async supplies runtime stop before HTTP scope.
+Local pinned dependencies installed in /workspace/m2s-deps. Commands:
+PYTHONPATH=/workspace/m2s-deps python tools/merge_accepted_contention_test.py
+(11 tests); merge_visible_contention_test.py(3), merge_commit_identity_test.py,
+merge_quarantine_test.py, privacy_check.py and git diff --check PASS. Tests cover
+real WAL independent writer, intent visible before single send, cancel with no
+UNKNOWN/no send and exact restart, body rollback, COMMIT BUSY and fatal/active
+BEGIN. Original pre-request path cannot retry acquisition; no claim of bounded
+lock duration or improved SLO. Next submit focused PR and require same-head CI.
+
+
+PR28 db1eea2ae7a042f535b4def161ebc042297fe194 passed baseline37137663125,
+native37137663110 and all eight E2E37137663128. Integrated validated main
+436a6f6 (PR26) with both checkpoint histories; test/runtime bytes merge without
+conflicts. Fresh exact-head checks required before merge. PR27 independently
+integrated at1218c28fc35a8f2d14919007d262ae776d50efb1.
