@@ -7,6 +7,22 @@ authorized by the owner without expiry, subject to actual configured access.
 
 ## Immediate next action
 
+2026-10-04 active isolated candidate `codex/perf-native-guarded-json-20261004`
+based PR40 c367c98 plus documentation checkpoint main13a0fc3, NOT PR42 runtime.
+PR42 exact8ff4b17 correctness/native/state/eight E2E/smoke/full115000-row
+oracles/recovery/drain PASS; strict run37167486794 artifact11290561625:
+P95=8.065041684s FAIL, P99=9.079766643s PASS. Keep unmerged.
+Guarded native JSON now accepts only Arrow-proven valid ordinary UTF-8 bounded
+strings; overflow, required NULL, unusual encodings/types and size outputs keep
+existing DuckDB guards/diagnostics. Native windows coalesce at most batch_rows
+and 1MiB (oversized singleton allowed), preserving order without per-lane HTTP
+part explosion. Five differential tests PASS: Unicode/escapes/null, latest-PK
+update/delete, nullable/fatal overflow wire and diagnostics, fallback rules,
+row/byte bounds. Command: python tools/native_guarded_json_test.py.
+Changed j4.py, tools/native_guarded_json_test.py, baseline CI and this record.
+Next: complete baseline/native checks and publish exact-head fresh strict5/10s;
+no performance or formal50M/72h claim yet. Formal host access remains pending.
+
 Owner renewed continuation on2026-10-04; routine code/test/workflow/PR/validated
 merge authorization remains in effect, limited by actual configured access.
 Main at checkpoint: d8fe46bab599c048a2e092057e49002b9a4bcf06. None of the
