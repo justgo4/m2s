@@ -520,3 +520,17 @@ MySQL commit；remote visible 也不能代替 sentinel 查询可见时间。任�
 frontier 是完成后的观察上界。报告不是认证门禁，原有 cold/mixed
 样本、完整 oracle、故障恢复和 P95/P99 门槛仍以原 gate 为准。
 标识仅存哈希，禁止将生产 metrics 或运行目录提交到仓库。
+
+### 已知 TxnId 的有界 visibility 候选
+
+`CDC_MERGE_VISIBILITY_PIPELINE=1` 在 merge_async 模式每次检查一个
+已接受 TxnId 的状态后返回 pending，把 writer 让给其他独立 lane。
+`CDC_MERGE_VISIBILITY_PER_SINK=2` 限制每个 sink 的 delivery 准入；
+原全局 inflight、prepared/reservation 预算继续生效。默认关闭，尚未
+证明严格延迟达标。该设置可通过 catalog SET 持久保存。
+
+待可见 delivery 的 job assignments 和不可变 load_parts 均保留；同 lane
+后续任务不得越过它。0.2 秒本地轮询间隔不更改 StarRocks 服务端配置，
+重启后从 durable TxnId 继续查询，不重新发送已知接受的 payload。
+未知 HTTP 结果仍隔离该 target；确认 ABORTED 才沿用原错误处理。
+成功 ack 前不推进连续可见 frontier 或释放预算。

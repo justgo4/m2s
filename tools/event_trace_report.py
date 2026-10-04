@@ -73,7 +73,9 @@ def analyze(records,max_events=200000):
                 ('remote_visible','visible_saved','visible_persist','txn'),
                 ('ack_begin','ack_end','ack_local',None)]:
                 span=(name,event.get(field) if field else None)
-                if stage==start:open_spans[span]=event['mono']
+                if stage==start:
+                    if name=='remote_visibility_wait':open_spans.setdefault(span,event['mono'])
+                    else:open_spans[span]=event['mono']
                 if stage==end and span in open_spans:
                     add(name,open_spans.pop(span),event['mono'])
         if 'delivery_selected' not in first or 'ack_end' not in last:

@@ -16,8 +16,20 @@ Next isolated opt-in experiment: one status poll then yield pending knownTxnId
 while durable assignments/prepared/inflight budgets remain held. Preserve all
 same-lane FIFO, unknown-output quarantine and restart semantics; bounded per-sink
 pending admission, no extra visibility thread or unbounded remote concurrency.
-No performance gain or certification claimed. Test two independent lanes plus
-restart/unknown/aborted/local contention before exact-head strict-small and A/B.
+Implemented opt-in single-status-poll/yield, per-sink admission cap2 under
+original assignment transaction, .2s bounded process-local poll pacing and full
+delivery elapsed accounting; known pending retains every durable job/payload/
+reservation. No schema, transaction-mode or remote server changes.
+Local tools/merge_visibility_pipeline_test.py:6 PASS (independent lane finishes,
+same-lane FIFO/restart, per-sink/global/payload budgets, shared TxnId all-parts
+visibility, one poll no sleep, data-quality abort, unknown target quarantine).
+Existing visible contention3/accepted11/event trace9/catalog config PASS.
+PR46 traced strict-small baseline FAIL P95=28.063986/P99=36.340289 with complete
+workload/oracles/recovery/drain PASS, artifact11295155453; phase345 observations
+VISIBLE P50=1.14009s vs prepare .02578s; source→selected P95=27.40266s.
+No controlled gain or certification claimed. Next exact-head native/state/
+baseline/eight E2E plus unchanged smoke/strict small, then same-runner comparison.
+PR47 driver initial trial1 PASS; TIME_WAIT guard fix9121f629 reruns four trials.
 
 ## Active event-correlated performance instrumentation (2026-10-04)
 
