@@ -5,6 +5,18 @@ the durable handoff if Codex quota/session ends; it does not promise automatic
 AI continuation. Routine repository changes, Actions and validated merges are
 authorized by the owner without expiry, subject to actual configured access.
 
+## Active controlled strict-small visibility comparison (2026-10-04)
+
+Experiment branch codex/visibility-controlled-small-20261004 from driver9121f629.
+Immutable A=04ed4cb6bf7faa32a52479ddbac1941143a47e3e,
+B=bf4de9e2ba37e62673f8f3ecd4acc958e578d443. Same trace/resource settings and
+CDC_MERGE_VISIBILITY_PIPELINE=1 on both (A does not implement the mechanism),
+per-sink cap2; unchanged strict small parameters. Execute four fresh isolated
+trials on one hosted runner, retain every failure and all raw evidence.
+This branch is an experiment, not a merge candidate or certification.
+PR48 exact-head CI underway; PR47 corrected four-smoke driver still running.
+Next validate fingerprints and all four immutable revisions before comparing.
+
 ## Active same-runner A/B/B/A driver (2026-10-04)
 
 Branch codex/performance-abba-20261004 based on PR46 exact04ed4cb6.
