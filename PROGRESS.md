@@ -5,6 +5,20 @@ the durable handoff if Codex quota/session ends; it does not promise automatic
 AI continuation. Routine repository changes, Actions and validated merges are
 authorized by the owner without expiry, subject to actual configured access.
 
+## Active constrained-writer CDC coalescing (2026-10-04)
+
+Branch codex/visibility-cdc-bundle-20261004 from PR50 exact70fa3f97.
+PR50 smoke artifact11294228145 has95 CDC claim BEGINs at30s vs PR48 smoke8371;
+real-WAL1000-call control proves BEGIN1000→0 on full admission, no assignments.
+Strict-small and controlled A/B/B/A still pending; no latency gain claimed.
+Next isolated existing-contract change: configurable CDC_CDC_BUNDLE_MAX_LANES,
+default16, retaining automatic ceil(partitions/writers), row/byte/prepared caps,
+kind/plan barriers, durable lane assignment/FIFO and visibility ack fences.
+Import only the previously tested narrow cap and five real Arrow/SQLite tests
+from earlier candidate, not frozen-W/state/runtime changes or failed experiments.
+Measure this exact composition independently; do not claim prior PR40 evidence
+certifies it. No remote settings, sampling or gates changed.
+
 ## Active read-only visibility admission preflight (2026-10-04)
 
 Branch codex/visibility-admission-read-20261004 from bf4de9e2 (PR48).
