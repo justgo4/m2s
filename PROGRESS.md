@@ -7,6 +7,44 @@ authorized by the owner without expiry, subject to actual configured access.
 
 ## Immediate next action
 
+2026-10-04 next branch `codex/perf-idle-cdc-claim-20261004`, based exact PR39
+bbf72cb (fresh CI running, keep its head pinned). PR38 e7bec56 strict small
+37165184630/artifact11288349837 FAIL only P95=7.308086938s/P99=10.079231139s;
+all seven115000-row full targets, four hot-adds, right-side live-tail recovery
+181.011125s and source/apply301/pending0/deliveries0 PASS. Eight E2E/native/
+state/smoke PASS; baseline3.14 PASS,3.12 still executing native recovery.
+Profiler maxhold0.167013s; claim_cdc_bundle acquired writer27208 times with
+8.946755s cumulative wait. Investigate coherent read-only existing-delivery,
+blocked-lane and empty/non-CDC-head results; all fresh claims must release the
+read snapshot and recheck under writer before assignments/reservations. Preserve
+FIFO, resource budgets and remote-unknown recovery. No latency improvement
+or merge claimed; strict5/10s remains unchanged.
+
+PR38 baseline now fully PASS. PR39 exactbbf72cbf5c94594bdd50df965a5c50f280212d1c:
+baseline37165525194/native37165525161/state37165525195/all eight E2E37165525165
+and smoke PASS. Strict small37165525278/artifact11289412973 FAIL only P95
+6.077801288s; P99=7.049989890s PASS.118 samples/120.692134s; full
+seven115000-row oracles, four hot-adds, right-side moving-tail recovery
+181.291063s and source/apply301/pending0/deliveries0/sharedfollowers4 PASS.
+No merge. Different hosted runs are not controlled A/B. Measured maxhold
+0.136176s; claim_cdc_bundle24470 acquisitions/2.437707s wait.
+
+Implemented read-only claim decisions at one WAL cut, including existing owner,
+blocked member, empty/snapshot head and exhausted global delivery/prepared
+budgets. Fresh claims discard the read view and execute unchanged writer-side
+FIFO/ownership/budget/reservation rechecks. cdc_claim_read_test5 PASS; original
+bbf72cb methods fail four real20ms SQLite BUSY cases. Controlled1000 exhausted
+budget no-op calls: original1000 BEGIN IMMEDIATE versus candidate0; no delivery
+or assignment created. Existing CDC bundle5, registry4, frozen12, merge identity/
+quarantine and prepare contention5 PASS. Next publish exact candidate and run
+fresh complete hosted CI plus unchanged strict small; never inherit prior gates.
+
+Local PR39 exactbbf72cb million-output synthetic full oracle/digest PASS:
+atomic max38.415110s/wall38.415593s; frozen max0.067087s/wall86.930479s,
+4010 transactions, pre-oracle peakRSS398143488/397467648 bytes. Source hashes
+and result are in ignored benchmark-results/join-frozen-million-bbf72-local.json.
+This is bounded-lock evidence, not million-source daemon or50M72h/SLO success.
+
 2026-10-04 separate cleanup-budget check based PR38 e7bec56, while PR37/38
 strict gates remain pinned. Audit found discard_step accounted row payload/PK
 but omitted stored join_blob bytes; large serialized join keys could exceed
