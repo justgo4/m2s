@@ -35,9 +35,11 @@ jobs:
     timeout-minutes: 120
     env:
       PYTHONUNBUFFERED: '1'
-      A_SHA: ${{ inputs.a || github.event.pull_request.head.sha }}
-      B_SHA: ${{ inputs.b || github.event.pull_request.head.sha }}
-      PROFILE: ${{ inputs.profile || 'smoke' }}
+      CDC_MERGE_VISIBILITY_PIPELINE: '1'
+      CDC_MERGE_VISIBILITY_PER_SINK: '2'
+      A_SHA: ${{ inputs.a || '04ed4cb6bf7faa32a52479ddbac1941143a47e3e' }}
+      B_SHA: ${{ inputs.b || 'bf4de9e2ba37e62673f8f3ecd4acc958e578d443' }}
+      PROFILE: ${{ inputs.profile || 'small' }}
       TRACE: ${{ inputs.trace || '1' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
