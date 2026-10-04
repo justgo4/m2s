@@ -7,6 +7,182 @@ authorized by the owner without expiry, subject to actual configured access.
 
 ## Immediate next action
 
+2026-10-04 next branch `codex/perf-idle-cdc-claim-20261004`, based exact PR39
+bbf72cb (fresh CI running, keep its head pinned). PR38 e7bec56 strict small
+37165184630/artifact11288349837 FAIL only P95=7.308086938s/P99=10.079231139s;
+all seven115000-row full targets, four hot-adds, right-side live-tail recovery
+181.011125s and source/apply301/pending0/deliveries0 PASS. Eight E2E/native/
+state/smoke PASS; baseline3.14 PASS,3.12 still executing native recovery.
+Profiler maxhold0.167013s; claim_cdc_bundle acquired writer27208 times with
+8.946755s cumulative wait. Investigate coherent read-only existing-delivery,
+blocked-lane and empty/non-CDC-head results; all fresh claims must release the
+read snapshot and recheck under writer before assignments/reservations. Preserve
+FIFO, resource budgets and remote-unknown recovery. No latency improvement
+or merge claimed; strict5/10s remains unchanged.
+
+PR38 baseline now fully PASS. PR39 exactbbf72cbf5c94594bdd50df965a5c50f280212d1c:
+baseline37165525194/native37165525161/state37165525195/all eight E2E37165525165
+and smoke PASS. Strict small37165525278/artifact11289412973 FAIL only P95
+6.077801288s; P99=7.049989890s PASS.118 samples/120.692134s; full
+seven115000-row oracles, four hot-adds, right-side moving-tail recovery
+181.291063s and source/apply301/pending0/deliveries0/sharedfollowers4 PASS.
+No merge. Different hosted runs are not controlled A/B. Measured maxhold
+0.136176s; claim_cdc_bundle24470 acquisitions/2.437707s wait.
+
+Implemented read-only claim decisions at one WAL cut, including existing owner,
+blocked member, empty/snapshot head and exhausted global delivery/prepared
+budgets. Fresh claims discard the read view and execute unchanged writer-side
+FIFO/ownership/budget/reservation rechecks. cdc_claim_read_test5 PASS; original
+bbf72cb methods fail four real20ms SQLite BUSY cases. Controlled1000 exhausted
+budget no-op calls: original1000 BEGIN IMMEDIATE versus candidate0; no delivery
+or assignment created. Existing CDC bundle5, registry4, frozen12, merge identity/
+quarantine and prepare contention5 PASS. Next publish exact candidate and run
+fresh complete hosted CI plus unchanged strict small; never inherit prior gates.
+
+Local PR39 exactbbf72cb million-output synthetic full oracle/digest PASS:
+atomic max38.415110s/wall38.415593s; frozen max0.067087s/wall86.930479s,
+4010 transactions, pre-oracle peakRSS398143488/397467648 bytes. Source hashes
+and result are in ignored benchmark-results/join-frozen-million-bbf72-local.json.
+This is bounded-lock evidence, not million-source daemon or50M72h/SLO success.
+
+2026-10-04 separate cleanup-budget check based PR38 e7bec56, while PR37/38
+strict gates remain pinned. Audit found discard_step accounted row payload/PK
+but omitted stored join_blob bytes; large serialized join keys could exceed
+the stated cleanup byte budget. Include all stored blobs and clamp caller
+byte_limit to16MiB, preserving one-row progress. Add synthetic wide-key budget
+and tiny-budget singleton regression: old discard fails; corrected frozen12
+and registry4 PASS. Privacy PASS; code remains unvalidated by fresh hosted CI.
+
+PR37 final46f69041e35bc15b905ca2e2b97cc76388fed73c completed all five
+workflow families: baseline37164857608/native37164857594/state37164857639,
+all eight E2E37164857588 and smoke PASS. Strict small37164857615/job111325593026
+artifact11288773084 FAIL only P95=8.064321976s/P99=10.083135576s. Full115000
+raw/three aggregate/three JOIN targets match; four hot-adds and right-side
+fault/live-tail recovery181.223779s PASS; finalsource/apply301/pending0/
+deliveries0/sharedfollowers4. Healthy119 samples/120.894224s. Measured max
+write hold0.388867s; retain_state6013 acquisitions total58.002446s wait,
+shared registry7239 acquisitions total56.735958s wait. Different hosted runs
+are not a controlled A/B. PR37 stays unmerged. PR38 e7bec56 fresh baseline
+37165184669/native37165184673/state37165184694/E2E37165184693/validation
+37165184630 are independently running; inspect its exact gate next.
+
+2026-10-04 next diagnostic branch `codex/perf-registry-readsync-20261004`,
+base PR37 head46f69041e35bc15b905ca2e2b97cc76388fed73c (fresh five workflow
+families running; keep its head unchanged). PR36 profiler shows repeated
+registry owner-ref retention and shared-result checks acquiring the writer:
+retain_state1052 calls/111.926s aggregate wait and shared registry2153 calls/
+80.179s wait. Investigate coherent WAL read-only shared checks and idempotent
+existing refs; all missing-ref, promotion and generation mismatch checks must
+remain fail-closed. This is a separate unvalidated candidate, not a merge or
+claimed strict latency improvement.
+
+Implemented read-only shared registry validation under source_state.read_snapshot;
+all promotion/private publication still rereads durable ownership under writer.
+Existing physical refs now return without INSERT OR IGNORE/write acquisition;
+missing refs still take writer/unique-key insert. New registry_read_sync_test4
+PASS for aggregate and JOIN: competing writer with20ms timeout, missing ref
+requiring writer, concurrent atomic promotion between binding/stream reads,
+missing dependency/stream mismatch fail-closed. Three blocking regressions run
+against original46f6904 functions fail all six aggregate/JOIN cases with actual
+SQLite BUSY; revised functions pass. Original coherent-snapshot4, shared runtime,
+physical registry/catalog, frozen11 and privacy PASS. Full fresh hosted CI and
+strict gate remain required; not a latency certification.
+
+PR37 exact46f6904 has baseline37164857608/native37164857594/state37164857639
+and smoke in37164857615 PASS; E2E37164857588 and strict small still running.
+Its local108 baseline script entries passed after building native and repeating
+three commands initially missing their binary:1000 binlog/fault differential,
+1000 recovery traces, decoder/local A/B. No production fixture or metrics committed.
+
+2026-10-04 follow-up, based on PR36 remote head
+`48f92c3b9f08b22309cb03b0d9ce824c3f8451f6` (same Git tree as local d00eac6;
+ordinary HTTPS push401, published through authenticated GitHub object APIs and
+verified exact tree6b58a7bd6cec4ed2f8a8b0bf2de03a98ddfd4fcd). PR36:
+https://github.com/justgo4/m2s/pull/36. Baseline37163933899,
+native37163933837,state37163933878, ALL eight E2E37163933872 and smoke job
+111322887801 in37163933854 PASS. Strict small job111322888019 completed:
+P95=25.106319851s/P99=33.100692423s FAIL, artifact11289186011. All seven
+full-target oracles, four hot-adds, right-side fault recovery and final
+source/apply301 with pending/deliveries0 PASS. PR36 remains unmerged.
+Do not treat prior-head checks as current certification.
+
+Active follow-up `codex/perf-frozen-join-cdc-20261004` combines these lifecycle
+fixes with PR33 head02355671fa198e322b7e88a334a360584e8ab1ca: budgeted CDC
+lane cap16, changed-PK JOIN reads and private-owner read-only sharing checks.
+Code merged without conflicts; documentation retains this latest checkpoint.
+Combined frozen11/affected-reads4/CDC5/private-sharing3/coherent-snapshot4
+local regressions PASS. Next publish this exact tree and run fresh complete CI,
+including unchanged strict small5/10s, before considering any merge.
+
+Independent worktree `/workspace/m2s-lifecycle`, branch
+`codex/v1-join-frozen-lifecycle-20261004`, fixes a real stale-selection race:
+after follower retirement, old _promote_one selected data retains a promotion
+pin then raises missing-consumer KeyError. Regression fails on48f92c3 and passes
+after lock-scoped descriptor reread. All JOIN retirement now uses the same task
+guard through consumer/descriptor/ref updates; ref-counted per-task RLocks avoid
+stripe collision coupling and are released when no holder/waiter remains.
+Cancelling an interrupted promotion drains unpublished private backing in
+bounded chunks before dropping its pin. GC now seeks eligible change_seq using
+a dedicated index and scans <=64 state descriptors per call; a durable cursor
+spreads work across states instead of scanning all protected versions under the
+writer. A 5000-protected-version SQLite progress-budget test passes without a
+linear scan. No-history GC avoids taking the writer entirely.
+
+`python tools/join_frozen_state_test.py`:11 PASS, including stale selection,
+cancel after interrupted promotion and protected-history indexed GC. Original
+sharing/subview/100-follower GC, hot-add, multi-rebuild, policy/admission,
+output11 and privacy PASS. First-head101 baseline scripts passed; three native
+commands initially lacked a compiled binary. CMake was installed and actual
+native build,1000 binlog faults,1000 recovery traces and decoder/local A/B now
+PASS. Hosted first-head baseline also passed completely. Million-pair synthetic
+measurement on lifecycle7a7ce87 completed with equal full1M output digest:
+atomic max40.943256s/wall40.943928s; frozen max0.112373s/wall88.473922s,
+4010 transactions, peak RSS398618624/393928704 bytes before oracle. This is
+local bounded-lock evidence, not a million-source daemon or SLO/P11 pass.
+Artifact benchmark-results/join-frozen-million-local.json remains outside Git.
+Next submit integrated correction with fresh CI and strict small before merge.
+
+Active continuation: branch `codex/v1-join-frozen-followers-20261003`, base
+`d8fe46bab599c048a2e092057e49002b9a4bcf06`. Implement durable JOIN backing
+snapshots with retained before-images, bounded snapshot-copy/output chunks and
+restartable follower binding/promotion. Each write transaction must have a row
+and byte budget; unsealed output cannot enter jobs or readiness. Test real WAL
+writer progress, moving leaders, restart, rollback, projection, drop and GC.
+Existing failed performance PRs remain unmerged. Required CI and strict small
+remain pending; formal 50M/72h still needs a persistent test host.
+
+2026-10-04 implementation checkpoint: `join_frozen_state.py` adds durable
+backing pins and indexed PK copy cursors; `join_state.apply_transaction` stores
+before-images/absence atomically only while pinned. Shared binding now retains
+consumer/ref and a copy/output/cleanup manifest instead of seeding under one
+writer. Existing chunked output builder accepts a distinct immutable backing
+state. Owner promotion copies private backing in chunks and atomically detaches
+stream/consumer/ref. Per-task striped locks serialize same-daemon workers with
+handoff; persistent promotion pins park workers after restart. Cancellation
+fences unpublished builds and drains rows before pin/ref release; actual live
+retirement bypasses an impossible VISIBLE wait. Old sealed bindings remain
+compatible. History and temporary backing enter durable size counters.
+
+Local commands PASS: `python tools/join_frozen_state_test.py` (8 real WAL tests:
+80 bilateral/rekey/insert/delete transactions across two cuts, restart, rollback,
+independent writer during reads, bounded rows/bytes, projection, partial output
+drop+cleanup failure/restart, actual live cancel, promotion failure/restart and
+concurrent runner handoff); join_output_build11, sharing/subview, all three
+100-follower sharing/GC contracts, physical registry, generation/runtime,
+hot-add/retirement5, worker idle3/contention4, source protocol, sharing policy,
+admission, compileall and privacy. Further full baseline checks are in progress.
+
+`python tools/join_frozen_state_benchmark.py --rows 100000 --output
+benchmark-results/join-frozen-local.json` used independent WAL/FULL child
+processes and complete input-derived pair/payload/identity oracles: equal
+100000 rows/canonical digest, atomic max transaction3.140774s/wall3.141204s;
+frozen max0.031914s/wall7.437534s,410 transactions. Temporary snapshot I/O raises
+total build cost; this is synthetic lock evidence, not SLO certification.
+CI runs new regressions on Python3.12/3.14; staged PR validation requests both
+smoke and unchanged strict small. Do not merge before reviewing final-head CI
+and gate; large incremental fan-out copies remain atomic and formal50M72h
+remains blocked by absent persistent infrastructure.
+
 1. Main335bf1d35300ba57d5947162955115ff8b82f45f has validated PR26 intent-BEGIN recovery, PR27 optional bounded SQLite timing, PR28 retirement polling and PR32 coherent shared-leader read snapshots. Each merged at its exact green head; code authorization persists without another approval request.
 2. Remaining runtime milestone: durable frozen-W, resumable chunked JOIN follower bootstrap and owner promotion. Releasing the writer between reads of mutable leader join_rows is unsafe. Design fixed-W retention/immutable input, durable dual-PK cursor, unpublished bootstrap/output stages and atomic small sealing; prove restart/retry, independent writer progress, drop/GC/ref retention, projection subviews, ownership transfer and unknown-output safety. Existing private main JOIN build/job publication is already chunked; do not repeat those changes.
 3. Do not merge failed performance PR29/31/33/34 or older12/19. Most useful measured scaffold is PR33 head02355671fa198e322b7e88a334a360584e8ab1ca (includes validated PR32): baseline/native/state/eight E2E/smoke and all full oracles/recovery/drain PASS, strict P95=7.087626s FAIL, P99=8.104414s PASS. It removes unnecessary private-owner write acquisitions and caps budgeted CDC lane width16 while avoiding unchanged JOIN scans.
