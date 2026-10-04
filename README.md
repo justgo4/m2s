@@ -64,13 +64,17 @@ PR53 四轮同机 A/B/B/A 已完成分析。A=`0655ce62110424eb0d0c2fbd88743fa3d
 
 四轮 raw/aggregate/JOIN 全量 oracle、4 个动态任务、故障恢复、最终 pending/deliveries=0 均通过。B 的两轮 healthy 延迟都低于对应 A，但 CPU 与写入量都更高，recovery 延迟没有一致改善，task-ready 基本不变，因此只把 B 视为下一轮配置对照的**固定实验基线**，不视为已达标候选。共同瓶颈仍存在：`join_shared_runtime:try_bind` 单次写事务约 10.9–11.6s；其余多个模块出现约 10–11s 的 writer acquire，说明等待主要被这笔长事务放大。下一轮固定基线 SHA 选 `fd734d617e74b9cb9a401f7c5aeecfae0156f50f`。
 
+PR54 已完成固定 SHA 的 `CDC_BATCH_MS=1000↔200` A/B/B/A。四轮均保持完整 oracle、故障恢复和 drain，但 **4/4 均未通过原 5s/10s 门禁**；A1=7.323/8.291s，B1=9.368/10.507s，B2=8.291/8.457s，A2=8.178/8.251s（P95/P99）。200ms 没有稳定优势，也没有稳定改善 recovery/CPU/写放大，因此不选作最终配置。下一组单变量实验已启动为 PR56：`CDC_MERGE_COMMIT_INTERVAL_MS=1000↔500`，`CDC_BATCH_MS` 固定 1000。
+
+PR55 已把 frozen-W follower/owner promotion 分块整合到固定基线。Native/source-state/public baseline/actual daemon/smoke 均通过；strict small workload 本身、完整结果、恢复、4 个动态任务 ready、最终 pending=0/deliveries=0 均通过，但 P95/P99=10.399/13.417s，仍未达标。trace 显示 `selected→ack P95≈2.09s`、`remote visibility P95≈1.43s`、`prepare P95≈0.18s`，而 `source→selected P95≈32.34s`，所以当前主要长尾在选中之前，不应为了这轮结果破坏 HTTP 前 intent/响应后 TxnId 两段持久边界。分块后最长实际 writer hold 约 0.249s，但 writer acquire 仍可达 4.54s（`physical_state_catalog:retain_state`）和 4.14s（`stateful_physical_registry:sync_runtime_result`）；因此 README 第 5 项的公平写闸门前提已经成立，PR57 已在 PR55 之上启动 FIFO SQLite writer admission 候选。
+
 | 顺序 | 具体动作 | 通过条件与边界 |
 |---|---|---|
 | 1 | **完成**：分析 PR53 四轮同机对照并冻结下一轮基线为 `fd734d617e74b9cb9a401f7c5aeecfae0156f50f` | 保留全部失败；B 只证明 healthy 延迟方向有利，未证明 recovery/CPU/写放大有利 |
-| 2 | 对同一固定 SHA 分别做配置对照：先 `CDC_BATCH_MS` 1000→200，再独立比较 `CDC_MERGE_COMMIT_INTERVAL_MS` 1000→500；必要时再测100/300 | 每次只改一个参数，同机A/B/B/A、相同2CPU/4GiB开发预算与服务指纹、新隔离数据；同时检查小事务/rowset/版本债务、吞吐和CPU，不预设能回收1.5秒 |
-| 3 | 同期推进共享JOIN follower初始化/owner promotion的可恢复分块：先复核已有PR40方案，再与选定基线整合 | fixed-W可读、pin/consumer/GC、generation、状态/outbox与发布边界不变；覆盖每个持久边界强退、重启、leader变化及删除；测持锁max和总构建成本，不直接合并旧失败候选 |
-| 4 | 按trace检查prepare两次写事务的必要性、可见性查询/连接成本和WAL checkpoint进度；仅对有实测收益的部分做独立候选 | HTTP前持久请求意图与响应后TxnId登记继续分开；5秒兜底须先取命中证据；fixed-W逻辑pin不能当成长SQLite读事务证据 |
-| 5 | 大事务缩短后，如仍有明显等锁长尾，再试覆盖各模块的公平/优先级写闸门 | 验证锁顺序、取消/错误释放、ready任务进展及GC/构建不饥饿；不能把闸门当作长事务抢占器 |
+| 2 | **进行中**：`CDC_BATCH_MS` 1000→200 已完成且 4/4 未过门禁；PR56 正独立比较 `CDC_MERGE_COMMIT_INTERVAL_MS` 1000→500 | 每次只改一个参数，同机A/B/B/A、相同2CPU/4GiB开发预算与服务指纹、新隔离数据；同时检查小事务/rowset/版本债务、吞吐和CPU，不预设能回收1.5秒 |
+| 3 | **候选已实现、性能未过门禁**：PR55 已把 PR40 frozen-W follower/owner promotion 分块整合到固定基线；正确性/恢复/smoke 通过，strict small P95/P99=10.399/13.417s FAIL | fixed-W可读、pin/consumer/GC、generation、状态/outbox与发布边界不变；覆盖每个持久边界强退、重启、leader变化及删除；测持锁max和总构建成本，不直接合并旧失败候选 |
+| 4 | **已完成首轮 trace 归因**：PR55 中 prepare/visibility/ack 不是主要长尾，source→selected 才是；继续补 WAL checkpoint 命中证据，暂不合并安全边界 | HTTP前持久请求意图与响应后TxnId登记继续分开；5秒兜底须先取命中证据；fixed-W逻辑pin不能当成长SQLite读事务证据 |
+| 5 | **PR57 已启动**：PR55 最长 writer hold 已降到约0.25s，但 acquire 仍达4.5s；在 PR55 上叠加 process-local FIFO SQLite writer admission | 验证锁顺序、取消/错误释放、ready任务进展及GC/构建不饥饿；不能把闸门当作长事务抢占器 |
 | 6 | 选择有效组合，冻结最终SHA，重跑完整合同与原严格small；通过后逐级升至million/中型/压力、升级恢复，再做正式50M/72h | 原P95≤5s/P99≤10s、完整oracle、故障、drain及资源门禁不变；各stateful target的SLO证据也要补齐；正式长跑需先配置持久隔离主机 |
 
 **同lane并发暂不实施。** 先证明DELETE/tombstone、同键版本顺序和generation隔离；只有 `_cdc_seq` 列不足以防止旧UPSERT在新DELETE后复活数据。拆库/替换状态引擎继续以后续测量为依据。以上均是待执行工作，不是已实现或已达标声明。
