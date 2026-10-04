@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """FIFO explicit writers preserve real SQLite timeout/recovery semantics."""
 import os
+import gc
 from pathlib import Path
 import sqlite3
 import sys
@@ -206,6 +207,31 @@ class FairTest(unittest.TestCase):
                 with j4.state_transaction(con):con.execute('SELECT 1')
             finally:con.close()
         self.assertEqual(fair._QUEUES,{})
+
+    def test_failed_cross_thread_close_retains_live_writer_admission(self):
+        errors=[]
+        self.con.execute('BEGIN IMMEDIATE')
+        def close():
+            try:self.con.close()
+            except sqlite3.ProgrammingError:errors.append('thread affinity')
+        thread=threading.Thread(target=close);thread.start();thread.join(5)
+        self.assertEqual(errors,['thread affinity'])
+        self.assertTrue(self.con.in_transaction)
+        self.assertIsNotNone(self.con._fair_queue)
+        self.con.rollback();self.assertEqual(fair._QUEUES,{})
+
+    def test_abandoned_connection_gc_releases_sqlite_and_queue(self):
+        collector=timing.Collector()
+        other=self.connect(factory=lambda *a,**kw:timing.TimingConnection(*a,collector=collector,**kw))
+        other.execute('BEGIN IMMEDIATE');other.execute('INSERT INTO rows VALUES(9)')
+        del other
+        # GC may run while queue registration or profiler snapshot allocates.
+        # Its connection finalizer must not deadlock on those metadata locks.
+        with fair._LOCK,collector.lock:gc.collect()
+        self.assertEqual(fair._QUEUES,{})
+        self.assertEqual(collector.snapshot()['active'],[])
+        self.con.execute('BEGIN IMMEDIATE');self.con.rollback()
+        self.assertEqual(self.con.execute('SELECT COUNT(*) FROM rows').fetchone(),(0,))
 
 
 if __name__=='__main__':unittest.main()

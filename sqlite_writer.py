@@ -12,7 +12,7 @@ import threading
 import time
 
 
-_LOCK=threading.Lock()
+_LOCK=threading.RLock()
 _QUEUES={}
 
 
@@ -52,7 +52,10 @@ def acquire(key,seconds):
                         exc.sqlite_errorcode=sqlite3.SQLITE_BUSY
                         exc.sqlite_errorname='SQLITE_BUSY'
                         raise exc
-                    queue.condition.wait(remaining)
+                    # Finalization can release a slot reentrantly between the
+                    # predicate and wait registration. Periodic recheck avoids
+                    # waiting a whole busy_timeout after such a lost wakeup.
+                    queue.condition.wait(min(remaining,0.1))
                 queue.waiters.popleft()
                 queue.active=True
                 acquired=True
@@ -140,7 +143,20 @@ class FairConnection(sqlite3.Connection):
                 self._fair_finish()
 
     def close(self):
+        result=super().close()
+        self._fair_finish()
+        return result
+
+    def __del__(self):
+        # sqlite3 connections can form statement-cache cycles. C-level GC
+        # closes SQLite, but cannot release our process-local admission slot.
         try:
-            return super().close()
+            self.close()
+        except BaseException:
+            pass
         finally:
-            self._fair_finish()
+            try:
+                if getattr(self,'_fair_queue',None) is not None:
+                    self._fair_finish()
+            except BaseException:
+                pass

@@ -28,6 +28,12 @@ back automatically but new profiler exit labelled it commit. Added reproducer
 fails original e2d54b0; fix records rollback, releases admission and keeps zero
 rows/active holders. Restart exact-head CI after this diagnostic correction;
 old e2d54b0 run results are not certification of the corrected head.
+Lifecycle review then reproduced79446c1 GC of an abandoned writer releasing
+SQLite but leaving its admission slot, and wrong-thread close failure releasing
+admission despite retaining SQLite transaction. Added two regressions and
+finalization cleanup; failed explicit close now retains live admission. New11
+FIFO lifecycle tests and10 profiler tests must pass before fresh final-head CI.
+Neither earlier44 head may be merged or treated as this revision's evidence.
 Local102 baseline scripts plus4 state/publication scripts=106 PASS;37 offline
 selftest groups PASS (online explicitly skipped absent persistent connections).
 Controlled8 writers x100 FULL commits,0.5ms body yield,exact800-row count/sum:
