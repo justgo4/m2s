@@ -18,6 +18,13 @@ Import only the previously tested narrow cap and five real Arrow/SQLite tests
 from earlier candidate, not frozen-W/state/runtime changes or failed experiments.
 Measure this exact composition independently; do not claim prior PR40 evidence
 certifies it. No remote settings, sampling or gates changed.
+Implemented only configurable CDC cap, catalog public variable, five real
+Arrow/SQLite/row-byte-budget/plan/FIFO/shrink/restart tests. Wide15-lane pending
+knownTxnId now tested across restart and actual visibility helper before ack;
+no HTTP replay. Local cap5/admission10/pipeline6/catalog/privacy/diff PASS.
+PR50 exact70fa3f97 strictsmall37180478318/artifact11294813989 FAIL P95=35.786906/
+P99=38.782803s; full workload PASS, CPU215.52s/RSS440254464B. No latency gain
+inferred across runners. Next fresh exact-head full CI and strict-small.
 
 ## Active read-only visibility admission preflight (2026-10-04)
 

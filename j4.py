@@ -1355,6 +1355,7 @@ def read_config():
         rowset_yellow=env_int("CDC_ROWSET_YELLOW", 500, maximum=10000),
         rowset_red=env_int("CDC_ROWSET_RED", 700, maximum=10000),
         version_recovery_checks=env_int("CDC_VERSION_RECOVERY_CHECKS", 2, maximum=10),
+        cdc_bundle_max_lanes=env_int("CDC_CDC_BUNDLE_MAX_LANES",16,maximum=64),
         merge_visibility_pipeline=env("CDC_MERGE_VISIBILITY_PIPELINE","0")=="1",
         merge_visibility_per_sink=env_int("CDC_MERGE_VISIBILITY_PER_SINK",2,maximum=64),
         event_trace=env("CDC_EVENT_TRACE","0")=="1",
@@ -3159,7 +3160,7 @@ def cdc_bundle_width(cfg, runtime, table):
     partitions = key_partition_count(cfg)
     active = max(1,writer_target(runtime,table))
     automatic = max(1,(partitions+active-1)//active)
-    return min(automatic,4)
+    return min(automatic,max(1,int(cfg.get("cdc_bundle_max_lanes",16))))
 
 
 def lane_blocking_delivery(con, table, lane):

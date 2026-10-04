@@ -149,6 +149,7 @@ jobs:
           python tools/resource_startup_test.py
           python tools/merge_quarantine_test.py
           python tools/merge_commit_identity_test.py
+          python tools/cdc_bundle_test.py
           python tools/visibility_admission_read_test.py
           python tools/merge_visibility_pipeline_test.py
           python tools/merge_visible_contention_test.py
