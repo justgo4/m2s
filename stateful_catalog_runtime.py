@@ -678,6 +678,13 @@ def durable_mappings(con):
 
 
 def retire_task(con,cfg,kind,task):
+    if str(kind)=='inner_join':
+        with join_shared_runtime.task_guard(con,task):
+            return _retire_task(con,cfg,kind,task)
+    return _retire_task(con,cfg,kind,task)
+
+
+def _retire_task(con,cfg,kind,task):
     import aggregate_job_bridge
     import join_job_bridge
     import join_output_build
@@ -709,6 +716,7 @@ def retire_task(con,cfg,kind,task):
         con,task["task_id"])
     abandoned_shared=False
     if kind=='inner_join' and shared_binding is not None:
+        join_shared_runtime.abandon_promotion(con,task)
         abandoned_shared=join_shared_runtime.abandon_build(con,task)
     promoted_shared=[]
     if shared_binding is None:

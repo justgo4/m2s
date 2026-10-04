@@ -1,0 +1,102 @@
+{
+  "scope": "synthetic SQLite JOIN compute; independent child per variant",
+  "sqlite_version": "3.53.1",
+  "results": [
+    {
+      "variant": "full_ranges",
+      "source_rows": 100000,
+      "dimension_rows": 1024,
+      "transactions": 10,
+      "changed_rows_per_transaction": 50,
+      "delta_rows": 500,
+      "range_rows_read": {
+        "left": 98000,
+        "right": 1000
+      },
+      "total_apply_seconds": 0.175836496001466,
+      "max_apply_seconds": 0.0254838020000534,
+      "full_bag": {
+        "count": 100000,
+        "sha256_sum": "d3efd6dcf4e682b4a3c59e60739db4de13d8004b7ead111e13b39b767d8372b8"
+      },
+      "full_bag_oracle": {
+        "count": 100000,
+        "sha256_sum": "d3efd6dcf4e682b4a3c59e60739db4de13d8004b7ead111e13b39b767d8372b8"
+      },
+      "exact": true,
+      "measurement": "apply_transaction wall time includes BEGIN wait and FULL COMMIT; no daemon/remote/SLO"
+    },
+    {
+      "variant": "changed_pk",
+      "source_rows": 100000,
+      "dimension_rows": 1024,
+      "transactions": 10,
+      "changed_rows_per_transaction": 50,
+      "delta_rows": 500,
+      "range_rows_read": {
+        "left": 0,
+        "right": 1000
+      },
+      "total_apply_seconds": 0.03949781300070754,
+      "max_apply_seconds": 0.0061555840002256446,
+      "full_bag": {
+        "count": 100000,
+        "sha256_sum": "d3efd6dcf4e682b4a3c59e60739db4de13d8004b7ead111e13b39b767d8372b8"
+      },
+      "full_bag_oracle": {
+        "count": 100000,
+        "sha256_sum": "d3efd6dcf4e682b4a3c59e60739db4de13d8004b7ead111e13b39b767d8372b8"
+      },
+      "exact": true,
+      "measurement": "apply_transaction wall time includes BEGIN wait and FULL COMMIT; no daemon/remote/SLO"
+    },
+    {
+      "variant": "full_ranges",
+      "source_rows": 1000000,
+      "dimension_rows": 1024,
+      "transactions": 10,
+      "changed_rows_per_transaction": 50,
+      "delta_rows": 500,
+      "range_rows_read": {
+        "left": 977000,
+        "right": 1000
+      },
+      "total_apply_seconds": 2.4865979520009205,
+      "max_apply_seconds": 0.31285288900016894,
+      "full_bag": {
+        "count": 1000000,
+        "sha256_sum": "e4c48a06087334829fa63476bd7ec4f5497c157e6697906b4e8335190a962b82"
+      },
+      "full_bag_oracle": {
+        "count": 1000000,
+        "sha256_sum": "e4c48a06087334829fa63476bd7ec4f5497c157e6697906b4e8335190a962b82"
+      },
+      "exact": true,
+      "measurement": "apply_transaction wall time includes BEGIN wait and FULL COMMIT; no daemon/remote/SLO"
+    },
+    {
+      "variant": "changed_pk",
+      "source_rows": 1000000,
+      "dimension_rows": 1024,
+      "transactions": 10,
+      "changed_rows_per_transaction": 50,
+      "delta_rows": 500,
+      "range_rows_read": {
+        "left": 0,
+        "right": 1000
+      },
+      "total_apply_seconds": 0.03414791099658032,
+      "max_apply_seconds": 0.0037532089991145767,
+      "full_bag": {
+        "count": 1000000,
+        "sha256_sum": "e4c48a06087334829fa63476bd7ec4f5497c157e6697906b4e8335190a962b82"
+      },
+      "full_bag_oracle": {
+        "count": 1000000,
+        "sha256_sum": "e4c48a06087334829fa63476bd7ec4f5497c157e6697906b4e8335190a962b82"
+      },
+      "exact": true,
+      "measurement": "apply_transaction wall time includes BEGIN wait and FULL COMMIT; no daemon/remote/SLO"
+    }
+  ]
+}

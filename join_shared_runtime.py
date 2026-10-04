@@ -3,6 +3,7 @@
 import time
 import functools
 import threading
+import contextlib
 
 import join_ir
 import join_frozen_state
@@ -19,16 +20,33 @@ import stateful_share_policy
 import task_generation
 
 
-# One daemon owns a state file. Serialize its follower worker with owner-drop
-# handoff, without holding SQLite's writer. Fixed stripes bound lock memory.
-_locks=[threading.RLock() for _ in range(256)]
+# One daemon owns a state file. Locks survive until the final holder/waiter
+# exits; no hash collisions can couple unrelated owner/follower handoffs.
+_locks={}
+_lock_guard=threading.Lock()
+
+
+@contextlib.contextmanager
+def task_guard(con,task):
+    database=con.execute('PRAGMA database_list').fetchone()[2]
+    key=(database,task['task_id'])
+    with _lock_guard:
+        entry=_locks.setdefault(key,[threading.RLock(),0])
+        entry[1]+=1
+    try:
+        with entry[0]:
+            yield
+    finally:
+        with _lock_guard:
+            entry[1]-=1
+            if entry[1]==0:
+                del _locks[key]
 
 
 def _serialized(function):
     @functools.wraps(function)
     def call(con,task,*args,**kwargs):
-        database=con.execute('PRAGMA database_list').fetchone()[2]
-        with _locks[hash((database,task['task_id']))%len(_locks)]:
+        with task_guard(con,task):
             return function(con,task,*args,**kwargs)
     return call
 
@@ -194,6 +212,15 @@ def try_bind(con,task,cfg=None):
         con,task["task_id"])
     if existing is not None:
         return existing
+
+    # Existing private builds keep their ownership while outputs catch up.
+    # Binding creation still rechecks state after acquiring the writer below.
+    try:
+        join_state.state_info(con,task["state_id"])
+    except KeyError:
+        pass
+    else:
+        return None
 
     with join_state.transaction(con):
         existing=maybe_binding(
@@ -473,6 +500,9 @@ def promote_followers(con,leader_task):
 
 @_serialized
 def _promote_one(con,follower_task,leader_task,binding):
+    follower_task=join_task_catalog.task_info(con,follower_task['task_id'])
+    if follower_task['status'] in {'retired','failed'}:
+        return None
     if maybe_binding(con,follower_task['task_id']) is None:
         return None
     reuse=join_ir.reuse_plan(leader_task['ir'],follower_task['ir'])
@@ -584,6 +614,21 @@ def abandon_build(con,task):
         con.execute('DELETE FROM join_states WHERE state_id=?',(snapshot,))
         con.execute('DELETE FROM join_output_streams WHERE consumer_id=?',(task['consumer_id'],))
         con.execute("UPDATE join_shared_builds SET phase='done' WHERE follower_task_id=?",(task['task_id'],))
+    return True
+
+
+@_serialized
+def abandon_promotion(con,task):
+    owner='join-promotion:'+task['task_id']
+    if not con.execute('SELECT 1 FROM join_frozen_pins WHERE owner=?',(owner,)).fetchone():
+        return False
+    if maybe_binding(con,task['task_id']) is None:
+        raise RuntimeError('cannot discard detached JOIN promotion')
+    while not join_frozen_state.discard_step(con,task['state_id']):
+        pass
+    with join_state.transaction(con):
+        con.execute('DELETE FROM join_states WHERE state_id=?',(task['state_id'],))
+        join_frozen_state.release(con,owner)
     return True
 
 

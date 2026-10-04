@@ -124,13 +124,30 @@ def discard_step(con,state_id,limit=1000,byte_limit=16*1024**2):
 def gc_step(con,limit=1000):
     # Keep every before-image newer than the oldest live cut. A stale reader's
     # scan and pin release serialize with this transaction; no catalog-only pin.
+    if not con.execute('SELECT 1 FROM join_row_before_images LIMIT 1').fetchone():
+        return 0
     with join_state.transaction(con):
-        rows=con.execute('''SELECT v.state_id,v.side,v.pk_blob,v.change_seq,
-            coalesce(length(v.row_payload),0)+length(v.pk_blob)
-            FROM join_row_before_images v
-            WHERE NOT EXISTS(SELECT 1 FROM join_frozen_pins p
-                WHERE p.state_id=v.state_id AND p.watermark<v.change_seq)
-            LIMIT ?''',(max(1,min(int(limit),1000)),)).fetchall()
+        limit=max(1,min(int(limit),1000))
+        cursor=con.execute('SELECT state_id FROM join_frozen_gc_cursor WHERE singleton=1').fetchone()[0]
+        states=con.execute('SELECT state_id,watermark FROM join_states WHERE state_id>? ORDER BY state_id LIMIT 64',
+                           (cursor,)).fetchall()
+        if not states and cursor:
+            states=con.execute('SELECT state_id,watermark FROM join_states ORDER BY state_id LIMIT 64').fetchall()
+        rows=[]
+        last=''
+        for state,watermark in states:
+            last=state
+            pinned=con.execute('SELECT min(watermark) FROM join_frozen_pins WHERE state_id=?',
+                               (state,)).fetchone()[0]
+            floor=watermark if pinned is None else int(pinned)
+            rows.extend(con.execute('''SELECT state_id,side,pk_blob,change_seq,
+                coalesce(length(row_payload),0)+length(pk_blob)+coalesce(length(join_blob),0)
+                FROM join_row_before_images INDEXED BY join_row_before_images_gc
+                WHERE state_id=? AND change_seq<=? ORDER BY change_seq,side,pk_blob LIMIT ?''',
+                (state,floor,limit-len(rows))).fetchall())
+            if len(rows)==limit:
+                break
+        con.execute('UPDATE join_frozen_gc_cursor SET state_id=? WHERE singleton=1',(last,))
         size=count=0
         for state,side,pk,seq,nbytes in rows:
             if size and size+nbytes>16*1024**2:

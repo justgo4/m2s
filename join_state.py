@@ -181,6 +181,12 @@ def install(con):
             join_blob BLOB,
             row_payload BLOB,
             PRIMARY KEY(state_id,side,pk_blob,change_seq));
+        CREATE INDEX IF NOT EXISTS join_row_before_images_gc
+            ON join_row_before_images(state_id,change_seq,side,pk_blob);
+        CREATE TABLE IF NOT EXISTS join_frozen_gc_cursor(
+            singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+            state_id TEXT NOT NULL);
+        INSERT OR IGNORE INTO join_frozen_gc_cursor VALUES(1,'');
     """)
 
 
@@ -552,16 +558,31 @@ def _pairs_for_keys_locked(con,state_id,spec,join_blobs):
     return result
 
 
-def _rows_for_keys_locked(con,state_id,join_blobs):
+def _rows_for_keys_locked(con,state_id,join_blobs,changed):
+    # A changed left PK needs every matching right, but unchanged left PKs
+    # cannot contribute a delta unless a right PK on this key also changed.
+    # Fetch changed rows by the source-PK index before choosing each range scan.
+    changed_by_key=dict(left={},right={})
+    for side in ("left","right"):
+        for pk_blob in sorted(changed[side]):
+            row=con.execute("""
+                SELECT join_blob,row_payload FROM join_rows
+                WHERE state_id=? AND side=? AND pk_blob=?
+            """,(str(state_id),side,bytes(pk_blob))).fetchone()
+            if row is not None and row[0] is not None:
+                changed_by_key[side].setdefault(bytes(row[0]),[]).append(
+                    (bytes(pk_blob),pickle.loads(row[1])))
     result={}
     for join_blob in sorted({
         bytes(value) for value in join_blobs if value is not None
     }):
+        left_changed=changed_by_key["left"].get(join_blob,[])
+        right_changed=changed_by_key["right"].get(join_blob,[])
         result[join_blob]=dict(
-            left=_rows_for_join_blob(
-                con,state_id,"left",join_blob),
-            right=_rows_for_join_blob(
-                con,state_id,"right",join_blob),
+            left=(_rows_for_join_blob(con,state_id,"left",join_blob)
+                  if right_changed else left_changed),
+            right=(_rows_for_join_blob(con,state_id,"right",join_blob)
+                   if left_changed else right_changed),
         )
     return result
 
@@ -570,10 +591,10 @@ def _pairs_for_changed_rows(spec,rows_by_key,changed):
     """Project only pairs whose source identity changed in this transaction.
 
     Any pair whose left and right source PKs are both unchanged is identical
-    before/after the transaction and cannot contribute a net delta.  We still
-    snapshot every row under each affected join key so changes on either side,
-    join-key moves, fan-out, bag identity and same-transaction bilateral
-    updates retain the exact before/after semantics.
+    before/after the transaction and cannot contribute a net delta. Snapshots
+    retain changed PKs and all opposite matches; bilateral changes include both
+    complete ranges. Key moves, fan-out and bag identity keep before/after net
+    semantics without reading an unchanged side that cannot contribute.
     """
     left_changed={bytes(value) for value in changed["left"]}
     right_changed={bytes(value) for value in changed["right"]}
@@ -732,7 +753,7 @@ def apply_transaction(
                     affected.add(bytes(new_blob))
 
         before_rows=_rows_for_keys_locked(
-            con,state_id,affected)
+            con,state_id,affected,changed)
 
         # The first before-image for a PK in this source transaction preserves
         # the committed cut, including absence before an INSERT. Same-PK
@@ -763,7 +784,7 @@ def apply_transaction(
             fault_after_rows(source_seq)
 
         after_rows=_rows_for_keys_locked(
-            con,state_id,affected)
+            con,state_id,affected,changed)
         before=_pairs_for_changed_rows(
             spec,before_rows,changed)
         after=_pairs_for_changed_rows(

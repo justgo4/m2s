@@ -152,6 +152,28 @@ class FrozenTest(unittest.TestCase):
             self.copy(owner='small',target='reject',max_row_bytes=1)
         self.assertFalse(join_state.state_info(self.con,'reject')['bootstrap_complete'])
 
+    def test_gc_index_skips_protected_history_with_bounded_work(self):
+        frozen.pin(self.con,'pin','state',0)
+        pk,payload=self.con.execute("SELECT pk_blob,row_payload FROM join_rows WHERE state_id='state' AND side='left' LIMIT 1").fetchone()
+        with join_state.transaction(self.con):
+            self.con.executemany('''INSERT INTO join_row_before_images
+                VALUES('state','left',?,?,NULL,?)''',[(pk,seq,payload) for seq in range(1,5001)])
+            self.con.execute("UPDATE join_states SET watermark=5000 WHERE state_id='state'")
+        callbacks=[]
+        def progress():
+            callbacks.append(1)
+            return int(len(callbacks)>50)
+        self.con.set_progress_handler(progress,100)
+        try:
+            self.assertEqual(frozen.gc_step(self.con,limit=5),0)
+        finally:
+            self.con.set_progress_handler(None,0)
+        self.assertLess(len(callbacks),50)
+        self.assertEqual(self.con.execute('SELECT COUNT(*) FROM join_row_before_images').fetchone()[0],5000)
+        frozen.release(self.con,'pin')
+        self.assertEqual(frozen.gc_step(self.con,limit=5),5)
+        self.assertEqual(self.con.execute('SELECT COUNT(*) FROM join_row_before_images').fetchone()[0],4995)
+
 
 class FollowerTest(unittest.TestCase):
     def setUp(self):
@@ -273,6 +295,20 @@ class FollowerTest(unittest.TestCase):
         self.assertEqual(results[0]['phase'],'ready')
         self.assertEqual(join_state.read_pairs(self.con,'private'),self.expected)
 
+    def test_stale_promotion_selection_after_follower_drop_cannot_retain_or_revive(self):
+        self.finish()
+        stale=join_task_catalog.task_info(self.con,'follower')
+        binding=shared.binding_info(self.con,'follower')
+        stateful_catalog_runtime.stage_retirement(self.con,'inner_join',stale,0)
+        with patch.object(shared.join_job_bridge,'stage_pending',side_effect=runtime.make_visible):
+            stateful_catalog_runtime.retire_task(self.con,{},'inner_join',stale)
+        # Selection precedes acquiring the task lock; a follower may finish
+        # its durable retirement before promotion obtains that lock.
+        self.assertIsNone(shared._promote_one(self.con,stale,self.leader,binding))
+        self.assertEqual(self.con.execute('SELECT COUNT(*) FROM join_frozen_pins').fetchone()[0],0)
+        self.assertEqual(join_task_catalog.task_info(self.con,'follower')['status'],'retired')
+        self.assertEqual(self.con.execute("SELECT COUNT(*) FROM source_consumers WHERE consumer_id='follower-consumer'").fetchone()[0],0)
+
     def test_promotion_mid_copy_restart_and_independent_writer_progress(self):
         self.finish()
         other=j4.open_state(self.path)
@@ -302,6 +338,24 @@ class FollowerTest(unittest.TestCase):
         self.assertEqual(join_state.read_pairs(self.con,'private'),self.expected)
         self.assertEqual(source_state.consumer_info(self.con,'follower-consumer')['metadata']['kind'],'inner_join_v1')
         self.assertEqual(self.con.execute('SELECT COUNT(*) FROM join_frozen_pins').fetchone()[0],0)
+
+    def test_drop_after_interrupted_promotion_discards_partial_private_bytes_and_pin(self):
+        self.finish()
+        copy=frozen.copy_step
+        def crash(*args,**kw):
+            copy(*args,limit=3)
+            raise RuntimeError('promotion interrupted')
+        with patch.object(frozen,'copy_step',side_effect=crash):
+            with self.assertRaisesRegex(RuntimeError,'interrupted'):
+                shared.promote_followers(self.con,self.leader)
+        self.assertEqual(self.con.execute("SELECT COUNT(*) FROM join_rows WHERE state_id='private'").fetchone()[0],3)
+        active=join_task_catalog.task_info(self.con,'follower')
+        stateful_catalog_runtime.stage_retirement(self.con,'inner_join',active,0)
+        with patch.object(shared.join_job_bridge,'stage_pending',side_effect=runtime.make_visible):
+            stateful_catalog_runtime.retire_task(self.con,{},'inner_join',active)
+        self.assertEqual(self.con.execute("SELECT COUNT(*) FROM join_states WHERE state_id='private'").fetchone()[0],0)
+        self.assertEqual(self.con.execute('SELECT COUNT(*) FROM join_frozen_pins').fetchone()[0],0)
+        self.assertEqual(shared._locks,{})
 
 
 if __name__=='__main__':

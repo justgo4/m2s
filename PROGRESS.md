@@ -7,6 +7,54 @@ authorized by the owner without expiry, subject to actual configured access.
 
 ## Immediate next action
 
+2026-10-04 follow-up, based on PR36 remote head
+`48f92c3b9f08b22309cb03b0d9ce824c3f8451f6` (same Git tree as local d00eac6;
+ordinary HTTPS push401, published through authenticated GitHub object APIs and
+verified exact tree6b58a7bd6cec4ed2f8a8b0bf2de03a98ddfd4fcd). PR36:
+https://github.com/justgo4/m2s/pull/36. Baseline37163933899,
+native37163933837,state37163933878, ALL eight E2E37163933872 and smoke job
+111322887801 in37163933854 PASS. Strict small job111322888019 completed:
+P95=25.106319851s/P99=33.100692423s FAIL, artifact11289186011. All seven
+full-target oracles, four hot-adds, right-side fault recovery and final
+source/apply301 with pending/deliveries0 PASS. PR36 remains unmerged.
+Do not treat prior-head checks as current certification.
+
+Active follow-up `codex/perf-frozen-join-cdc-20261004` combines these lifecycle
+fixes with PR33 head02355671fa198e322b7e88a334a360584e8ab1ca: budgeted CDC
+lane cap16, changed-PK JOIN reads and private-owner read-only sharing checks.
+Code merged without conflicts; documentation retains this latest checkpoint.
+Combined frozen11/affected-reads4/CDC5/private-sharing3/coherent-snapshot4
+local regressions PASS. Next publish this exact tree and run fresh complete CI,
+including unchanged strict small5/10s, before considering any merge.
+
+Independent worktree `/workspace/m2s-lifecycle`, branch
+`codex/v1-join-frozen-lifecycle-20261004`, fixes a real stale-selection race:
+after follower retirement, old _promote_one selected data retains a promotion
+pin then raises missing-consumer KeyError. Regression fails on48f92c3 and passes
+after lock-scoped descriptor reread. All JOIN retirement now uses the same task
+guard through consumer/descriptor/ref updates; ref-counted per-task RLocks avoid
+stripe collision coupling and are released when no holder/waiter remains.
+Cancelling an interrupted promotion drains unpublished private backing in
+bounded chunks before dropping its pin. GC now seeks eligible change_seq using
+a dedicated index and scans <=64 state descriptors per call; a durable cursor
+spreads work across states instead of scanning all protected versions under the
+writer. A 5000-protected-version SQLite progress-budget test passes without a
+linear scan. No-history GC avoids taking the writer entirely.
+
+`python tools/join_frozen_state_test.py`:11 PASS, including stale selection,
+cancel after interrupted promotion and protected-history indexed GC. Original
+sharing/subview/100-follower GC, hot-add, multi-rebuild, policy/admission,
+output11 and privacy PASS. First-head101 baseline scripts passed; three native
+commands initially lacked a compiled binary. CMake was installed and actual
+native build,1000 binlog faults,1000 recovery traces and decoder/local A/B now
+PASS. Hosted first-head baseline also passed completely. Million-pair synthetic
+measurement on lifecycle7a7ce87 completed with equal full1M output digest:
+atomic max40.943256s/wall40.943928s; frozen max0.112373s/wall88.473922s,
+4010 transactions, peak RSS398618624/393928704 bytes before oracle. This is
+local bounded-lock evidence, not a million-source daemon or SLO/P11 pass.
+Artifact benchmark-results/join-frozen-million-local.json remains outside Git.
+Next submit integrated correction with fresh CI and strict small before merge.
+
 Active continuation: branch `codex/v1-join-frozen-followers-20261003`, base
 `d8fe46bab599c048a2e092057e49002b9a4bcf06`. Implement durable JOIN backing
 snapshots with retained before-images, bounded snapshot-copy/output chunks and
