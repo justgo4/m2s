@@ -22,6 +22,10 @@ SECRET_PATTERNS = (
 )
 IPV4 = re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\w.])")
 
+REVIEWED_BINARIES = {
+    "mysql_arrow_reader-linux-x86_64": "ba8f61e2ca917ab5a83f7aed9d188866cca417239ae9cfe8b8cbf8560392cd4d",
+}
+
 
 def tracked_files(root):
     result = subprocess.run(
