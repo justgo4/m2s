@@ -50,6 +50,20 @@ MySQL → StarRocks 的实时同步与增量计算项目。**当前受限 v1 的
 
 smoke 只证明开发范围内的合同，不能替代严格 small；5000 万行短跑也不能替代连续 72h。当前 small 的 sentinel 测 raw events 可见延迟，仍需完善各 stateful target 的对应 SLO 证据。
 
+
+### 接下来执行的工作（2026-10-04）
+
+| 顺序 | 具体动作 | 通过条件与边界 |
+|---|---|---|
+| 1 | 分析已结束的 PR53 四轮同机对照，逐轮记录健康/恢复延迟、task ready、CPU/RSS、写入量和精确性；确定下一轮的固定基线 SHA | 保留全部失败，区分冷准入与256行批次的组合效果；不把不同runner成绩作因果结论 |
+| 2 | 对同一固定 SHA 分别做配置对照：先 `CDC_BATCH_MS` 1000→200，再独立比较 `CDC_MERGE_COMMIT_INTERVAL_MS` 1000→500；必要时再测100/300 | 每次只改一个参数，同机A/B/B/A、相同2CPU/4GiB开发预算与服务指纹、新隔离数据；同时检查小事务/rowset/版本债务、吞吐和CPU，不预设能回收1.5秒 |
+| 3 | 同期推进共享JOIN follower初始化/owner promotion的可恢复分块：先复核已有PR40方案，再与选定基线整合 | fixed-W可读、pin/consumer/GC、generation、状态/outbox与发布边界不变；覆盖每个持久边界强退、重启、leader变化及删除；测持锁max和总构建成本，不直接合并旧失败候选 |
+| 4 | 按trace检查prepare两次写事务的必要性、可见性查询/连接成本和WAL checkpoint进度；仅对有实测收益的部分做独立候选 | HTTP前持久请求意图与响应后TxnId登记继续分开；5秒兜底须先取命中证据；fixed-W逻辑pin不能当成长SQLite读事务证据 |
+| 5 | 大事务缩短后，如仍有明显等锁长尾，再试覆盖各模块的公平/优先级写闸门 | 验证锁顺序、取消/错误释放、ready任务进展及GC/构建不饥饿；不能把闸门当作长事务抢占器 |
+| 6 | 选择有效组合，冻结最终SHA，重跑完整合同与原严格small；通过后逐级升至million/中型/压力、升级恢复，再做正式50M/72h | 原P95≤5s/P99≤10s、完整oracle、故障、drain及资源门禁不变；各stateful target的SLO证据也要补齐；正式长跑需先配置持久隔离主机 |
+
+**同lane并发暂不实施。** 先证明DELETE/tombstone、同键版本顺序和generation隔离；只有 `_cdc_seq` 列不足以防止旧UPSERT在新DELETE后复活数据。拆库/替换状态引擎继续以后续测量为依据。以上均是待执行工作，不是已实现或已达标声明。
+
 ## 4. 遇到的困难与解决原则
 
 - **写锁与历史输出仍有长事务。** PR #52 的 JOIN follower 初始化单次持锁约 **11.01s**；此前 million 主线观测到约 **155.77s**。串行准入、行数限制都不能抢占已开始的事务，需要在固定 W、pin/consumer、outbox 和发布边界下实现可恢复分块。
