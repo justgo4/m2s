@@ -89,7 +89,8 @@ def run(plan,trace_enabled):
                 images=images,environment={key:env[key] for key in
                     ('CDC_RESOURCE_CPU_CORES','CDC_SQLITE_WRITE_TIMING','CDC_EVENT_TRACE',
                      'CDC_EVENT_TRACE_EVERY','CDC_EVENT_TRACE_LIMIT',
-                     'CDC_MERGE_VISIBILITY_PIPELINE','CDC_MERGE_VISIBILITY_PER_SINK') if key in env},trials=[])
+                     'CDC_MERGE_VISIBILITY_PIPELINE','CDC_MERGE_VISIBILITY_PER_SINK',
+                     'CDC_COLD_BUILD_ADMISSION','CDC_COLD_BUILD_ROWS') if key in env},trials=[])
     validation_run.atomic_json(directory/'experiment.json',plan)
     for index,trial in enumerate(plan['order'],1):
         trial=dict(trial,index=index);plan['trials'].append(trial)
