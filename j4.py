@@ -1391,7 +1391,7 @@ def read_config():
         commit_interval_ms=env_int("CDC_COMMIT_INTERVAL_MS", 2000, maximum=10000),
         pressure_max_seconds=env_int("CDC_PRESSURE_MAX_SECONDS", 60, maximum=600),
         load_mode=env("CDC_LOAD_MODE", "merge_async").strip().lower(),
-        merge_commit_interval_ms=env_int("CDC_MERGE_COMMIT_INTERVAL_MS", 1000, maximum=60000),
+        merge_commit_interval_ms=env_int("CDC_MERGE_COMMIT_INTERVAL_MS", 500, maximum=60000),
         merge_commit_parallel=env_int("CDC_MERGE_COMMIT_PARALLEL", max(1,min(2,resource_target//2)), maximum=32),
         max_row_bytes=env_int("CDC_MAX_ROW_BYTES", 64*1024*1024, maximum=64*1024*1024),
         max_backlog_bytes=env_int("CDC_MAX_BACKLOG_BYTES", 2*1024**3),
