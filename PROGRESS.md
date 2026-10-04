@@ -15,8 +15,21 @@ explicit restart/loss/coverage markers, no payload/SQL/address retention and no
 extra durable state writes. Instrument successful durable source/base boundaries
 and output prepare/send/accept/VISIBLE/ack, then offline causal analysis and
 same-runner comparison support. Diagnostics must not change recovery or gates.
-Next implement meaningful real-SQLite/wire/restart/bounds tests, exact-head CI,
-and update this checkpoint with measured evidence. Formal persistent50M72h and
+Implemented default-off bounded trace, hashed identities, process clock boundaries,
+source durability/base apply, observed aggregate/JOIN frontier, merge_async
+prepare/HTTP accepted/acceptance saved/VISIBLE/ack, offline deduplicated report,
+and CI smoke+strict small trace artifacts. No output/state protocol changes.
+Files: cdc_event_trace.py, j4.py, source_state.py, aggregate_task_runner.py,
+join_task_runner.py, tools/event_trace_report.py, tools/event_trace_test.py,
+README.md and ci.yml/validation.yml.
+Local python tools/event_trace_test.py:9 PASS (real source rollback/replay,
+real delivery membership/ack, accepted wire and unknown HTTP isolation,
+thread context/restart/cap/privacy, reporter loss/conflict). Compile/privacy/diff
+PASS. 96 baseline scripts run from ci.yml:95 PASS; validation_run_test.py
+fails local process identity/cancellation cases previously observed here.
+No GitHub CI or traced strict-small result yet. Next publish focused PR,
+record its exact-head checks and stage evidence before any performance claim.
+Same-runner A/B/B/A and resource/output changes remain unimplemented. Formal persistent50M72h and
 full performance completion remain open; no failed runtime candidate merged.
 
 ## 2026-10-04 performance resolution plan requested by owner

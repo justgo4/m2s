@@ -18,6 +18,7 @@ import shutil
 import signal
 import sqlite3
 import sqlite_write_timing
+import cdc_event_trace
 import struct
 import subprocess
 import zlib
@@ -449,6 +450,8 @@ def metrics_status_record(runtime, cfg, prepared, state):
         )
     if os.environ.get("CDC_SQLITE_WRITE_TIMING", "0")=="1":
         record["sqlite_write_timing"]=sqlite_write_timing.PROCESS.snapshot()
+    if cdc_event_trace.enabled():
+        record["event_trace"]=cdc_event_trace.snapshot()
     metrics_path,summary_path = report_paths(cfg)
     append_report(metrics_path,record,cfg.get("metrics_max_bytes",64*1024*1024))
     write_summary(summary_path,record)
@@ -1352,6 +1355,9 @@ def read_config():
         rowset_yellow=env_int("CDC_ROWSET_YELLOW", 500, maximum=10000),
         rowset_red=env_int("CDC_ROWSET_RED", 700, maximum=10000),
         version_recovery_checks=env_int("CDC_VERSION_RECOVERY_CHECKS", 2, maximum=10),
+        event_trace=env("CDC_EVENT_TRACE","0")=="1",
+        event_trace_every=env_int("CDC_EVENT_TRACE_EVERY",16,maximum=1000000),
+        event_trace_limit=env_int("CDC_EVENT_TRACE_LIMIT",2048,maximum=8192),
         snapshot_workers=env_int("CDC_SNAPSHOT_WORKERS", max(1,min(2,resource_target//2)), maximum=32),
         snapshot_rows=env_int("CDC_SNAPSHOT_ROWS", 50000, maximum=100000),
         snapshot_chunk_bytes=env_int(
@@ -2744,6 +2750,7 @@ def commit_spool(
         plan_version=0, source_parts=None, source_spool=None,
         source_epoch=None, stop=None):
     """All rows of a committed source transaction and its read cursor commit together."""
+    trace_started=time.monotonic() if cdc_event_trace.enabled() else None
     spool.seek(0)
     now = time.time()
     with state_transaction(con,stop=stop):
@@ -2801,6 +2808,9 @@ def commit_spool(
             if current is None:
                 raise RuntimeError("GTID transaction found without a durable initial GTID set")
             meta_set(con,"gtid_set",gtid_add(current,gtid))
+    if trace_started is not None and source_seq is not None:
+        cdc_event_trace.record("source_durable",seq=source_seq,
+            duration_seconds=time.monotonic()-trace_started,source_time_wall=source_time)
     return changed_tables
 
 def touched_keys(con, table, column):
@@ -7910,6 +7920,7 @@ def submit_merge_async(handle, con, mapping, delivery, part, cfg, stop, runtime)
             # Drain an already-started request on graceful shutdown so its TxnId can be saved.
             # HTTP's existing load_timeout+30 still bounds the wait; do not manufacture uncertainty
             # by cancelling an upload only because SIGTERM/another worker set the stop event.
+            cdc_event_trace.record("http_begin",part=part)
             status,result = curl_request(handle,cfg,url,payload,headers,None)
             state = str(result.get("Status","")).lower()
             if 200 <= status < 300 and state == "success":
@@ -7920,6 +7931,7 @@ def submit_merge_async(handle, con, mapping, delivery, part, cfg, stop, runtime)
                                        load_result_text(result))
                 remote_txn = int(remote_txn)
                 accepted=(remote_txn,result)
+                cdc_event_trace.record("http_accepted",part=part)
                 break
             if status in (401,403,404):
                 clear_merge_request(con,delivery,part)
@@ -7985,6 +7997,7 @@ def submit_merge_async(handle, con, mapping, delivery, part, cfg, stop, runtime)
     remote_txn,result=accepted
     # Once accepted, local persistence never returns to HTTP retry handling.
     record_merge_acceptance(con,delivery,part,remote_txn,stop)
+    cdc_event_trace.record("acceptance_saved",part=part)
     left_merge_ms=int(result.get("LeftMergeTimeMs",0) or 0)
     metric_add_merge(runtime,mapping_key(mapping),remote_txn,nrows,left_merge_ms)
     if cfg.get("detail_logs",False):
@@ -8072,9 +8085,12 @@ def merge_async_delivery(handle, con, mapping, delivery, cfg, runtime):
         txn_ids = sorted({int(txn_id) for _,txn_id,_ in results if txn_id is not None})
         retry = False
         for txn_id in txn_ids:
+            cdc_event_trace.record("visible_wait_begin",txn=txn_id)
             state,detail = wait_visible(cfg,txn_id,stop)
             if state == "visible":
+                cdc_event_trace.record("remote_visible",txn=txn_id)
                 mark_merge_transaction_visible(con,delivery,txn_id,stop)
+                cdc_event_trace.record("visible_saved",txn=txn_id)
                 continue
 
             failure = load_result_text(detail)
@@ -8668,11 +8684,13 @@ def process_merge_lane(con, engine_cache, handle, table, lane, cfg, runtime):
             return False
         extra_locks.append(lock)
 
+    trace_token=cdc_event_trace.select_delivery(con,table,delivery)
     try:
         if merge_table_quarantined(runtime,table) or version_recovery_active(runtime,table):
             return False
         started = time.monotonic()
         try:
+            cdc_event_trace.record("prepare_begin")
             prepared = prepare_delivery(con,engine,mapping,delivery,cfg,stop=stop)
         except Exception as exc:
             if not is_duckdb_oom(exc):
@@ -8749,6 +8767,7 @@ def process_merge_lane(con, engine_cache, handle, table, lane, cfg, runtime):
                     f"DUCKDB OOM RECOVERED table={table} delivery={delivery} "
                     f"memory={recovery_cfg['duckdb_memory']} "
                     f"active_writers={writer_target(runtime,table)}")
+        cdc_event_trace.record("prepare_end")
         if not prepared:
             return False
         kinds,input_rows,source_time = con.execute("""
@@ -8766,7 +8785,9 @@ def process_merge_lane(con, engine_cache, handle, table, lane, cfg, runtime):
             SELECT COUNT(DISTINCT txn_id) FROM load_parts WHERE delivery_id=? AND txn_id IS NOT NULL
         """,(delivery,)).fetchone()[0]
         age = max(0,time.time()-source_time) if source_time else 0
+        cdc_event_trace.record("ack_begin")
         acknowledge_delivery(con,delivery)
+        cdc_event_trace.record("ack_end")
         prune_plan_engines(engine_cache,con,runtime)
         wake_loaders(runtime,table)
         elapsed = time.monotonic()-started
@@ -8787,6 +8808,7 @@ def process_merge_lane(con, engine_cache, handle, table, lane, cfg, runtime):
             log(f"LAG WARNING table={table} source_event_age_seconds={age:.3f} exceeds_10_seconds=1")
         return True
     finally:
+        cdc_event_trace.finish_delivery(trace_token)
         for held in reversed(extra_locks):
             held.release()
 
@@ -11641,6 +11663,8 @@ def stateful_task_worker(item, cfg, runtime):
 def run_cdc(
         cfg, prepared, source_uuid, start, start_gtid, available_logs,
         fingerprint, control=None, catalog_control=None):
+    cdc_event_trace.configure(source_uuid,enabled=cfg.get("event_trace",False),
+        every=cfg.get("event_trace_every",16),limit=cfg.get("event_trace_limit",2048))
     control = control if control is not None else dict(stop=threading.Event(),reason="stopped")
     apply_resource_policy(cfg["resource"])
     if signal_stop_requested(control):

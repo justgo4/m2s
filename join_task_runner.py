@@ -7,6 +7,8 @@ target is re-read before writes resume unless an already verified mapping is
 passed for repeated steps within the same process.
 """
 import j4
+import cdc_event_trace
+import time
 import join_runtime
 import join_shared_runtime
 import join_target_mapping
@@ -112,6 +114,7 @@ def step(
         con,task_id,cfg,mapping=None,
         bootstrap_limit=1000
 ):
+    trace_started=time.monotonic() if cdc_event_trace.enabled() else None
     task=join_task_catalog.task_info(
         con,task_id)
     if task["status"] not in RUNNABLE:
@@ -200,4 +203,8 @@ def step(
         task=join_task_catalog.set_status(
             con,task["task_id"],"active")
     result["task"]=task
+    consumer=result.get("consumer")
+    if trace_started is not None and consumer is not None:
+        cdc_event_trace.task_frontier(task["sink_key"],task["generation_id"],
+            consumer["watermark"],time.monotonic()-trace_started)
     return result
