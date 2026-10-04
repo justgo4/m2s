@@ -83,6 +83,10 @@ jobs:
       TEST_GTID: ${{ matrix.gtid }}
       TEST_SHARED: ${{ matrix.shared }}
       PYTHONUNBUFFERED: '1'
+      CDC_COLD_BUILD_ADMISSION: '1'
+      CDC_COLD_BUILD_ROWS: '256'
+      CDC_MERGE_VISIBILITY_PIPELINE: '1'
+      CDC_MERGE_VISIBILITY_PER_SINK: '2'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:

@@ -18,6 +18,8 @@ import shutil
 import signal
 import sqlite3
 import sqlite_write_timing
+import sqlite_writer
+import cdc_event_trace
 import struct
 import subprocess
 import zlib
@@ -58,6 +60,7 @@ import physical_state_catalog
 import relational_ir
 import source_state
 import stateful_admission
+import cold_build_admission
 import stateful_catalog_runtime
 import stateful_physical_registry
 import stateful_rebuild
@@ -449,6 +452,10 @@ def metrics_status_record(runtime, cfg, prepared, state):
         )
     if os.environ.get("CDC_SQLITE_WRITE_TIMING", "0")=="1":
         record["sqlite_write_timing"]=sqlite_write_timing.PROCESS.snapshot()
+    if cdc_event_trace.enabled():
+        record["event_trace"]=cdc_event_trace.snapshot()
+    if cfg.get("cold_build_admission",False):
+        record["cold_build_admission"]=dict(runtime.get("cold_build_status",{}))
     metrics_path,summary_path = report_paths(cfg)
     append_report(metrics_path,record,cfg.get("metrics_max_bytes",64*1024*1024))
     write_summary(summary_path,record)
@@ -1352,6 +1359,14 @@ def read_config():
         rowset_yellow=env_int("CDC_ROWSET_YELLOW", 500, maximum=10000),
         rowset_red=env_int("CDC_ROWSET_RED", 700, maximum=10000),
         version_recovery_checks=env_int("CDC_VERSION_RECOVERY_CHECKS", 2, maximum=10),
+        cold_build_admission=env("CDC_COLD_BUILD_ADMISSION","0")=="1",
+        cold_build_rows=env_int("CDC_COLD_BUILD_ROWS",256,maximum=4096),
+        cdc_bundle_max_lanes=env_int("CDC_CDC_BUNDLE_MAX_LANES",16,maximum=64),
+        merge_visibility_pipeline=env("CDC_MERGE_VISIBILITY_PIPELINE","0")=="1",
+        merge_visibility_per_sink=env_int("CDC_MERGE_VISIBILITY_PER_SINK",2,maximum=64),
+        event_trace=env("CDC_EVENT_TRACE","0")=="1",
+        event_trace_every=env_int("CDC_EVENT_TRACE_EVERY",16,maximum=1000000),
+        event_trace_limit=env_int("CDC_EVENT_TRACE_LIMIT",2048,maximum=8192),
         snapshot_workers=env_int("CDC_SNAPSHOT_WORKERS", max(1,min(2,resource_target//2)), maximum=32),
         snapshot_rows=env_int("CDC_SNAPSHOT_ROWS", 50000, maximum=100000),
         snapshot_chunk_bytes=env_int(
@@ -1376,7 +1391,7 @@ def read_config():
         commit_interval_ms=env_int("CDC_COMMIT_INTERVAL_MS", 2000, maximum=10000),
         pressure_max_seconds=env_int("CDC_PRESSURE_MAX_SECONDS", 60, maximum=600),
         load_mode=env("CDC_LOAD_MODE", "merge_async").strip().lower(),
-        merge_commit_interval_ms=env_int("CDC_MERGE_COMMIT_INTERVAL_MS", 1000, maximum=60000),
+        merge_commit_interval_ms=env_int("CDC_MERGE_COMMIT_INTERVAL_MS", 500, maximum=60000),
         merge_commit_parallel=env_int("CDC_MERGE_COMMIT_PARALLEL", max(1,min(2,resource_target//2)), maximum=32),
         max_row_bytes=env_int("CDC_MAX_ROW_BYTES", 64*1024*1024, maximum=64*1024*1024),
         max_backlog_bytes=env_int("CDC_MAX_BACKLOG_BYTES", 2*1024**3),
@@ -1703,7 +1718,7 @@ STATE_WAL_CHECKPOINT_INTERVAL = 0.5
 
 
 def open_state(path):
-    options={}
+    options={"factory":sqlite_writer.FairConnection}
     if os.environ.get("CDC_SQLITE_WRITE_TIMING", "0")=="1":
         options["factory"]=sqlite_write_timing.TimingConnection
     con = sqlite3.connect(path, timeout=30, isolation_level=None,**options)
@@ -2744,6 +2759,7 @@ def commit_spool(
         plan_version=0, source_parts=None, source_spool=None,
         source_epoch=None, stop=None):
     """All rows of a committed source transaction and its read cursor commit together."""
+    trace_started=time.monotonic() if cdc_event_trace.enabled() else None
     spool.seek(0)
     now = time.time()
     with state_transaction(con,stop=stop):
@@ -2801,6 +2817,9 @@ def commit_spool(
             if current is None:
                 raise RuntimeError("GTID transaction found without a durable initial GTID set")
             meta_set(con,"gtid_set",gtid_add(current,gtid))
+    if trace_started is not None and source_seq is not None:
+        cdc_event_trace.record("source_durable",seq=source_seq,
+            duration_seconds=time.monotonic()-trace_started,source_time_wall=source_time)
     return changed_tables
 
 def touched_keys(con, table, column):
@@ -3147,7 +3166,7 @@ def cdc_bundle_width(cfg, runtime, table):
     partitions = key_partition_count(cfg)
     active = max(1,writer_target(runtime,table))
     automatic = max(1,(partitions+active-1)//active)
-    return min(automatic,4)
+    return min(automatic,max(1,int(cfg.get("cdc_bundle_max_lanes",16))))
 
 
 def lane_blocking_delivery(con, table, lane):
@@ -3160,12 +3179,37 @@ def lane_blocking_delivery(con, table, lane):
     return row[0] if row else None
 
 
+def merge_visibility_admission_full(con,table,cfg):
+    if not cfg.get("merge_visibility_pipeline",False):
+        return False
+    limit=max(1,int(cfg.get("merge_visibility_per_sink",2)))
+    return con.execute("SELECT COUNT(*) FROM deliveries WHERE table_name=?",
+                       (table,)).fetchone()[0]>=limit
+
+
+def merge_visibility_claim_deferred(con,table,lane,cfg):
+    if not cfg.get("merge_visibility_pipeline",False):
+        return False
+    # Recovery is independent of fresh admission. All atomic rechecks remain
+    # in the original assignment transaction; stale reads only defer a retry.
+    if con.execute("SELECT 1 FROM deliveries WHERE table_name=? AND lane=?",
+                   (table,lane)).fetchone() or lane_blocking_delivery(con,table,lane) is not None:
+        return False
+    if merge_visibility_admission_full(con,table,cfg):
+        return True
+    if con.execute("SELECT COUNT(*) FROM deliveries").fetchone()[0]>=cfg.get("max_inflight_deliveries",2**31):
+        return True
+    return prepared_budget_used(con)>=cfg.get("max_prepared_bytes",2**63-1)
+
+
 def claim_snapshot_bundle(con, table, primary_lane, cfg, runtime):
     """Coalesce head snapshot jobs from several logical lanes into one physical delivery.
 
     Logical lane identity is unchanged. Later CDC in every included lane remains blocked
     by the assigned head snapshot job until this delivery is VISIBLE and acknowledged.
     """
+    if merge_visibility_claim_deferred(con,table,primary_lane,cfg):
+        return None
     with state_transaction(con):
         existing = con.execute(
             "SELECT id FROM deliveries WHERE table_name=? AND lane=?",(table,primary_lane)).fetchone()
@@ -3178,6 +3222,8 @@ def claim_snapshot_bundle(con, table, primary_lane, cfg, runtime):
             return blocked if owner and int(owner[0]) == int(primary_lane) else None
 
         if con.execute("SELECT COUNT(*) FROM deliveries").fetchone()[0] >= cfg.get("max_inflight_deliveries",2**31):
+            return None
+        if merge_visibility_admission_full(con,table,cfg):
             return None
         if prepared_budget_used(con) >= cfg.get("max_prepared_bytes",2**63-1):
             return None
@@ -3244,6 +3290,8 @@ def claim_cdc_bundle(con, table, primary_lane, cfg, runtime):
     Member lanes stay durably assigned to one physical delivery, so their later jobs
     remain blocked across restart until the shared delivery is VISIBLE and acknowledged.
     """
+    if merge_visibility_claim_deferred(con,table,primary_lane,cfg):
+        return None
     with state_transaction(con):
         existing = con.execute(
             "SELECT id FROM deliveries WHERE table_name=? AND lane=?",(table,primary_lane)).fetchone()
@@ -3256,6 +3304,8 @@ def claim_cdc_bundle(con, table, primary_lane, cfg, runtime):
             return blocked if owner and int(owner[0]) == int(primary_lane) else None
 
         if con.execute("SELECT COUNT(*) FROM deliveries").fetchone()[0] >= cfg.get("max_inflight_deliveries",2**31):
+            return None
+        if merge_visibility_admission_full(con,table,cfg):
             return None
         if prepared_budget_used(con) >= cfg.get("max_prepared_bytes",2**63-1):
             return None
@@ -7792,7 +7842,7 @@ def transaction_history_state(con, cfg, txn_id):
     return "pending",dict(Message="; ".join(details))
 
 
-def wait_visible(cfg, txn_id, stop):
+def wait_visible(cfg, txn_id, stop, once=False):
     started = time.monotonic()
     next_warning,failures,con = 0,0,None
     try:
@@ -7835,6 +7885,8 @@ def wait_visible(cfg, txn_id, stop):
                 failures += 1
                 delay = min(30,0.5*2**min(failures,6))
                 detail = dict(Message=str(exc))
+            if once:
+                return "pending",detail
             now = time.monotonic()
             overdue = now-started >= cfg["load_timeout"]
             if overdue:
@@ -7910,6 +7962,7 @@ def submit_merge_async(handle, con, mapping, delivery, part, cfg, stop, runtime)
             # Drain an already-started request on graceful shutdown so its TxnId can be saved.
             # HTTP's existing load_timeout+30 still bounds the wait; do not manufacture uncertainty
             # by cancelling an upload only because SIGTERM/another worker set the stop event.
+            cdc_event_trace.record("http_begin",part=part)
             status,result = curl_request(handle,cfg,url,payload,headers,None)
             state = str(result.get("Status","")).lower()
             if 200 <= status < 300 and state == "success":
@@ -7920,6 +7973,7 @@ def submit_merge_async(handle, con, mapping, delivery, part, cfg, stop, runtime)
                                        load_result_text(result))
                 remote_txn = int(remote_txn)
                 accepted=(remote_txn,result)
+                cdc_event_trace.record("http_accepted",part=part)
                 break
             if status in (401,403,404):
                 clear_merge_request(con,delivery,part)
@@ -7985,6 +8039,7 @@ def submit_merge_async(handle, con, mapping, delivery, part, cfg, stop, runtime)
     remote_txn,result=accepted
     # Once accepted, local persistence never returns to HTTP retry handling.
     record_merge_acceptance(con,delivery,part,remote_txn,stop)
+    cdc_event_trace.record("acceptance_saved",part=part)
     left_merge_ms=int(result.get("LeftMergeTimeMs",0) or 0)
     metric_add_merge(runtime,mapping_key(mapping),remote_txn,nrows,left_merge_ms)
     if cfg.get("detail_logs",False):
@@ -8072,9 +8127,17 @@ def merge_async_delivery(handle, con, mapping, delivery, cfg, runtime):
         txn_ids = sorted({int(txn_id) for _,txn_id,_ in results if txn_id is not None})
         retry = False
         for txn_id in txn_ids:
-            state,detail = wait_visible(cfg,txn_id,stop)
+            cdc_event_trace.record("visible_wait_begin",txn=txn_id)
+            if cfg.get("merge_visibility_pipeline",False):
+                state,detail = wait_visible(cfg,txn_id,stop,once=True)
+            else:
+                state,detail = wait_visible(cfg,txn_id,stop)
+            if state == "pending":
+                return None
             if state == "visible":
+                cdc_event_trace.record("remote_visible",txn=txn_id)
                 mark_merge_transaction_visible(con,delivery,txn_id,stop)
+                cdc_event_trace.record("visible_saved",txn=txn_id)
                 continue
 
             failure = load_result_text(detail)
@@ -8668,11 +8731,22 @@ def process_merge_lane(con, engine_cache, handle, table, lane, cfg, runtime):
             return False
         extra_locks.append(lock)
 
+    if cfg.get("merge_visibility_pipeline",False):
+        with runtime["control_lock"]:
+            ready=time.monotonic()>=runtime.get("visibility_poll_after",{}).get(delivery,0)
+        if not ready:
+            for held in reversed(extra_locks):held.release()
+            return False
+    trace_token=cdc_event_trace.select_delivery(con,table,delivery)
     try:
         if merge_table_quarantined(runtime,table) or version_recovery_active(runtime,table):
             return False
         started = time.monotonic()
+        if cfg.get("merge_visibility_pipeline",False):
+            with runtime["control_lock"]:
+                started=runtime.setdefault("visibility_delivery_started",{}).setdefault(delivery,started)
         try:
+            cdc_event_trace.record("prepare_begin")
             prepared = prepare_delivery(con,engine,mapping,delivery,cfg,stop=stop)
         except Exception as exc:
             if not is_duckdb_oom(exc):
@@ -8749,6 +8823,7 @@ def process_merge_lane(con, engine_cache, handle, table, lane, cfg, runtime):
                     f"DUCKDB OOM RECOVERED table={table} delivery={delivery} "
                     f"memory={recovery_cfg['duckdb_memory']} "
                     f"active_writers={writer_target(runtime,table)}")
+        cdc_event_trace.record("prepare_end")
         if not prepared:
             return False
         kinds,input_rows,source_time = con.execute("""
@@ -8761,12 +8836,21 @@ def process_merge_lane(con, engine_cache, handle, table, lane, cfg, runtime):
             SELECT part,nrows,length(payload),json_bytes
             FROM load_parts WHERE delivery_id=? ORDER BY part
         """,(delivery,)).fetchall()
-        merge_async_delivery(handle,con,mapping,delivery,cfg,runtime)
+        result=merge_async_delivery(handle,con,mapping,delivery,cfg,runtime)
+        if result is None:
+            with runtime["control_lock"]:
+                runtime.setdefault("visibility_poll_after",{})[delivery]=time.monotonic()+0.2
+            return False
         remote_txns = con.execute("""
             SELECT COUNT(DISTINCT txn_id) FROM load_parts WHERE delivery_id=? AND txn_id IS NOT NULL
         """,(delivery,)).fetchone()[0]
         age = max(0,time.time()-source_time) if source_time else 0
+        cdc_event_trace.record("ack_begin")
         acknowledge_delivery(con,delivery)
+        cdc_event_trace.record("ack_end")
+        with runtime["control_lock"]:
+            runtime.get("visibility_poll_after",{}).pop(delivery,None)
+            runtime.get("visibility_delivery_started",{}).pop(delivery,None)
         prune_plan_engines(engine_cache,con,runtime)
         wake_loaders(runtime,table)
         elapsed = time.monotonic()-started
@@ -8787,6 +8871,7 @@ def process_merge_lane(con, engine_cache, handle, table, lane, cfg, runtime):
             log(f"LAG WARNING table={table} source_event_age_seconds={age:.3f} exceeds_10_seconds=1")
         return True
     finally:
+        cdc_event_trace.finish_delivery(trace_token)
         for held in reversed(extra_locks):
             held.release()
 
@@ -10571,6 +10656,19 @@ def stateful_finish_retirement(
             "stateful retirement frontier mismatch task=%s "
             "consumer=%d frontier=%d"
             % (task["task_id"],watermark,int(frontier)))
+    if str(kind)=="inner_join" and con.execute("""SELECT 1 FROM join_shared_builds
+            WHERE follower_task_id=? AND phase<>'done' """,(task["task_id"],)).fetchone():
+        # An unpublished shared build owns retention state but has no target
+        # bootstrap that can ever become VISIBLE. Retire its durable chunks
+        # instead of waiting on a frontier that was never published.
+        durable=stateful_durable_task(con,kind,task["task_id"])
+        stateful_catalog_runtime.retire_task(con,cfg,kind,durable)
+        with runtime["plan_lock"]:
+            runtime.get("stateful_active_task_ids",set()).discard(task["task_id"])
+            runtime.get("stateful_retire_frontiers",{}).pop(task["task_id"],None)
+            runtime.get("stateful_retire_items",{}).pop(task["task_id"],None)
+        runtime_mark_sink_retiring(runtime,mapping_key(mapping),cfg)
+        return True
     stateful_stage_pending(
         con,kind,task["consumer_id"],mapping,cfg)
     wake_loaders(runtime,mapping_key(mapping))
@@ -11539,10 +11637,13 @@ def stateful_task_worker(item, cfg, runtime):
                     continue
 
             try:
-                result=stateful_rebuild_guarded_step(
-                    con,cfg,runtime,item,runner,mapping,
-                    bootstrap_limit=max(
-                        1,min(int(cfg.get("snapshot_rows",1000)),4096)))
+                def run_stateful_step(limit):
+                    return stateful_rebuild_guarded_step(
+                        con,cfg,runtime,item,runner,mapping,
+                        bootstrap_limit=limit)
+                result=cold_build_admission.step(
+                    con,cfg,runtime,kind,task["task_id"],run_stateful_step,
+                    max(1,min(int(cfg.get("snapshot_rows",1000)),4096)))
             except sqlite3.OperationalError as exc:
                 stateful_worker_busy_retry(con,runtime,task["task_id"],exc)
                 # Re-read active task membership, source completeness and
@@ -11625,7 +11726,7 @@ def stateful_task_worker(item, cfg, runtime):
             # can likewise be waiting on its leader. Pace both idle cases while
             # rechecking source/visibility/retirement within 50ms. Bootstrap
             # chunks and advancing CDC prefixes continue without a wait.
-            if watermark is not None and (
+            if result.get("phase")!="bootstrap" and watermark is not None and (
                 watermark>=applied or watermark==previous_watermark
             ):
                 stop.wait(0.05)
@@ -11641,6 +11742,8 @@ def stateful_task_worker(item, cfg, runtime):
 def run_cdc(
         cfg, prepared, source_uuid, start, start_gtid, available_logs,
         fingerprint, control=None, catalog_control=None):
+    cdc_event_trace.configure(source_uuid,enabled=cfg.get("event_trace",False),
+        every=cfg.get("event_trace_every",16),limit=cfg.get("event_trace_limit",2048))
     control = control if control is not None else dict(stop=threading.Event(),reason="stopped")
     apply_resource_policy(cfg["resource"])
     if signal_stop_requested(control):

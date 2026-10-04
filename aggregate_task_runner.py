@@ -12,6 +12,8 @@ import aggregate_shared_runtime
 import aggregate_target_mapping
 import aggregate_task_catalog
 import j4
+import cdc_event_trace
+import time
 import stateful_share_policy
 import stateful_rebuild
 import task_generation
@@ -85,6 +87,7 @@ def load_task(con,task_id,cfg,mapping_loader=None):
 def step(
         con,task_id,cfg,mapping=None,bootstrap_limit=1000
 ):
+    trace_started=time.monotonic() if cdc_event_trace.enabled() else None
     task=aggregate_task_catalog.task_info(con,task_id)
     if task["status"] not in RUNNABLE:
         raise RuntimeError(
@@ -166,4 +169,8 @@ def step(
         task=aggregate_task_catalog.set_status(
             con,task["task_id"],"active")
     result["task"]=task
+    consumer=result.get("consumer")
+    if trace_started is not None and consumer is not None:
+        cdc_event_trace.task_frontier(task["sink_key"],task["generation_id"],
+            consumer["watermark"],time.monotonic()-trace_started)
     return result
