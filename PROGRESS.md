@@ -1,11 +1,73 @@
 # m2s continuation checkpoint
 
-Last recorded: 2026-10-03 UTC. Read AGENTS.md and README.md first. This file is
+Last recorded: 2026-10-04 UTC. Read AGENTS.md and README.md first. This file is
 the durable handoff if Codex quota/session ends; it does not promise automatic
 AI continuation. Routine repository changes, Actions and validated merges are
 authorized by the owner without expiry, subject to actual configured access.
 
 ## Immediate next action
+
+Owner renewed continuation on2026-10-04; routine code/test/workflow/PR/validated
+merge authorization remains in effect, limited by actual configured access.
+Main at checkpoint: d8fe46bab599c048a2e092057e49002b9a4bcf06. None of the
+following runtime candidates is merged; do not force main or relax strict5/10s.
+
+JOIN frozen-W follower bootstrap and stopped-owner promotion are implemented
+on candidate branches: retained before-images/absence, durable input-copy/output/
+cleanup cursors, unpublished seal, atomic stream/consumer/ref handoff, stale
+promotion/drop fencing and interrupted-promotion cleanup. Per-task guards have
+no stripe collisions; history GC uses eligible indexed rows and <=64 state scans.
+Copy/output/cleanup budgets are1000 rows/16MiB serialized bytes, including
+join_blob, with singleton boundary. PR33 CDC cap16/affected JOIN reads/private
+sharing checks are integrated. Registry/ref and non-mutating CDC claim checks
+use coherent WAL reads; fresh mutations retain writer-side rechecks.
+
+| Candidate | Exact head | Strict small P95/P99 seconds |
+|---|---|---|
+| PR36 | 48f92c3b9f08b22309cb03b0d9ce824c3f8451f6 | 25.106320 /33.100692 FAIL |
+| PR37 | 46f69041e35bc15b905ca2e2b97cc76388fed73c | 8.064322 /10.083136 FAIL |
+| PR38 | e7bec56aeb1fe8a8dfd12524e0d89674e39a0188 | 7.308087 /10.079231 FAIL |
+| PR39 | bbf72cbf5c94594bdd50df965a5c50f280212d1c | 6.077801 /7.049990 P95 FAIL |
+| PR40 | c367c98df984ea3e0a37c0d8a1f256ba13ad3e46 | 6.068201 /7.047098 P95 FAIL |
+
+Each exact head passed baseline/native/state/all eight actual daemon E2E/smoke,
+seven full115000-row targets, four hot-adds, right-side live-tail fault recovery
+and finalsource/apply301/pending0/deliveries0/sharedfollowers4. Different hosted
+runs are not controlled A/B. Strict gate runs/artifacts: PR36
+37163933854/11289186011; PR37 37164857615/11288773084; PR38
+37165184630/11288349837; PR39 37165525278/11289412973; PR40
+37166090565/11288839469. PR40 baseline37166090623/native37166090575/
+state37166090614/E2E37166090579 all PASS. Its verified tree is
+951d28f8e2a600c0a50f34d8f26a0f0889082242; local author SHA differs, so use
+the remote code_revision. All110 baseline script entries and37 offline selftest
+groups also passed locally. Online selftest explicitly skipped absent persistent
+DB configuration. New real-WAL tests: frozen12, registry4, CDC claim5; originals
+fail accounting/contention regressions. Controlled1000 exhausted-budget claim
+calls use1000 writers old versus0 new without delivery/assignment mutation.
+
+PR39 exactbbf72cb local fresh-process WAL/FULL million-output benchmark has
+full input-derived pair/payload/identity/canonical digest equal: atomic
+max38.415110s/wall38.415593s versus frozen max0.067087s/wall86.930479s,
+4010 transactions; pre-oracle RSS398143488/397467648 bytes. This is a bounded
+lock boundary, not million-source daemon/SLO/formal certification. Source hashes
+and results stay in ignored benchmark-results/join-frozen-million-bbf72-local.json.
+GitHub writes work through object APIs despite ordinary HTTPS push401.
+Only synthetic code/config/evidence enter GitHub, not state/metrics/credentials.
+
+Immediate next: PR40 first-run30/60s metrics show raw snapshot11/14 deliveries
+interleaved with CDC11/13, single writer, source age~5-6s; after history completes
+at90/120s CDC age falls~2s. Claim acquisitions drop from24470 at PR39 to625 at
+PR40, but strict P95 remains failed. Investigate safely bundling a snapshot head
+with its immediately following CDC FIFO suffix within the same existing row/
+byte/plan/reservation budgets. Prove visibility, group retirement, restart and
+unknown-HTTP behavior before fresh exact-head CI and strict gate. This is a plan,
+not an implemented or certified optimization. Older failed PRs remain unmerged.
+
+One high-fanout incremental source commit remains atomic and is outside the
+bootstrap/promotion bounds. Fixed-resource medium/scale/low-space/upgrade and
+unchanged formal p11-50m-50rps-72h-v4 remain open. No persistent isolated test
+host/cloud credentials configured; owner authority cannot supply infrastructure.
+No completed v1/SLO/P11 claim. Entries below preserve earlier main context.
 
 1. Main335bf1d35300ba57d5947162955115ff8b82f45f has validated PR26 intent-BEGIN recovery, PR27 optional bounded SQLite timing, PR28 retirement polling and PR32 coherent shared-leader read snapshots. Each merged at its exact green head; code authorization persists without another approval request.
 2. Remaining runtime milestone: durable frozen-W, resumable chunked JOIN follower bootstrap and owner promotion. Releasing the writer between reads of mutable leader join_rows is unsafe. Design fixed-W retention/immutable input, durable dual-PK cursor, unpublished bootstrap/output stages and atomic small sealing; prove restart/retry, independent writer progress, drop/GC/ref retention, projection subviews, ownership transfer and unknown-output safety. Existing private main JOIN build/job publication is already chunked; do not repeat those changes.
