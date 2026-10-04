@@ -35,10 +35,12 @@ jobs:
     timeout-minutes: 120
     env:
       PYTHONUNBUFFERED: '1'
+      CDC_COLD_BUILD_ADMISSION: '1'
+      CDC_COLD_BUILD_ROWS: '256'
       CDC_MERGE_VISIBILITY_PIPELINE: '1'
       CDC_MERGE_VISIBILITY_PER_SINK: '2'
-      A_SHA: ${{ inputs.a || '04ed4cb6bf7faa32a52479ddbac1941143a47e3e' }}
-      B_SHA: ${{ inputs.b || 'bf4de9e2ba37e62673f8f3ecd4acc958e578d443' }}
+      A_SHA: ${{ inputs.a || '0655ce62110424eb0d0c2fbd88743fa3de6ecd60' }}
+      B_SHA: ${{ inputs.b || 'fd734d617e74b9cb9a401f7c5aeecfae0156f50f' }}
       PROFILE: ${{ inputs.profile || 'small' }}
       TRACE: ${{ inputs.trace || '1' }}
     steps:
