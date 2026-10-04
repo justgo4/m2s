@@ -166,10 +166,15 @@ class TimingConnection(sqlite_writer.FairConnection):
 
     def __exit__(self,*args):
         try:
-            return super().__exit__(*args)
-        finally:
+            result=super().__exit__(*args)
+        except BaseException:
+            if not self.in_transaction:
+                self._finish('rollback')
+            raise
+        else:
             if not self.in_transaction:
                 self._finish('rollback' if args[0] is not None else 'commit')
+            return result
 
 
 PROCESS=Collector()

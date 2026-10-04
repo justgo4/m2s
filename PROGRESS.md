@@ -23,6 +23,11 @@ as FIFO. Queued and SQLite waits share busy_timeout; never retry transaction bod
 or COMMIT. Failed commit retains admission until rollback/close. Entries exist
 only for holders/waiters. Profiler includes admission wait, not a new denominator.
 Nine real SQLite FIFO/timeout/lifecycle/reader/alias/factory tests PASS.
+Pre-merge review found context-manager failed deferred-constraint COMMIT rolls
+back automatically but new profiler exit labelled it commit. Added reproducer
+fails original e2d54b0; fix records rollback, releases admission and keeps zero
+rows/active holders. Restart exact-head CI after this diagnostic correction;
+old e2d54b0 run results are not certification of the corrected head.
 Local102 baseline scripts plus4 state/publication scripts=106 PASS;37 offline
 selftest groups PASS (online explicitly skipped absent persistent connections).
 Controlled8 writers x100 FULL commits,0.5ms body yield,exact800-row count/sum:
