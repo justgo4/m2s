@@ -4229,6 +4229,38 @@ def native_json_kind(dtype):
     return None
 
 
+def native_json_constraints_safe(mapping,output):
+    # Fast-path only ordinary bounded UTF-8 values. Any overflow, unusual
+    # encoding/type or required NULL keeps the existing DuckDB guard/diagnostic.
+    for name,constraint in mapping.get("_target_constraints",{}).items():
+        if name not in output.column_names or constraint.get("value_encoding")!="utf8":
+            return False
+        column=output.column(name)
+        if not (pa.types.is_string(column.type) or pa.types.is_large_string(column.type)):
+            return False
+        if not constraint["nullable"] and column.null_count:
+            return False
+        largest=pc.max(pc.binary_length(column)).as_py()
+        if largest is not None and int(largest)>int(constraint["limit_bytes"]):
+            return False
+    return True
+
+
+def native_json_batches(output,batch_rows,byte_limit=1024**2):
+    # Arrow IPC jobs have many small chunks. Combining only bounded row/byte
+    # windows avoids turning every lane chunk into a separate HTTP load part.
+    offset=0
+    while offset<output.num_rows:
+        count=min(max(1,int(batch_rows)),output.num_rows-offset)
+        piece=output.slice(offset,count)
+        while count>1 and piece.nbytes>int(byte_limit):
+            count=max(1,count//2)
+            piece=output.slice(offset,count)
+        for batch in piece.combine_chunks().to_batches(max_chunksize=count):
+            yield batch
+        offset+=count
+
+
 def native_json_fast_path_reason(
         mapping, output, names, json_columns, binary_columns, winner_ready):
     if native_json_mode() == "off":
@@ -4237,7 +4269,7 @@ def native_json_fast_path_reason(
         return "winner selection is not available outside DuckDB"
     if mapping.get("_arrow_columns") is None:
         return "projection requires DuckDB"
-    if mapping.get("_target_constraints"):
+    if mapping.get("_target_constraints") and not native_json_constraints_safe(mapping,output):
         return "target overflow guards require DuckDB"
     if mapping.get("_size_columns"):
         return "synthetic size columns require DuckDB"
@@ -4432,8 +4464,7 @@ def transformed_line_batches(
         native_reason = native_json_fast_path_reason(
             mapping,output,names,json_columns,binary_columns,winner_ready)
         if native_reason is None:
-            for output_batch in output.to_batches(
-                    max_chunksize=max(1,int(batch_rows))):
+            for output_batch in native_json_batches(output,batch_rows):
                 yield native_json_lines(
                     output_batch,names,binary_columns,sequence,
                     bool(mapping.get("_target_sequence"))),[]

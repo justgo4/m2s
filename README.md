@@ -10,6 +10,18 @@
 
 ## 当前进度评审（2026-10-03）
 
+2026-10-04 续做：frozen-W JOIN follower 初始化、owner promotion、退役并发和
+有界清理已在候选分支实现并通过正确性回归，尚未合并。PR #36–#39 全部
+正确性 CI、八格 E2E、smoke、完整 small 结果及恢复通过，但严格延迟失败；
+PR #39 P95/P99=6.078/7.050s，仅 P95 未达5s。最新 [PR #40](https://github.com/justgo4/m2s/pull/40)
+头 `c367c98` 加入 coherent read-only CDC claim/资源拒绝检查：全部正确性
+CI 与完整结果/恢复通过，严格 P95/P99=6.068/7.047s，仍因 P95 失败而未合并。
+下一步验证历史页及紧随 CDC 前缀的安全 FIFO 合批，不放宽门禁。
+百万输出行合成完整 oracle 证明分块
+最长写事务0.067s，原子方案38.415s，但分块总耗时更长；不是 daemon SLO
+或5000万行/72小时认证。完整固定版本、失败 artifact、持续授权和下一步见
+[PROGRESS.md](PROGRESS.md)。各 hosted 运行不是受控 A/B，目标门槛不变。
+
 已核对主线 `335bf1d35300ba57d5947162955115ff8b82f45f`、各最终测试头及真实 small/million artifacts。**受限 v1 的功能与恢复基线已形成；主 JOIN 构建和 job 发布已有有界协议。剩余重点是可变 leader 的 follower 初始化/owner promotion 大事务，以及严格延迟、资源和正式规模验收。当前尚未全部完成。** 历史记录保留当时语境，最新状态以本节及 [PROGRESS.md](PROGRESS.md) 为准。
 
 | 工作 | 当前证据与边界 |
@@ -27,22 +39,6 @@
 最新百万行 profiler 在 follower 绑定中直接观察到一次 **155.766 秒**的写事务，主线恢复修复已让真实百万负载完成正确性验证，但延迟仍未通过。下一项应实现 **durable frozen-W 的 follower 输出分块构建及 owner promotion**：保留可重启的输入/游标，未封口结果不可 claim/ready/visible，并覆盖独立 writer、强退续建、投影子视图、drop/GC/ref 与 ownership 交接。不能在分块之间继续读取不断变化的 leader 状态而假定它仍是同一个 W。
 
 严格 small 的 sentinel 目前测量 raw events 查询可见延迟，不能替代每个 stateful target 的 SLO；其他任务也保存各自可见/源龄指标与完整 oracle。不同 hosted runner、启用/关闭测量的运行不是受控 A/B。后续继续分层验证规模、低空间/升级恢复和固定资源，在持久主机上才运行正式认证。
-
-2026-10-04 新候选 `codex/v1-join-frozen-followers-20261003`：JOIN 在持久
-backing pin 存续时原子保留变化前的行（包括新插入前的不存在标记），以相同 W
-分块复制 follower 的临时输入状态、构建并封口 outbox，再分块回收临时状态。
-owner promotion 在停止的 leader frontier 分块构建私有状态，最后原子交接
-consumer/stream/ref。每个复制、输出和回收写事务最多 1000 行及 16MiB 预算；
-沿用 max-row singleton 边界。版本与临时状态进入 state-byte 计数。现有单 daemon
-内部按任务同步 promotion 与 follower worker；不增加多进程共享 state 文件支持。
-第一版 PR #36 全部正确性 CI、八格 E2E、smoke 和完整 small 数据/恢复通过，
-但严格 P95/P99=25.106/33.101s 失败，未合并。后续补齐退役并发 fencing、
-中断 promotion 取消和有界版本 GC；十一组真实 WAL 回归通过。新组合候选
-`codex/perf-frozen-join-cdc-20261004` 纳入 PR #33 的 CDC/读取优化，需重新
-验证完整 CI 与严格 small，不能继承旧头验收。10 万输出行合成测量完整摘要一致，最长写事务
-3.141s→0.032s，总构建耗时3.141s→7.438s；临时复制增加 I/O 和空间，不能将此
-作为 daemon 延迟通过的结论。单个增量 source commit 的高 fan-out journal 复制
-仍按事务原子处理，其成本不在本次分块保证之内。
 
 ## 1. 场景与待验证假说
 
