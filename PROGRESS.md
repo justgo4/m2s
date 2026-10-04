@@ -13,7 +13,14 @@ E2E37179029726/validation37179029713). No results claimed yet.
 Next implement immutable A/B/B/A, disposable services per trial, one host,
 fixed configuration and image fingerprints, all four failure artifacts retained.
 Driver is diagnostic orchestration; preserve strict gate failures and no certificate.
-Test exact revision/clean-checkout/run-directory safeguards before real execution.
+Implemented tools/performance_abba.py/test.py, same-host workflow and README
+usage. Four new detached exact-SHA checkouts, fresh container IDs/databases each
+trial, images resolved once to immutable local IDs, service/host/dependency/config
+fingerprints, identical profile checks and trace switch, gate failure retained
+through remaining independent trials and final nonzero exit. PR workflow runs
+A=B smoke repetition; manual workflow supports strict-small comparison.
+Local real-Git safeguards:3 PASS, event trace9 PASS, compile/privacy/diff PASS.
+Next exact-head CI with four real smoke trials; not performance certification.
 
 ## Active event-correlated performance instrumentation (2026-10-04)
 
