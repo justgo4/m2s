@@ -53,7 +53,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        profile: ${{ fromJSON(github.event_name == 'pull_request' && '["smoke"]' || github.event_name == 'workflow_dispatch' && format('["{0}"]', inputs.profile) || '["small","million"]') }}
+        profile: ${{ fromJSON(github.event_name == 'pull_request' && startsWith(github.head_ref, 'codex/v1-join-frozen-') && '["smoke","small"]' || github.event_name == 'pull_request' && '["smoke"]' || github.event_name == 'workflow_dispatch' && format('["{0}"]', inputs.profile) || '["small","million"]') }}
     env:
       PYTHONUNBUFFERED: '1'
       CDC_RESOURCE_CPU_CORES: '2'

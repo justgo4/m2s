@@ -118,6 +118,7 @@ jobs:
           python tools/join_bootstrap_stream_test.py
           python tools/join_runtime_test.py
           python tools/join_shared_runtime_test.py
+          python tools/join_frozen_state_test.py
           python tools/shared_leader_snapshot_test.py
           python tools/join_subview_shared_runtime_test.py
           python tools/join_state_test.py

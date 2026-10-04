@@ -7,6 +7,47 @@ authorized by the owner without expiry, subject to actual configured access.
 
 ## Immediate next action
 
+Active continuation: branch `codex/v1-join-frozen-followers-20261003`, base
+`d8fe46bab599c048a2e092057e49002b9a4bcf06`. Implement durable JOIN backing
+snapshots with retained before-images, bounded snapshot-copy/output chunks and
+restartable follower binding/promotion. Each write transaction must have a row
+and byte budget; unsealed output cannot enter jobs or readiness. Test real WAL
+writer progress, moving leaders, restart, rollback, projection, drop and GC.
+Existing failed performance PRs remain unmerged. Required CI and strict small
+remain pending; formal 50M/72h still needs a persistent test host.
+
+2026-10-04 implementation checkpoint: `join_frozen_state.py` adds durable
+backing pins and indexed PK copy cursors; `join_state.apply_transaction` stores
+before-images/absence atomically only while pinned. Shared binding now retains
+consumer/ref and a copy/output/cleanup manifest instead of seeding under one
+writer. Existing chunked output builder accepts a distinct immutable backing
+state. Owner promotion copies private backing in chunks and atomically detaches
+stream/consumer/ref. Per-task striped locks serialize same-daemon workers with
+handoff; persistent promotion pins park workers after restart. Cancellation
+fences unpublished builds and drains rows before pin/ref release; actual live
+retirement bypasses an impossible VISIBLE wait. Old sealed bindings remain
+compatible. History and temporary backing enter durable size counters.
+
+Local commands PASS: `python tools/join_frozen_state_test.py` (8 real WAL tests:
+80 bilateral/rekey/insert/delete transactions across two cuts, restart, rollback,
+independent writer during reads, bounded rows/bytes, projection, partial output
+drop+cleanup failure/restart, actual live cancel, promotion failure/restart and
+concurrent runner handoff); join_output_build11, sharing/subview, all three
+100-follower sharing/GC contracts, physical registry, generation/runtime,
+hot-add/retirement5, worker idle3/contention4, source protocol, sharing policy,
+admission, compileall and privacy. Further full baseline checks are in progress.
+
+`python tools/join_frozen_state_benchmark.py --rows 100000 --output
+benchmark-results/join-frozen-local.json` used independent WAL/FULL child
+processes and complete input-derived pair/payload/identity oracles: equal
+100000 rows/canonical digest, atomic max transaction3.140774s/wall3.141204s;
+frozen max0.031914s/wall7.437534s,410 transactions. Temporary snapshot I/O raises
+total build cost; this is synthetic lock evidence, not SLO certification.
+CI runs new regressions on Python3.12/3.14; staged PR validation requests both
+smoke and unchanged strict small. Do not merge before reviewing final-head CI
+and gate; large incremental fan-out copies remain atomic and formal50M72h
+remains blocked by absent persistent infrastructure.
+
 1. Main335bf1d35300ba57d5947162955115ff8b82f45f has validated PR26 intent-BEGIN recovery, PR27 optional bounded SQLite timing, PR28 retirement polling and PR32 coherent shared-leader read snapshots. Each merged at its exact green head; code authorization persists without another approval request.
 2. Remaining runtime milestone: durable frozen-W, resumable chunked JOIN follower bootstrap and owner promotion. Releasing the writer between reads of mutable leader join_rows is unsafe. Design fixed-W retention/immutable input, durable dual-PK cursor, unpublished bootstrap/output stages and atomic small sealing; prove restart/retry, independent writer progress, drop/GC/ref retention, projection subviews, ownership transfer and unknown-output safety. Existing private main JOIN build/job publication is already chunked; do not repeat those changes.
 3. Do not merge failed performance PR29/31/33/34 or older12/19. Most useful measured scaffold is PR33 head02355671fa198e322b7e88a334a360584e8ab1ca (includes validated PR32): baseline/native/state/eight E2E/smoke and all full oracles/recovery/drain PASS, strict P95=7.087626s FAIL, P99=8.104414s PASS. It removes unnecessary private-owner write acquisitions and caps budgeted CDC lane width16 while avoiding unchanged JOIN scans.
