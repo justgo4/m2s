@@ -1019,3 +1019,10 @@ immutable A04ed4cb6/Bbf4de9e2; preserve all trials and compare only once complet
 README records actual implementation/gate status. Next use controlled evidence,
 verify51, then isolate any dependency-aware priority/background admission work.
 All candidates remain unmerged; unchanged formal72h needs persistent host.
+
+
+## 2026-10-04 completed controlled evidence and CDC cap checkpoint
+
+PR49 exact6cc14c823b001110c7c6182e1038561aa5ec7b6c run37179985693/artifact11295089682 completed all four fresh same-host strict-small trials. A=04ed4cb6 and B=bf4de9e2; identical environment, profile, boot/image/resource fingerprints. All full raw/3 aggregate/3 JOIN oracles, dynamic4, fault and final drain PASS. Every gate FAIL only latency. P95/P99 seconds: A1=38.675907957/46.249391986; B1=23.102208863/36.510135246; B2=23.577964534/27.522064360; A2=26.086923124/39.457451307. CPU seconds A1=233.03/B1=378.96/B2=384.18/A2=237.26. Observed latency/CPU tradeoff within this run; no SLO or generalized improvement certified. This compares PR48 only, not PR50/51.
+
+PR51 exact0655ce62110424eb0d0c2fbd88743fa3de6ecd60 baseline37181085041/native37181084975/state37181085009/eightE2E37181084982/smoke PASS. Strict small37181084973/artifact11295620609 FAIL P95=12.091967967/P99=14.094269862s; workload/oracles/dynamic4/fault/drain PASS, final source/apply301/pending0/deliveries0/sharedfollowers4. CPU370.15s/RSS440987648B/writes3565252608B; live-tail catchup179.383193630s. Different runner from prior candidates, so do not claim causal gain. No runtime candidate merged. README updated with completed evidence. Next isolate output dependency/age scheduling and compare final combination on the same host; do not lower 5/10s or remove cold/fault observations. Persistent-host scale/72h and earlier atomic follower protocol remain uncompleted.

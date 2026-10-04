@@ -122,8 +122,10 @@ CI 与完整结果/恢复通过，严格 P95/P99=6.068/7.047s，仍因 P95 失�
 | [PR47 同机 A/B/B/A 驱动](https://github.com/justgo4/m2s/pull/47) | 修正 TIME_WAIT 端口误判后，同 SHA 四轮真实 smoke 全部通过，镜像/服务资源指纹一致。验证的是试验驱动，不是严格 SLO |
 | [PR48 已知 TxnId 等待流水线](https://github.com/justgo4/m2s/pull/48) | 默认关闭；独立 lane 可继续，durable assignment/预算保留至可见及 ack，未知响应继续隔离。正确性/恢复通过；严格 small 27.861/45.838s，失败 |
 | [PR50 只读准入预检](https://github.com/justgo4/m2s/pull/50) | 实际发现准入已满时反复空写事务；真实 WAL 200 次拒绝为 0 次 BEGIN，原子资源复核保留。正确性/恢复通过；严格 small 35.787/38.783s，失败 |
-| [PR51 CDC 安全合批](https://github.com/justgo4/m2s/pull/51) | 仅引入可配置宽度上限16和既有预算/FIFO/plan 边界；5 项真实 Arrow/SQLite 测试通过，含宽 delivery 已知 TxnId 的重启/可见性恢复。完整 CI 与严格 small 待验收 |
-| [PR49 同机严格 small 对照](https://github.com/justgo4/m2s/pull/49) | 固定 A=04ed4cb6、B=bf4de9e2，A/B/B/A 每轮新建隔离数据与服务；运行中，保留全部失败，不挑一次绿灯 |
+| [PR51 CDC 安全合批](https://github.com/justgo4/m2s/pull/51) | 仅引入可配置宽度上限16和既有预算/FIFO/plan 边界；5 项真实 Arrow/SQLite 测试通过，含宽 delivery 已知 TxnId 的重启/可见性恢复。基线/native/state/8 项 E2E 与 smoke 全通过；严格 small P95/P99=12.092/14.094s，失败 |
+| [PR49 同机严格 small 对照](https://github.com/justgo4/m2s/pull/49) | 固定 A=04ed4cb6、B=bf4de9e2，A/B/B/A 每轮新建隔离数据与服务；四轮完整正确性/恢复/排空通过，但严格延迟全失败；P95/P99（秒）A1=38.676/46.249、B1=23.102/36.510、B2=23.578/27.522、A2=26.087/39.457 |
+
+同机对照 [run37179985693](https://github.com/justgo4/m2s/actions/runs/37179985693) 的 B 为 PR48，不含 PR50/51。B 两轮 CPU=378.96/384.18s，A=233.03/237.26s；该次受控结果显示延迟与 CPU 的权衡，仍不支持达标或普遍收益声明。PR51 的 12.092/14.094s 来自独立 runner，须对该最终组合再做同机比较，不能直接与这四轮推断收益。
 
 不同 hosted runner 的延迟不能直接判断因果。采样 trace 显示 VISIBLE
 等待约1.14s，准备约26ms、HTTP约5ms；大量延迟位于 delivery 选择
