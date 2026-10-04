@@ -3229,6 +3229,28 @@ def claim_snapshot_bundle(con, table, primary_lane, cfg, runtime):
         if not selected or selected[0][1] != int(primary_lane):
             return None
 
+        # Preserve each selected lane's FIFO while avoiding another remote
+        # commit for an immediately adjacent CDC suffix. Do not cross another
+        # snapshot group, assigned job, plan version or existing transform cap.
+        # prepare_delivery rebuilds dense order by durable job id, so later
+        # mutations of the same PK still supersede their snapshot row.
+        suffix=[]
+        for snapshot_job,lane in selected:
+            for job_id,kind,nrows,nbytes,version,assigned in con.execute("""
+                SELECT j.id,j.kind,j.nrows,j.logical_bytes,j.plan_version,a.delivery_id
+                FROM active_jobs j LEFT JOIN job_assignments a ON a.job_id=j.id
+                WHERE j.table_name=? AND j.lane=? AND j.id>?
+                ORDER BY j.id LIMIT 4096
+            """,(table,lane,snapshot_job)):
+                if assigned is not None or kind != "cdc" or int(version) != int(plan_version):
+                    break
+                if rows+int(nrows)>cfg["batch_rows"] or bytes_+int(nbytes)>transform_bytes_cap:
+                    break
+                suffix.append((int(job_id),lane))
+                rows+=int(nrows)
+                bytes_+=int(nbytes)
+        selected.extend(suffix)
+
         delivery = uuid.uuid4().hex
         con.execute(
             "INSERT INTO deliveries(id,table_name,lane,plan_version) VALUES(?,?,?,?)",
