@@ -5,6 +5,20 @@ the durable handoff if Codex quota/session ends; it does not promise automatic
 AI continuation. Routine repository changes, Actions and validated merges are
 authorized by the owner without expiry, subject to actual configured access.
 
+## Active bounded known-TxnId visibility pipeline (2026-10-04)
+
+Branch codex/merge-visible-pipeline-20261004, base PR46 exact04ed4cb6.
+PR46 baseline/native/state and smoke PASS; strict small/E2E pending.
+Smoke artifact11294082012:59 complete delivery observations; selected→ack
+P50=1.1353s, VISIBLE waitP50=1.1219s, prepareP50=.01374s, HTTPP50=.00505s.
+Raw source durable→selected maximum25.7539s (sampled; not full sentinel SLO).
+Next isolated opt-in experiment: one status poll then yield pending knownTxnId
+while durable assignments/prepared/inflight budgets remain held. Preserve all
+same-lane FIFO, unknown-output quarantine and restart semantics; bounded per-sink
+pending admission, no extra visibility thread or unbounded remote concurrency.
+No performance gain or certification claimed. Test two independent lanes plus
+restart/unknown/aborted/local contention before exact-head strict-small and A/B.
+
 ## Active event-correlated performance instrumentation (2026-10-04)
 
 Branch codex/cdc-event-trace-20261004, base main9de6b014.
