@@ -10,6 +10,8 @@
 
 ## 当前进度评审（2026-10-03）
 
+2026-10-04 最新续做：[PR #45](https://github.com/justgo4/m2s/pull/45) 固定头 `7046bd3` 为 snapshot 领取增加一致只读预检，避免空闲/预算拒绝申请写锁。6 项新增真实 WAL 回归、全部正确性 CI、八格真实 E2E 和 smoke 通过；完整 small 输出/动态任务/强退恢复/排空通过，但严格 P95/P99=9.117/12.116s 失败，**保持未合并**。PR #44 的 FIFO 候选也未达标（7.111/8.103s）。不同 hosted 运行不是受控 A/B；下一步继续分解冷构建和物理输出成本，正式门槛不变。固定 SHA、run/artifact 和本地环境限制已记录于 [PROGRESS.md](PROGRESS.md)。
+
 2026-10-04 续做：frozen-W JOIN follower 初始化、owner promotion、退役并发和
 有界清理已在候选分支实现并通过正确性回归，尚未合并。PR #36–#39 全部
 正确性 CI、八格 E2E、smoke、完整 small 结果及恢复通过，但严格延迟失败；

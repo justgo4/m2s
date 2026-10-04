@@ -5,6 +5,55 @@ the durable handoff if Codex quota/session ends; it does not promise automatic
 AI continuation. Routine repository changes, Actions and validated merges are
 authorized by the owner without expiry, subject to actual configured access.
 
+## 2026-10-04 continuation: snapshot claim candidate did not pass strict latency
+
+[PR #45](https://github.com/justgo4/m2s/pull/45), branch
+`codex/perf-snapshot-claim-read-20261004`, exact tested head
+`7046bd3a8a9b0482a024d87a362c286f1c41f670`, remains UNMERGED.
+It builds on PR40 and preserves main13a0fc3 documentation, without importing
+failed PR42/43/44 runtime experiments. Added coherent read-only snapshot
+existing/blocked/idle/non-snapshot/missing-group/resource checks; every original
+writer-side group/plan/FIFO/budget/ownership recheck still precedes fresh assignment.
+Six real-WAL regressions PASS; original helper fails the idle competing-writer
+case. Controlled1000 idle calls: original1000 writer BEGINs, candidate0,
+both zero assignments. This is a lock-acquisition result, not a latency gain.
+
+Exact-head CI: baseline [37177083601](https://github.com/justgo4/m2s/actions/runs/37177083601),
+native [37177083622](https://github.com/justgo4/m2s/actions/runs/37177083622),
+state [37177083623](https://github.com/justgo4/m2s/actions/runs/37177083623),
+all eight real daemon E2E [37177083604](https://github.com/justgo4/m2s/actions/runs/37177083604)
+and smoke PASS. Strict small [37177083617](https://github.com/justgo4/m2s/actions/runs/37177083617),
+job111361852432/artifact11293908093, FAIL P95=9.117322691s/P99=12.115753475s.
+Complete raw/three aggregate/three JOIN oracles, four dynamic tasks, right-side
+strong-exit recovery179.575147s, and final source/apply301/pending0/deliveries0/
+sharedfollowers4 PASS. PeakRSS452792320bytes; write_bytes7068381184.
+Different hosted runners are not controlled A/B; no claimed regression or gain.
+
+PR44 exact3db206029b6f472b8ea282cceb7c9740a3a5bbee baseline37170362711/
+native37170362749/state37170362714/eight E2E37170362717/smoke PASS,
+strict small37170362716/artifact11291216250 FAIL only P95=7.110670509s;
+P99=8.103287718s PASS. Complete workload/recovery/drain PASS. Keep44 unmerged.
+
+Local commands: python tools/snapshot_claim_read_test.py (6), python
+tools/cdc_claim_read_test.py (5), python tools/cdc_bundle_test.py (5), privacy
+and diff checks PASS. Of97 baseline test scripts,96 PASS; validation_run_test
+fails local process-identity/cancellation cases. Local cdc_selftest stops at
+process-tree RSS discovery, so no full offline-selftest pass is claimed.
+GitHub baseline3.12/3.14 and real supervision both PASS on exact7046bd3.
+
+PR45 artifact first30s raw snapshot7/CDC8 deliveries, CDC ageP95=13.583s;
+60s snapshot12/CDC12, ageP95=6.599s; by120s snapshot0 and ageP95=2.840s.
+First30s visible timing max4.293s and writer-acquisition maxima2.833s.
+These aggregate counters do not causally identify an individual blocker.
+Immediate next: profile cold bootstrap compute, output transformation and physical
+snapshot/CDC delivery costs in the same fixed-resource run; design a bounded
+snapshot-only coalescing experiment with group/plan/FIFO/budget barriers and
+restart/unknown-HTTP tests before another exact-head strict gate. Do not
+reinterpret removal of empty writer acquisitions as an end-to-end solution.
+High-fanout atomic incremental transactions, fixed-resource scale/low-space/
+upgrade drills, and unchanged formal50M72h remain open. No persistent isolated
+host/cloud identity configured, no production/SLO/P11 certification.
+
 ## Immediate next action
 
 Owner renewed continuation on2026-10-04; routine code/test/workflow/PR/validated
