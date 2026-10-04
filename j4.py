@@ -18,6 +18,7 @@ import shutil
 import signal
 import sqlite3
 import sqlite_write_timing
+import sqlite_writer
 import struct
 import subprocess
 import zlib
@@ -1704,7 +1705,7 @@ STATE_WAL_CHECKPOINT_INTERVAL = 0.5
 
 
 def open_state(path):
-    options={}
+    options={"factory":sqlite_writer.FairConnection}
     if os.environ.get("CDC_SQLITE_WRITE_TIMING", "0")=="1":
         options["factory"]=sqlite_write_timing.TimingConnection
     con = sqlite3.connect(path, timeout=30, isolation_level=None,**options)

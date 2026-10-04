@@ -168,13 +168,14 @@ class TimingTest(unittest.TestCase):
         self.assertEqual(len(evidence['operations']),4)
         self.assertEqual(sum(row['count'] for row in evidence['operations']),1000)
 
-    def test_j4_uses_original_connection_when_disabled(self):
+    def test_j4_uses_fair_connection_without_collecting_when_disabled(self):
         import j4
         for enabled in ['0','1']:
             with self.subTest(enabled=enabled),patch.dict(os.environ,CDC_SQLITE_WRITE_TIMING=enabled):
                 con=j4.open_state(self.path)
                 try:
-                    self.assertEqual(type(con),timing.TimingConnection if enabled=='1' else sqlite3.Connection)
+                    self.assertEqual(type(con),timing.TimingConnection if enabled=='1' else timing.sqlite_writer.FairConnection)
+                    self.assertEqual(hasattr(con,'timing'),enabled=='1')
                     self.assertEqual(con.execute('PRAGMA busy_timeout').fetchone(),(30000,))
                     self.assertEqual(con.execute('PRAGMA synchronous').fetchone(),(2,))
                 finally:

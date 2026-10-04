@@ -9,6 +9,7 @@ import sqlite3
 import sys
 import threading
 import time
+import sqlite_writer
 
 
 class Collector:
@@ -69,7 +70,7 @@ def _outcome(exc):
             else 'error')
 
 
-class TimingConnection(sqlite3.Connection):
+class TimingConnection(sqlite_writer.FairConnection):
     def __init__(self,*args,collector=None,**kwargs):
         super().__init__(*args,**kwargs)
         self.timing=collector if collector is not None else PROCESS
@@ -162,6 +163,13 @@ class TimingConnection(sqlite3.Connection):
         result=super().close()
         self._finish('close')
         return result
+
+    def __exit__(self,*args):
+        try:
+            return super().__exit__(*args)
+        finally:
+            if not self.in_transaction:
+                self._finish('rollback' if args[0] is not None else 'commit')
 
 
 PROCESS=Collector()
