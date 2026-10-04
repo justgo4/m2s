@@ -1,7 +1,7 @@
 # m2s
 
 MySQL → StarRocks 实时同步与受限增量计算项目。  
-**当前状态：受限 v1 的核心功能已经形成；strict-small 已有通过候选，但正式规模与生产认证尚未完成。**  
+**当前状态：受限 v1 的核心功能已形成；PR #58 已合并到 `main`，strict-small 已通过，但正式规模与生产认证尚未完成。**  
 更新：2026-10-04。
 
 运行与恢复说明见 [OPERATIONS.md](OPERATIONS.md)；详细实验、提交 SHA、失败证据和历史过程见 [PROGRESS.md](PROGRESS.md)。  
@@ -62,7 +62,7 @@ LEFT JOIN、MIN/MAX、DISTINCT、窗口、JOIN+聚合、更通用 SQL 和第二�
 - baseline、native、source-state、真实 daemon E2E、smoke、strict-small、完整 oracle、故障注入和 artifact 工具。
 - SQLite online backup、状态检查、磁盘与版本债务观测。
 
-### 当前最强候选：PR #58
+### 当前主线候选：PR #58（已合并）
 
 [PR #58](https://github.com/justgo4/m2s/pull/58) 组合了：
 
@@ -83,7 +83,7 @@ LEFT JOIN、MIN/MAX、DISTINCT、窗口、JOIN+聚合、更通用 SQL 和第二�
 - 最大 writer hold：约 **0.293s**
 - version recovery：未触发
 
-**重要：PR #58 当前仍是 open/draft，未合并到 main，因此只能称为“已验证候选”，不能算主线已交付。**
+**PR #58 已合并到 `main`。合并提交：`342fd09c52833050323aa927bcbde108bff8e30c`。PR58 基线之后 `main` 的新增变化仅为 README，因此运行代码与已通过 strict-small 的 PR58 head 保持一致。该提交可作为当前内网试运行基线，但仍不等于 50M/72h 生产认证完成。**
 
 已确认的参数结论：
 
@@ -93,21 +93,12 @@ LEFT JOIN、MIN/MAX、DISTINCT、窗口、JOIN+聚合、更通用 SQL 和第二�
 
 ## 3. 还没有完成
 
-### P0：收口最终代码
+### P0：冻结内网试运行基线
 
-- 将 PR #58 重新基于最新 main 核对差异。
-- 确认 draft/mergeability 状态和冲突。
-- 冻结**唯一最终 SHA**。
-- 在该 SHA 上重新跑：
-  - baseline
-  - native contracts
-  - source-state
-  - actual daemon E2E
-  - smoke
-  - strict-small
-  - 完整 oracle / crash / drain
-
-只有最终 SHA 全部重新通过，才能进入规模认证。
+- 当前内网试运行基线：`main@342fd09c52833050323aa927bcbde108bff8e30c`。
+- PR #58 exact-head 已通过 baseline / native contracts / source-state / actual daemon E2E / smoke / strict-small / oracle / crash / drain。
+- 内网试运行时固定该 SHA、依赖与配置，并保留完整日志、metrics、state 与 StarRocks 指标。
+- 若试运行期间继续修改运行代码，必须产生新 SHA 并重新执行对应合同与回归，不能继续引用 PR58 的通过结果。
 
 ### P1：规模与压力验证
 
@@ -149,10 +140,10 @@ hosted runner 的 strict-small PASS **不能替代**这一步。
 
 ## 4. 当前主要问题
 
-### 4.1 PR #58 还不是主线
+### 4.1 主线已收口，但仅完成 strict-small 级验证
 
-PR #58 虽然 strict-small 全绿，但目前仍是 draft/open，尚未合并。  
-因此当前最重要的工程动作不是继续叠加新优化，而是先把它变成一个可重复验证、可合并的最终候选。
+PR #58 已合并到 `main`，当前不存在“候选代码不在主线”的问题。  
+现在的重点转为内网真实环境试运行、规模放大、恢复演练和最终 50M/72h 认证。
 
 ### 4.2 strict-small 通过不代表生产通过
 
@@ -178,9 +169,9 @@ PR #58 虽然 strict-small 全绿，但目前仍是 draft/open，尚未合并。
 
 按以下顺序继续，不再同时扩散新路线：
 
-1. **收口 PR #58 → 最新 main → 唯一最终 SHA。**
-2. 在最终 SHA 上重新跑完整 strict-small 合同。
-3. 通过后升级到 million / 中型 / 压力测试。
+1. **在内网按 `main@342fd09c52833050323aa927bcbde108bff8e30c` 试运行。**
+2. 记录真实 MySQL→StarRocks 延迟、CPU/RSS、磁盘/WAL、rowset/version debt、积压与恢复。
+3. 升级到 million / 中型 / 压力测试。
 4. 完成 upgrade / backup / restore / low-disk / backlog 演练。
 5. 最后运行 **50M + 50 rows/s + 72h** 正式认证。
 6. 全部门禁通过后，才标记受限 v1 可生产上线。
