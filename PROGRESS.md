@@ -952,3 +952,39 @@ Re-ran independent100k both variants with FILE mode: output/identity/full oracle
 Run37141634186 small artifact11281547859: full raw/three aggregate/three JOIN oracles all match, four tasks ready, one right-side mutation/strong-exit fault and live-tail catchup200.904s PASS, final pending/deliveries0. Strict P95/P99=24.257830645/35.304513201s FAIL (only latency). Sample density0.90592; peakRSS441352192bytes/CPU227.94s/writes3375976448bytes.
 Same exact main335bf1d35300ba57d5947162955115ff8b82f45f million artifact11283185268: initial1,000,000/final1,090,050 rows, all seven full-output oracles match, four tasks ready, one fault and right-side update, source continues during live-tail catchup1211.844059019s, final source/apply1802/pending0/deliveries0 PASS. Strict P95/P99=60.200630730/118.257338999s FAIL; density0.98166. Daemon peakRSS571723776bytes/CPU1589.94s/writes41340342272bytes. This optional-instrumented hosted workload is not controlled A/B versus436a6f6.
 Post-restart explicit write timing records join_shared_runtime:try_bind maxhold155.766452420s,total219.300917348s,count14378 (includes unchosen candidate attempts); join_log_consumer:process_next maxhold0.478748842s,total417.247055731s/count1202. The large follower binding transaction is directly observed, while aggregate counters alone cannot correlate individual waits to its owner. Prior main/candidate heads remain historical distinct evidence. No final SLO or50M72h certification exists.
+
+## 2026-10-04 implementation checkpoint: correlated trace and visibility candidate
+
+Owner requested continuing the README performance plan. No runtime candidate
+has been merged; preserve all previous failed PR40/44/45 evidence.
+PR46 codex/cdc-event-trace-20261004 exact04ed4cb6bf7faa32a52479ddbac1941143a47e3e:
+bounded trace/report implemented. Baseline37179029737/native37179029744/
+state37179029722 and smoke PASS; eight E2E37179029726 pending final cell.
+Strict small37179029713/artifact11295155453 FAIL P95=28.063986131/P99=36.340288586s;
+full workload/oracles/dynamic4/recovery/drain PASS. This is main baseline plus
+measurement, not PR40. Sampled345 deliveries: VISIBLE P50=1.1400932s,
+prepare=.025783785s, HTTP=.005160394s; source→selected P95=27.40266s.
+Do not infer gain/regression versus earlier different hosted runners.
+
+PR47 driver exact9121f6291a93283f6d668bd0539335d6de6ef76e: real Git/socket4
+safeguards PASS. Initial808c workflow37179286266 trial1 PASS, trials2–4 port
+TIME_WAIT false-positive; corrected four-smoke workflow37179639329 running.
+Baseline37179639336/native37179639397 PASS. Same-SHA repetition only.
+
+PR48 codex/merge-visible-pipeline-20261004 exactbf4de9e2ba37e62673f8f3ecd4acc958e578d443:
+opt-in known-TxnId one-status-poll/yield, per-sink cap2 and .2s polling pace.
+Durable lane assignment/payload/prepared/global inflight held until visible+ack;
+unknown request quarantines target; no new schema or remote server settings.
+Six real SQLite/wire/FIFO/restart/budget regressions PASS, visible3/accepted11/
+trace9/catalog/privacy/diff PASS. Exact-head baseline37179896984/native37179897000/
+state37179896979 PASS; E2E37179896988 and smoke/strict small37179896987 pending.
+
+Draft experiment PR49 exact6cc14c823b001110c7c6182e1038561aa5ec7b6c pins A=04ed4cb6,
+B=bf4de9e2 on one runner with unchanged strict small, identical trace/resource/
+pipeline environment, fresh services/image IDs each trial. Workflow37179985693
+running; preserve all four gate failures and immutable identities. Do not merge
+experiment branch or announce performance completion before evidence.
+Next analyze all four trials and candidate CI, then isolate the next measured
+mechanism. Background admission/fairness, high-fanout atomic incremental work,
+scale/low-space/upgrade drills and formal unchanged50M72h remain open; no
+persistent isolated host/cloud identity configured. Do not claim certification.
