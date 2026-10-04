@@ -106,8 +106,10 @@ def copy_step(con,owner,target_state_id,target_spec,limit=1000,
 
 def discard_step(con,state_id,limit=1000,byte_limit=16*1024**2):
     """Only temporary snapshot backing is removed; caller fences its builder."""
+    byte_limit=max(1,min(int(byte_limit),16*1024**2))
     with join_state.transaction(con):
         keys=con.execute('''SELECT side,pk_blob,length(row_payload)+length(pk_blob)
+            +coalesce(length(join_blob),0)
             FROM join_rows WHERE state_id=? ORDER BY side,pk_blob LIMIT ?''',
             (state_id,max(1,min(int(limit),1000)))).fetchall()
         size=0

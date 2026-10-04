@@ -7,6 +7,27 @@ authorized by the owner without expiry, subject to actual configured access.
 
 ## Immediate next action
 
+2026-10-04 separate cleanup-budget check based PR38 e7bec56, while PR37/38
+strict gates remain pinned. Audit found discard_step accounted row payload/PK
+but omitted stored join_blob bytes; large serialized join keys could exceed
+the stated cleanup byte budget. Include all stored blobs and clamp caller
+byte_limit to16MiB, preserving one-row progress. Add synthetic wide-key budget
+and tiny-budget singleton regression: old discard fails; corrected frozen12
+and registry4 PASS. Privacy PASS; code remains unvalidated by fresh hosted CI.
+
+PR37 final46f69041e35bc15b905ca2e2b97cc76388fed73c completed all five
+workflow families: baseline37164857608/native37164857594/state37164857639,
+all eight E2E37164857588 and smoke PASS. Strict small37164857615/job111325593026
+artifact11288773084 FAIL only P95=8.064321976s/P99=10.083135576s. Full115000
+raw/three aggregate/three JOIN targets match; four hot-adds and right-side
+fault/live-tail recovery181.223779s PASS; finalsource/apply301/pending0/
+deliveries0/sharedfollowers4. Healthy119 samples/120.894224s. Measured max
+write hold0.388867s; retain_state6013 acquisitions total58.002446s wait,
+shared registry7239 acquisitions total56.735958s wait. Different hosted runs
+are not a controlled A/B. PR37 stays unmerged. PR38 e7bec56 fresh baseline
+37165184669/native37165184673/state37165184694/E2E37165184693/validation
+37165184630 are independently running; inspect its exact gate next.
+
 2026-10-04 next diagnostic branch `codex/perf-registry-readsync-20261004`,
 base PR37 head46f69041e35bc15b905ca2e2b97cc76388fed73c (fresh five workflow
 families running; keep its head unchanged). PR36 profiler shows repeated

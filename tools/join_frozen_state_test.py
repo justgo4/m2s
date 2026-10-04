@@ -52,6 +52,21 @@ class FrozenTest(unittest.TestCase):
                 return
         self.fail('frozen copy did not finish')
 
+    def test_cleanup_byte_budget_includes_join_key_blob_and_singleton_progress(self):
+        join_state.begin_bootstrap(self.con,'wide-cleanup',self.spec,0)
+        join_state.apply_bootstrap_chunk(self.con,'wide-cleanup',0,'left',
+            [dict(id=i,customer_id='wide-key-'+'x'*256,amount=7) for i in (1,2)],None,True)
+        join_state.apply_bootstrap_chunk(self.con,'wide-cleanup',0,'right',[],None,True)
+        sizes=self.con.execute('''SELECT length(pk_blob)+length(row_payload),
+            length(pk_blob)+length(row_payload)+coalesce(length(join_blob),0)
+            FROM join_rows WHERE state_id='wide-cleanup' ''').fetchall()
+        budget=sum(row[0] for row in sizes)
+        self.assertLess(max(row[1] for row in sizes),budget)
+        self.assertGreater(sum(row[1] for row in sizes),budget)
+        self.assertFalse(frozen.discard_step(self.con,'wide-cleanup',byte_limit=budget))
+        self.assertEqual(self.con.execute("SELECT count(*) FROM join_rows WHERE state_id='wide-cleanup'").fetchone()[0],1)
+        self.assertTrue(frozen.discard_step(self.con,'wide-cleanup',byte_limit=1))
+
     def test_moving_cut_random_bilateral_rekeys_inserts_deletes_and_restart(self):
         frozen.pin(self.con,'pin','state',0)
         self.copy()
