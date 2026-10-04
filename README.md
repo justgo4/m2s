@@ -534,3 +534,11 @@ frontier 是完成后的观察上界。报告不是认证门禁，原有 cold/mi
 重启后从 durable TxnId 继续查询，不重新发送已知接受的 payload。
 未知 HTTP 结果仍隔离该 target；确认 ABORTED 才沿用原错误处理。
 成功 ack 前不推进连续可见 frontier 或释放预算。
+
+`CDC_CDC_BUNDLE_MAX_LANES=16` 允许受限 writer 把更多独立 CDC lane
+合入一次物理 delivery。实际宽度仍取 `ceil(partitions/active_writers)`
+与显式上限的较小值；原行、字节、prepared 和 inflight 预算不变。
+`4` 可恢复旧的宽度上限。跨 kind、plan 或非 FIFO head 的任务仍不能
+合批；成员 lane 的 durable assignment 一直保留至全体 parts 可见及
+ack。扩大宽度不等于提高远端并发，不解除未知请求隔离，也不构成
+端到端达标声明。
