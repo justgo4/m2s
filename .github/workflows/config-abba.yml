@@ -1,4 +1,4 @@
-name: Fixed-revision config A-B-B-A
+name: Fixed-revision merge-interval A-B-B-A
 
 on:
   pull_request:
@@ -14,7 +14,7 @@ on:
       variable:
         type: choice
         options: [CDC_BATCH_MS, CDC_MERGE_COMMIT_INTERVAL_MS]
-        default: CDC_BATCH_MS
+        default: CDC_MERGE_COMMIT_INTERVAL_MS
       a:
         description: A value
         required: true
@@ -22,7 +22,7 @@ on:
       b:
         description: B value
         required: true
-        default: '200'
+        default: '500'
       profile:
         type: choice
         options: [smoke, small]
@@ -46,9 +46,9 @@ jobs:
     env:
       PYTHONUNBUFFERED: '1'
       REVISION: ${{ inputs.revision || 'fd734d617e74b9cb9a401f7c5aeecfae0156f50f' }}
-      VARIABLE: ${{ inputs.variable || 'CDC_BATCH_MS' }}
+      VARIABLE: ${{ inputs.variable || 'CDC_MERGE_COMMIT_INTERVAL_MS' }}
       A_VALUE: ${{ inputs.a || '1000' }}
-      B_VALUE: ${{ inputs.b || '200' }}
+      B_VALUE: ${{ inputs.b || '500' }}
       PROFILE: ${{ inputs.profile || 'small' }}
       TRACE: ${{ inputs.trace || '1' }}
     steps:
