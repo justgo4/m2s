@@ -2,10 +2,11 @@
 """Synthetic checks that the public scanner rejects sensitive publication shapes."""
 import base64
 import gzip
+import hashlib
 from pathlib import Path
 import tempfile
 
-from privacy_check import review
+from privacy_check import REVIEWED_BINARIES, review
 
 
 def main():
@@ -31,7 +32,18 @@ def main():
         assert review(root, [payload]), "deployment path in bundle was accepted"
         (root / "setup.sql").write_text("SELECT 1;\n")
         assert review(root, [Path("setup.sql")]), "local deployment file was accepted"
-    print("PRIVACY SELFTEST PASS cases=8", flush=True)
+        reviewed = Path("mysql_arrow_reader-linux-x86_64")
+        payload = b"\xffreviewed-binary"
+        old = REVIEWED_BINARIES[reviewed.as_posix()]
+        REVIEWED_BINARIES[reviewed.as_posix()] = hashlib.sha256(payload).hexdigest()
+        try:
+            (root / reviewed).write_bytes(payload)
+            assert not review(root, [reviewed]), "reviewed binary was rejected"
+            (root / reviewed).write_bytes(payload+b"x")
+            assert review(root, [reviewed]), "modified reviewed binary was accepted"
+        finally:
+            REVIEWED_BINARIES[reviewed.as_posix()] = old
+    print("PRIVACY SELFTEST PASS cases=10", flush=True)
     return 0
 
 
