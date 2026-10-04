@@ -520,3 +520,27 @@ MySQL commit；remote visible 也不能代替 sentinel 查询可见时间。任�
 frontier 是完成后的观察上界。报告不是认证门禁，原有 cold/mixed
 样本、完整 oracle、故障恢复和 P95/P99 门槛仍以原 gate 为准。
 标识仅存哈希，禁止将生产 metrics 或运行目录提交到仓库。
+
+### 同机 A/B/B/A 的执行
+
+`tools/performance_abba.py` 接收两个完整 40 位 commit SHA；拒绝脏
+checkout、旧结果目录和会改变负载参数的版本。先执行 `--plan-only`
+检查顺序，再在专用测试机器执行：
+
+```bash
+python tools/performance_abba.py --a <40位基线SHA> --b <40位候选SHA> \
+  --profile small --trace 1 --run-directory /绝对路径/全新目录 --isolated
+```
+
+需要本机 Docker、固定 requirements 和两个已 fetch 的提交。结果目录
+必须在 checkout 外。驱动固定 m2s 2CPU/4GiB 配置预算与测量开关，
+只解析一次服务镜像 tag 并锁定本地 image ID；每轮重新创建 MySQL/
+StarRocks 容器与数据库，保留服务资源指纹、实际 SHA、完整 workload、
+gate、metrics 和失败日志。两边都必须包含 trace 实现；比较旧版本时
+统一使用 `--trace 0`。A/B 使用同一 SHA 可测量同机重复运行波动。
+
+严格门禁失败不会提前跳过其余独立试验；四轮中任一门禁失败，驱动
+最终退出失败。取消或基础设施错误不可当作性能样本；报告没有认证
+含义，也不会自动选择或合并候选。只删除本次创建的容器，保留结果
+和 detached worktree 供复查。服务端资源独立计量，4GiB 不代表整机
+预算。工作流提供 PR smoke 重复对照，正式 small A/B/B/A 另行执行。

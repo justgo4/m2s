@@ -1,0 +1,74 @@
+name: Same-host performance A-B-B-A
+
+on:
+  pull_request:
+    paths:
+      - 'tools/performance_abba*.py'
+      - '.github/workflows/performance-abba.yml'
+  workflow_dispatch:
+    inputs:
+      a:
+        description: Full immutable baseline commit SHA
+        required: true
+      b:
+        description: Full immutable candidate commit SHA
+        required: true
+      profile:
+        type: choice
+        options: [smoke, small]
+        default: small
+      trace:
+        type: choice
+        options: ['1', '0']
+        default: '1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: performance-abba-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  controlled:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      PYTHONUNBUFFERED: '1'
+      A_SHA: ${{ inputs.a || github.event.pull_request.head.sha }}
+      B_SHA: ${{ inputs.b || github.event.pull_request.head.sha }}
+      PROFILE: ${{ inputs.profile || 'smoke' }}
+      TRACE: ${{ inputs.trace || '1' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.14'
+          cache: pip
+      - run: python -m pip install -r requirements.txt
+      - name: Safeguards
+        run: |
+          python tools/performance_abba_test.py
+          python tools/privacy_check.py
+          python tools/performance_abba.py --a "$A_SHA" --b "$B_SHA" --profile "$PROFILE" --run-directory "$RUNNER_TEMP/m2s-abba" --plan-only
+      - name: Release hosted disk space
+        run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
+      - name: Four fresh isolated trials with unchanged gates
+        run: python tools/performance_abba.py --a "$A_SHA" --b "$B_SHA" --profile "$PROFILE" --trace "$TRACE" --run-directory "$RUNNER_TEMP/m2s-abba" --isolated
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: controlled-abba-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            ${{ runner.temp }}/m2s-abba/experiment.json
+            ${{ runner.temp }}/m2s-abba/*/*.log
+            ${{ runner.temp }}/m2s-abba/*/event-trace-report.json
+            ${{ runner.temp }}/m2s-abba/*/run/*.json
+            ${{ runner.temp }}/m2s-abba/*/run/*.jsonl
+            ${{ runner.temp }}/m2s-abba/*/run/*.log
+            ${{ runner.temp }}/m2s-abba/*/run/work/daemon-*.log
+          retention-days: 14

@@ -5,6 +5,30 @@ the durable handoff if Codex quota/session ends; it does not promise automatic
 AI continuation. Routine repository changes, Actions and validated merges are
 authorized by the owner without expiry, subject to actual configured access.
 
+## Active same-runner A/B/B/A driver (2026-10-04)
+
+Branch codex/performance-abba-20261004 based on PR46 exact04ed4cb6.
+PR46 real CI underway (baseline37179029737/native37179029744/state37179029722,
+E2E37179029726/validation37179029713). No results claimed yet.
+Next implement immutable A/B/B/A, disposable services per trial, one host,
+fixed configuration and image fingerprints, all four failure artifacts retained.
+Driver is diagnostic orchestration; preserve strict gate failures and no certificate.
+Implemented tools/performance_abba.py/test.py, same-host workflow and README
+usage. Four new detached exact-SHA checkouts, fresh container IDs/databases each
+trial, images resolved once to immutable local IDs, service/host/dependency/config
+fingerprints, identical profile checks and trace switch, gate failure retained
+through remaining independent trials and final nonzero exit. PR workflow runs
+A=B smoke repetition; manual workflow supports strict-small comparison.
+Local real-Git safeguards:3 PASS, event trace9 PASS, compile/privacy/diff PASS.
+PR47 exact808c6378: workflow37179286266/artifact11295036558 trial1 PASS;
+trials2–4 rejected port guard with Errno98 after service teardown (TIME_WAIT).
+This is driver infrastructure failure, not runtime performance evidence.
+Fix port guard with SO_REUSEADDR while still rejecting active listeners; real
+socket lifecycle regression added. Next rerun all four trials on new exact head.
+PR46 strictsmall37179029713/artifact11295155453 FAIL P95=28.063986/P99=36.340289;
+workload/oracles/recovery/drain PASS. Tracing-only main baseline is not PR40.
+No gain/regression inferred across different runners. Not performance certification.
+
 ## Active event-correlated performance instrumentation (2026-10-04)
 
 Branch codex/cdc-event-trace-20261004, base main9de6b014.
