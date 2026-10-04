@@ -123,7 +123,7 @@ CI 与完整结果/恢复通过，严格 P95/P99=6.068/7.047s，仍因 P95 失�
 | [PR48 已知 TxnId 等待流水线](https://github.com/justgo4/m2s/pull/48) | 默认关闭；独立 lane 可继续，durable assignment/预算保留至可见及 ack，未知响应继续隔离。正确性/恢复通过；严格 small 27.861/45.838s，失败 |
 | [PR50 只读准入预检](https://github.com/justgo4/m2s/pull/50) | 实际发现准入已满时反复空写事务；真实 WAL 200 次拒绝为 0 次 BEGIN，原子资源复核保留。正确性/恢复通过；严格 small 35.787/38.783s，失败 |
 | [PR51 CDC 安全合批](https://github.com/justgo4/m2s/pull/51) | 仅引入可配置宽度上限16和既有预算/FIFO/plan 边界；5 项真实 Arrow/SQLite 测试通过，含宽 delivery 已知 TxnId 的重启/可见性恢复。基线/native/state/8 项 E2E 与 smoke 全通过；严格 small P95/P99=12.092/14.094s，失败 |
-| [PR52 冷历史构建准入](https://github.com/justgo4/m2s/pull/52) | 默认关闭；按durable任务/阶段恢复顺序，candidate leader优先、history_staged让位，cold bootstrap256行，ready/catchup/可见性确认继续。9项真实SQLite/Arrow和runtime/rebuild合同本地通过；完整CI及严格small运行中，尚无性能结论 |
+| [PR52 冷历史构建准入](https://github.com/justgo4/m2s/pull/52) | 默认关闭；按durable任务/阶段恢复顺序，candidate leader优先、history_staged让位，cold bootstrap256行，ready/catchup/可见性确认继续。9项真实SQLite/Arrow和runtime/rebuild合同本地通过；基线/native/state/8格E2E/smoke全通过；严格small P95/P99=23.334/29.373s失败，完整oracle/恢复/排空通过；不合并 |
 | [PR53 冷准入同机对照](https://github.com/justgo4/m2s/pull/53) | 固定A=0655ce62、B=fd734d61，2CPU与原严格small A/B/B/A；实验分支不合并，保留各轮延迟、time_to_ready、恢复和资源结果 |
 | [PR49 同机严格 small 对照](https://github.com/justgo4/m2s/pull/49) | 固定 A=04ed4cb6、B=bf4de9e2，A/B/B/A 每轮新建隔离数据与服务；四轮完整正确性/恢复/排空通过，但严格延迟全失败；P95/P99（秒）A1=38.676/46.249、B1=23.102/36.510、B2=23.578/27.522、A2=26.087/39.457 |
 
@@ -152,6 +152,8 @@ CI 与完整结果/恢复通过，严格 P95/P99=6.068/7.047s，仍因 P95 失�
 | 热冷 SQLite/进程隔离 | 独立进程仍会竞争同一 SQLite writer；拆文件还共享CPU/磁盘。仅在相关锁证据和小改动不足时推进，先设计跨文件 durable发布、幂等恢复、pin/GC及迁移/回滚，不能靠跨库写入假设原子提交。 |
 | 影子构建再切换 | 已有 online rebuild/shadow/fence/swap 协议；新增任务未ready时也不计为已有ready任务。必须进一步隔离本地冷构建与共享出口资源，影子目标本身不会消除writer锁竞争。保持固定W、版本顺序、catchup和切换恢复。 |
 | group commit | 先测 fsync/提交次数占比；仅对兼容的同一持久边界安全合并。durable source cursor、apply prefix、outbox/assignment 不得提前确认，远端未知结果仍隔离；不可把跨文件或网络提交称为一次原子事务。 |
+
+PR52 的实测准入结果仍未达标：cold bootstrap累计上千步骤；共享JOIN follower的 `try_bind` 单次持锁仍达11.008s，而bootstrap持锁max约0.090s。这个记录支持优先检验固定W follower历史输出的可恢复分块协议；尚不能把所有长尾归给这一事务。同机PR53对照未完成前，不根据跨runner数字声称回退或收益。
 
 **下一步顺序：** 补充健康长尾与冷构建/hot-add/锁持有者/依赖队头的关联，保留完整样本与故障独立报告；先试一个可恢复冷构建准入与依赖感知的输出预算，再按证据调整分块事务。每个候选与最终组合均用同机A/B/B/A、完整oracle/恢复/排空、任务就绪时间及CPU/写入量一起验收。PR48对照已显示CPU代价上升，PR51也仍失败，不能仅凭某次延迟较低继续扩大并发。热冷分库、迁移和新资源预算各自单独取证；不改变MySQL commit→StarRocks queryable起止点，不以HTTP接受代替可见，不靠删样本达标。
 
