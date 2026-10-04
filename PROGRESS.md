@@ -20,7 +20,14 @@ fingerprints, identical profile checks and trace switch, gate failure retained
 through remaining independent trials and final nonzero exit. PR workflow runs
 A=B smoke repetition; manual workflow supports strict-small comparison.
 Local real-Git safeguards:3 PASS, event trace9 PASS, compile/privacy/diff PASS.
-Next exact-head CI with four real smoke trials; not performance certification.
+PR47 exact808c6378: workflow37179286266/artifact11295036558 trial1 PASS;
+trials2–4 rejected port guard with Errno98 after service teardown (TIME_WAIT).
+This is driver infrastructure failure, not runtime performance evidence.
+Fix port guard with SO_REUSEADDR while still rejecting active listeners; real
+socket lifecycle regression added. Next rerun all four trials on new exact head.
+PR46 strictsmall37179029713/artifact11295155453 FAIL P95=28.063986/P99=36.340289;
+workload/oracles/recovery/drain PASS. Tracing-only main baseline is not PR40.
+No gain/regression inferred across different runners. Not performance certification.
 
 ## Active event-correlated performance instrumentation (2026-10-04)
 

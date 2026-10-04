@@ -2,6 +2,7 @@
 """Real Git safeguards for the isolated comparison driver."""
 import json
 from pathlib import Path
+import socket
 import subprocess
 import sys
 import tempfile
@@ -25,6 +26,18 @@ class AbbaTest(unittest.TestCase):
 
     def git(self,*args):
         return subprocess.check_output(['git',*args],cwd=self.root,text=True,stderr=subprocess.DEVNULL)
+
+    def test_port_guard_rejects_listener_but_accepts_closed_service_time_wait(self):
+        with socket.socket() as listener:
+            listener.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+            listener.bind(('127.0.0.1',0));port=listener.getsockname()[1]
+            listener.listen()
+            with self.assertRaises(OSError):abba.require_free_ports((port,))
+            with socket.create_connection(('127.0.0.1',port)) as client:
+                accepted,_=listener.accept()
+                accepted.shutdown(socket.SHUT_RDWR);accepted.close()
+                self.assertEqual(client.recv(1),b'')
+        abba.require_free_ports((port,))
 
     def test_exact_abba_and_same_revision_control(self):
         plan=abba.experiment_plan(self.a,self.b,self.directory,root=self.root)

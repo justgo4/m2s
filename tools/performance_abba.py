@@ -50,9 +50,10 @@ def experiment_plan(a,b,directory,profile='small',root=ROOT):
                 same_revision_control=a==b,directory=str(directory))
 
 
-def require_free_ports():
-    for port in (3306,8030,8040,9030):
+def require_free_ports(ports=(3306,8030,8040,9030)):
+    for port in ports:
         with socket.socket() as sock:
+            sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
             sock.bind(('127.0.0.1',port))
 
 
