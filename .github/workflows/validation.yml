@@ -5,6 +5,8 @@ on:
     branches: [main]
     paths:
       - 'j4.py'
+      - 'cdc_event_trace.py'
+      - 'tools/event_trace*.py'
       - 'sqlite_write_timing.py'
       - 'source_state.py'
       - 'aggregate_*.py'
@@ -19,6 +21,8 @@ on:
   pull_request:
     paths:
       - 'j4.py'
+      - 'cdc_event_trace.py'
+      - 'tools/event_trace*.py'
       - 'sqlite_write_timing.py'
       - 'source_state.py'
       - 'aggregate_*.py'
@@ -53,11 +57,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        profile: ${{ fromJSON(github.event_name == 'pull_request' && '["smoke"]' || github.event_name == 'workflow_dispatch' && format('["{0}"]', inputs.profile) || '["small","million"]') }}
+        profile: ${{ fromJSON(github.event_name == 'pull_request' && '["smoke","small"]' || github.event_name == 'workflow_dispatch' && format('["{0}"]', inputs.profile) || '["small","million"]') }}
     env:
       PYTHONUNBUFFERED: '1'
+      CDC_COLD_BUILD_ADMISSION: '1'
+      CDC_COLD_BUILD_ROWS: '256'
+      CDC_MERGE_VISIBILITY_PIPELINE: '1'
+      CDC_MERGE_VISIBILITY_PER_SINK: '2'
       CDC_RESOURCE_CPU_CORES: '2'
       CDC_SQLITE_WRITE_TIMING: '1'
+      CDC_EVENT_TRACE: '1'
+      CDC_EVENT_TRACE_EVERY: '16'
       VALIDATION_PROFILE: ${{ matrix.profile }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -126,6 +136,12 @@ jobs:
           if test -f benchmark-results/validation/status.json; then
             python tools/validation_run.py status --run-directory benchmark-results/validation
           fi
+      - name: Summarize optional event observations
+        if: always()
+        run: |
+          if test -f benchmark-results/validation/longhaul-daemon-metrics.jsonl; then
+            python tools/event_trace_report.py benchmark-results/validation/longhaul-daemon-metrics.jsonl --output benchmark-results/validation/event-trace-report.json
+          fi
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
@@ -137,6 +153,7 @@ jobs:
             benchmark-results/validation/workload.json
             benchmark-results/validation/workload-checkpoint.json
             benchmark-results/validation/gate.json
+            benchmark-results/validation/event-trace-report.json
             benchmark-results/validation/longhaul-daemon-summary.json
             benchmark-results/validation/longhaul-daemon-metrics.jsonl
             benchmark-results/validation/work/daemon-*.log

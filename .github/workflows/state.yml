@@ -65,6 +65,8 @@ jobs:
         run: |
           python tools/join_bootstrap_stream_test.py
           python tools/join_output_build_test.py
+          python tools/join_frozen_state_test.py
+          python tools/join_frozen_state_benchmark.py --rows 10000 --output benchmark-results/join-frozen.json
           python tools/join_bootstrap_stream_benchmark.py --left 1000 --right 100 --repeats 2 --output benchmark-results/join-bootstrap-stream.json
       - name: Bounded streamed JOIN bridge and isolated output-memory A/B
         run: |
@@ -90,6 +92,7 @@ jobs:
           name: state-layout-python-${{ matrix.python }}
           path: |
             benchmark-results/join-bootstrap-stream.json
+            benchmark-results/join-frozen.json
             benchmark-results/join-bridge-stream.json
             benchmark-results/join-bridge-production.json
             benchmark-results/state-contract.json

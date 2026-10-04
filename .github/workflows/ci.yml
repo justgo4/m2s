@@ -118,6 +118,7 @@ jobs:
           python tools/join_bootstrap_stream_test.py
           python tools/join_runtime_test.py
           python tools/join_shared_runtime_test.py
+          python tools/join_frozen_state_test.py
           python tools/shared_leader_snapshot_test.py
           python tools/join_subview_shared_runtime_test.py
           python tools/join_state_test.py
@@ -138,6 +139,7 @@ jobs:
           python tools/stateful_worker_contention_test.py
           python tools/stateful_worker_idle_test.py
           python tools/arrow_job_schema_test.py
+          python tools/event_trace_test.py
           python tools/source_pipeline_metrics_test.py
           python tools/source_transaction_spool_test.py
           python tools/capture_begin_contention_test.py
@@ -148,6 +150,10 @@ jobs:
           python tools/resource_startup_test.py
           python tools/merge_quarantine_test.py
           python tools/merge_commit_identity_test.py
+          python tools/cold_build_admission_test.py
+          python tools/cdc_bundle_test.py
+          python tools/visibility_admission_read_test.py
+          python tools/merge_visibility_pipeline_test.py
           python tools/merge_visible_contention_test.py
           python tools/merge_accepted_contention_test.py
           python tools/sqlite_write_timing_test.py
