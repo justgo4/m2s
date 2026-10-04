@@ -10,6 +10,18 @@
 
 ## 当前进度评审（2026-10-03）
 
+2026-10-04 续做：frozen-W JOIN follower 初始化、owner promotion、退役并发和
+有界清理已在候选分支实现并通过正确性回归，尚未合并。PR #36–#39 全部
+正确性 CI、八格 E2E、smoke、完整 small 结果及恢复通过，但严格延迟失败；
+PR #39 P95/P99=6.078/7.050s，仅 P95 未达5s。最新 [PR #40](https://github.com/justgo4/m2s/pull/40)
+头 `c367c98` 加入 coherent read-only CDC claim/资源拒绝检查：全部正确性
+CI 与完整结果/恢复通过，严格 P95/P99=6.068/7.047s，仍因 P95 失败而未合并。
+下一步验证历史页及紧随 CDC 前缀的安全 FIFO 合批，不放宽门禁。
+百万输出行合成完整 oracle 证明分块
+最长写事务0.067s，原子方案38.415s，但分块总耗时更长；不是 daemon SLO
+或5000万行/72小时认证。完整固定版本、失败 artifact、持续授权和下一步见
+[PROGRESS.md](PROGRESS.md)。各 hosted 运行不是受控 A/B，目标门槛不变。
+
 已核对主线 `335bf1d35300ba57d5947162955115ff8b82f45f`、各最终测试头及真实 small/million artifacts。**受限 v1 的功能与恢复基线已形成；主 JOIN 构建和 job 发布已有有界协议。剩余重点是可变 leader 的 follower 初始化/owner promotion 大事务，以及严格延迟、资源和正式规模验收。当前尚未全部完成。** 历史记录保留当时语境，最新状态以本节及 [PROGRESS.md](PROGRESS.md) 为准。
 
 | 工作 | 当前证据与边界 |
