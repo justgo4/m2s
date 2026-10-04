@@ -9,12 +9,13 @@ import sqlite3
 import sys
 import threading
 import time
+import sqlite_writer
 
 
 class Collector:
     def __init__(self,limit=128):
         self.limit=max(1,min(int(limit),128))
-        self.lock=threading.Lock()
+        self.lock=threading.RLock()
         self.buckets={}
         self.active={}
         self.next_id=0
@@ -45,9 +46,9 @@ class Collector:
                 hold_includes_commit=True,excluded_scripts=self.excluded_scripts,
                 excluded_holds=self.excluded_holds,active_unlisted=self.active_unlisted,
                 operations=[dict(operation=key[0],phase=key[1],outcome=key[2],**value)
-                            for key,value in sorted(self.buckets.items())],
+                            for key,value in sorted(self.buckets.copy().items())],
                 active=[dict(operation=value[0],elapsed_seconds=max(0,now-value[1]))
-                        for _,value in sorted(self.active.items())])
+                        for _,value in sorted(self.active.copy().items())])
 
 
 def _operation():
@@ -69,7 +70,7 @@ def _outcome(exc):
             else 'error')
 
 
-class TimingConnection(sqlite3.Connection):
+class TimingConnection(sqlite_writer.FairConnection):
     def __init__(self,*args,collector=None,**kwargs):
         super().__init__(*args,**kwargs)
         self.timing=collector if collector is not None else PROCESS
@@ -162,6 +163,27 @@ class TimingConnection(sqlite3.Connection):
         result=super().close()
         self._finish('close')
         return result
+
+    def __exit__(self,*args):
+        try:
+            result=super().__exit__(*args)
+        except BaseException:
+            if not self.in_transaction:
+                self._finish('rollback')
+            raise
+        else:
+            if not self.in_transaction:
+                self._finish('rollback' if args[0] is not None else 'commit')
+            return result
+
+    def __del__(self):
+        try:
+            super().__del__()
+        finally:
+            try:
+                self._finish('close')
+            except BaseException:
+                pass
 
 
 PROCESS=Collector()
