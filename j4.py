@@ -3169,6 +3169,30 @@ def claim_snapshot_bundle(con, table, primary_lane, cfg, runtime):
     Logical lane identity is unchanged. Later CDC in every included lane remains blocked
     by the assigned head snapshot job until this delivery is VISIBLE and acknowledged.
     """
+    # Existing delivery lookup and idle/non-CDC lanes do not mutate anything.
+    # Resolve related ownership/head reads at one WAL cut; new work is always
+    # selected again under the writer below, never assigned from this snapshot.
+    with source_state.read_snapshot(con):
+        existing = con.execute(
+            "SELECT id FROM deliveries WHERE table_name=? AND lane=?",(table,primary_lane)).fetchone()
+        if existing:
+            return existing[0]
+        blocked = lane_blocking_delivery(con,table,primary_lane)
+        if blocked is not None:
+            owner = con.execute("SELECT lane FROM deliveries WHERE id=?",(blocked,)).fetchone()
+            return blocked if owner and int(owner[0]) == int(primary_lane) else None
+        head = con.execute("""
+            SELECT j.kind,a.delivery_id,j.group_id FROM active_jobs j
+            LEFT JOIN job_assignments a ON a.job_id=j.id
+            WHERE j.table_name=? AND j.lane=? ORDER BY j.id LIMIT 1
+        """,(table,primary_lane)).fetchone()
+        if head is None or head[0] != "snapshot" or head[1] is not None or head[2] is None:
+            return None
+        if con.execute("SELECT COUNT(*) FROM deliveries").fetchone()[0] >= cfg.get("max_inflight_deliveries",2**31):
+            return None
+        if prepared_budget_used(con) >= cfg.get("max_prepared_bytes",2**63-1):
+            return None
+
     with state_transaction(con):
         existing = con.execute(
             "SELECT id FROM deliveries WHERE table_name=? AND lane=?",(table,primary_lane)).fetchone()

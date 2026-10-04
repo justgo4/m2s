@@ -5,6 +5,23 @@ the durable handoff if Codex quota/session ends; it does not promise automatic
 AI continuation. Routine repository changes, Actions and validated merges are
 authorized by the owner without expiry, subject to actual configured access.
 
+## Active snapshot claim read-only correction (2026-10-04)
+
+Branch codex/perf-snapshot-claim-read-20261004 based exact PR40 c367c98.
+PR44 exact3db20602 baseline37170362711/native37170362749/state37170362714/
+eight E2E37170362717/smoke PASS; strict small37170362716 artifact11291216250
+FAIL only P95=7.110670509s; P99=8.103287718s. Complete workload/four dynamic
+tasks/recovery/drain PASS. Preserve44 unmerged and do not import FIFO experiment.
+New milestone: coherent read-only snapshot existing/blocked/idle/resource checks,
+with unchanged writer-side selection/rechecks before assigning any fresh work.
+Six new real WAL tests PASS: idle/CDC/missing group, existing/member restart,
+resource rejection/new-writer necessity, concurrent assignment and exhausted
+budget rechecks, caller-owned read snapshot. Existing CDC read5/bundle5 PASS.
+Commands: python tools/snapshot_claim_read_test.py; python tools/cdc_claim_read_test.py;
+python tools/cdc_bundle_test.py; python tools/privacy_check.py; git diff --check.
+Preserve row/byte/group/plan/FIFO/visibility boundaries. Full exact-head CI and unchanged strict small required before merge.
+No formal50M72h or production certification; host access remains unavailable.
+
 ## Immediate next action
 
 2026-10-04 next branch `codex/perf-idle-cdc-claim-20261004`, based exact PR39

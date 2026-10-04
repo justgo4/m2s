@@ -125,6 +125,7 @@ jobs:
           python tools/join_affected_reads_test.py
           python tools/cdc_bundle_test.py
           python tools/cdc_claim_read_test.py
+          python tools/snapshot_claim_read_test.py
           python tools/join_subview_shared_runtime_test.py
           python tools/join_state_test.py
           python tools/join_incremental_delta_test.py
