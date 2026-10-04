@@ -42,6 +42,76 @@ CI 与完整结果/恢复通过，严格 P95/P99=6.068/7.047s，仍因 P95 失�
 
 严格 small 的 sentinel 目前测量 raw events 查询可见延迟，不能替代每个 stateful target 的 SLO；其他任务也保存各自可见/源龄指标与完整 oracle。不同 hosted runner、启用/关闭测量的运行不是受控 A/B。后续继续分层验证规模、低空间/升级恢复和固定资源，在持久主机上才运行正式认证。
 
+## 性能问题的解决路线（2026-10-04）
+
+**当前需要解决的是历史构建、实时增量和远端输出之间的资源争用及串行等待。后续改造围绕端到端延迟预算、构建准入和输出流水线展开，停止仅凭某个函数变快就启动下一轮组合试验。** 以下是根据现有证据制定的实施方案，尚未完成或证明达标。
+
+### 已有证据与判断
+
+| 已观察到的事实 | 能得出的结论与限制 |
+|---|---|
+| 主线百万行 follower 绑定写事务最长155.766s；候选 frozen-W 百万输出合成测量将最长写事务降至0.067s，但总耗时38.416→86.930s | 分块解决单次占锁，可能增加提交、登记和遍历成本；锁变短不能直接推导整体吞吐或SLO改善 |
+| PR40 严格 small P95/P99=6.068/7.047s；PR44=7.111/8.103s；PR45=9.117/12.116s，均未通过完整门槛 | 多次微优化尚未形成可靠的端到端达标方案；不同 hosted runner不能直接判定哪个改动造成改善或退化 |
+| PR45 raw target在30s窗口 snapshot7/CDC8 deliveries、CDC源龄P95=13.583s；60s窗口 snapshot12/CDC12、源龄P95=6.599s；120s窗口 snapshot0、源龄P95=2.840s | 冷构建与历史输出重叠期间延迟明显增大；这是定位线索，尚未证明某一线程或SQL是唯一根因 |
+| PR45最初30s窗口，单次delivery处理耗时最大4.293s、可见登记申请写锁最大2.833s；正确性、恢复、排空均通过 | 本地排队和物理输出均需调查，不能只优化decoder；这些最大值未必属于同一事件，不能相加当作一条延迟链 |
+| PR45空闲领取1000次：写锁申请1000→0；PR44 FIFO消除合成场景长尾，但两者严格small仍失败 | 消除空转和公平排队有价值，但它们没有增加SQLite写入容量，也没有消除远端可见等待 |
+
+固定SHA、完整结果和失败artifact见 [PROGRESS.md](PROGRESS.md)。窗口内的delivery源龄与gate的完整健康窗口queryable延迟是两种指标，不能混用。small当前以raw sentinel衡量延迟，仍须补齐每个已ready stateful target的测量。
+
+### 1. 先取得同一事件的完整延迟链，确定下一刀切在哪里
+
+为抽样源提交关联本地阶段与目标delivery，记录：MySQL commit → capture durable → base applied → task compute/outbox → FIFO可领取 → prepare完成 → HTTP接受 → 远端VISIBLE → 本地ack → 查询首次可见。分别报告阶段服务时间、排队时间、阻塞的前序delivery、批次填充率、加载parts/事务数、每次提交的输入/输出放大，以及writer等待/持锁、CPU、WAL/实际I/O和目标publish耗时。
+
+阶段时间在同一进程使用单调时钟；跨进程/服务记录时钟与观测误差，不能直接相减未校准时钟。以同一事件重建关键路径，不能把不同阶段的P95/P99相加。现有约1s查询采样间隔也占观测误差，增加诊断采样不得改变原gate的定义、样本或阈值。采集须有容量上限、抽样和低开销开关，原始trace留在测试artifact，不写生产数据到公有库。
+
+先分别测无历史构建的稳态、初始源镜像/任务构建、动态hot-add/drop、强退后追赶，再跑原mixed场景。分阶段报告帮助定位，**原strict small中已有的冷启动/动态任务样本仍全部保留**。
+
+### 2. 为实时链路保留资源，把历史构建变成受控后台工作
+
+当前多线程最终竞争同一个SQLite writer、CPU/I/O、DuckDB内存和StarRocks输出容量。不能仅靠减少线程空转或公平FIFO保证实时SLO。应在既有durable协议上增加统一工作准入：
+
+- 保留capture、source apply、已ready任务compute以及远端结果登记/ack的服务份额；ACK及时完成才能释放lane和prepared预算。新任务扫描、follower复制/promotion、历史输出和GC只消耗可用余量。
+- 优先级必须遵守依赖：同lane的历史head若挡住CDC，该历史前缀也属于实时关键路径；不能跳过snapshot直接发送后面的CDC。影响当前cut的source base应用同样不能被当作可暂停的无关后台任务。
+- 所有历史路径共用行数、字节、并发和写入时间份额；覆盖shared source mirror、shared snapshot、aggregate/JOIN bootstrap、follower/promotion及输出登记，不能只让legacy snapshot响应资源暂停。
+- 增量源龄/积压或写锁等待上升时，先降低新构建并发、read-ahead和历史份额；健康一段时间后带滞回恢复。依据CPU/I/O/内存实测容量调整，保留构建最低进度、完整性pin和磁盘预算；撑不住时拒绝新的hot-add或明确背压，禁止GC删除仍需版本。
+- 对新任务先报告预计扫描量、JOIN fan-out、独立target输出量、额外状态与保留字节，并检查已有任务余量。共享compute并不消除七个物理目标的写入成本。
+
+起始实验可把背景写事务的调优目标设为50–100ms，再按实际writer等待自适应缩小下一块；这不是已经证明的硬上界。SQLite事务体不能任意中途抢占，单行/高fan-out工作也可能超预算，必须有独立准入或可恢复协议。构建减速须同时报告time_to_ready、追赶速度及保留空间，不能以无限延迟新任务换取漂亮的CDC数据。
+
+### 3. 同时降低每块成本，避免分块以后提交次数失控
+
+在fixed-W保持可读、pin/consumer/ref保持正确的条件下，尽量把读取、投影、序列化、不可变输出spool放到写事务外；短写事务校验epoch/generation/owner/cursor并提交状态、outbox和水位。不允许在事务外读取变化中的leader后假定仍是同一W，也不允许把本应原子的状态和输出拆成两个无协调commit。
+
+缓存不变的schema/identity语义元数据，幂等登记只在绑定发生变化时产生写入；可变ref、health、owner和水位仍在一致读取及实际写事务中重新校验。先验证索引访问和批量SQL，减少每行解释器/SQL往返与无变化提交。分块缓冲同时受行/字节预算约束。每次改动同时比较最大持锁、总CPU、总写入、事务数和总构建时间，防止“最长锁降低、总工作翻倍”。
+
+高fan-out的一次增量仍可能是大原子事务。若它成为瓶颈，须单独设计durable输入/游标、未封口delta和小事务发布协议：失败重启可续算，整个源事务完成前不得暴露半成品或推进compute frontier。不能直接把一笔源事务拆成对外可见的小事务。
+
+### 4. 减少物理加载与等待，保留每lane顺序和未知请求隔离
+
+现有 `claim_snapshot_bundle` / `claim_cdc_bundle` 已支持lane合批，下一步先记录实际填充率、不能合批的group/plan/generation/预算边界及parts数量，找出小批次为何仍要反复付出远端publish成本。先验证同group、同plan/generation、连续FIFO head的snapshot合批是否已吃满安全预算；跨group或snapshot+CDC合批另立合同，不重复沿用失败候选的结论。
+
+`process_merge_lane` 目前同步执行准备、发送、等待所有远端事务VISIBLE，再ack；受限writer会在等待时不能服务另一条独立lane。如果trace证明这段等待主导延迟，可将prepare/send与已知TxnId的visibility轮询拆成有界流水线：等待中的delivery继续持有durable lane归属和prepared/inflight额度，其他无依赖lane才可前进；同lane后续任务始终等待前序VISIBLE/ack。按实际内存、rowset和远端事务压力限定在途量，不能靠无限并发。
+
+始终保留HTTP前intent、不可变payload、重启恢复、连续可见frontier及drop/drain/generation隔离。请求是否被接受未知时继续quarantine，拆线程不能成为盲目重发的理由。两阶段事务和merge_async各自验收，不把它们假定为可叠加协议。
+
+本地batch等待和merge interval由trace确定是否有重复等待。它们是客户端配置，应作为独立参数实验，**StarRocks 4.1.1服务端默认参数不改**；缩短interval若增加rowset/CPU/版本债务即不采用。
+
+### 5. 改变试验方式，避免一轮轮叠加后仍不知道因果
+
+冻结主线及一个正确性已验证的候选基线；PR40可作为包含frozen-W协议的比较对象，不因它历史数字最小就认定它最快。先在**同一runner、固定m2s 2CPU/4GiB配置预算、相同服务镜像/资源指纹**内做A/B/B/A，每次都是新隔离数据集与目录，保留真实SHA；每次只改变一个机制。MySQL/StarRocks资源独立计量，4GiB不是整机合计预算。缩短负载的诊断明确标注范围，绝不冒充原small认证。
+
+先做正确性和受影响的阶段测试，确认关键路径改善、背景吞吐与资源债务没有恶化，再跑原strict small与完整CI；不要连续push取消正在验收的head。测量开关两边一致，报告每次结果与波动，不能挑一次绿灯。稳定后再升1M、中型、scale/soak与原50M/72h。2CPU CI与计划部署资源分别报告，不能用更大机器的成绩替代原固定预算对照。
+
+保持P95≤5s/P99≤10s、完整oracle、动态任务、强退恢复、sample density和排空门槛。补充已ready stateful target SLO，新增任务另外验收time_to_ready。单项没有可重复收益就退出该实验，保留失败证据，不继续把它叠进“最终方案”。
+
+### 6. 何时才更换状态引擎或下沉native
+
+先做上述资源准入与成本分解。如果实时关键路径仍被SQLite写入占用/物理写放大压住，且预算内的索引、批量和事务缩短已不能提供余量，再评估压缩base+delta、独立任务状态分片或替代状态引擎。任何分库/跨引擎方案都要重新证明source cursor、state/outbox、pin/GC及crash recovery的一致边界，不能靠多次独立commit宣称原子性。
+
+如果主要成本是decode/Arrow/序列化CPU，再针对profile最高成本部分做native下沉与迁移/差分测试。若主要成本是排队或远端VISIBLE等待，重写整条链路不能自动消除这些等待。未配置固定持久主机前只能完成受控短测，不能宣布50M/72h或生产SLO已认证。
+
+**实施顺序：事件链trace与同机基线 → 背景构建准入/实时资源份额 → 输出合批与有界异步等待 → 写事务内工作/写放大压缩 → 有证据时再迁移状态引擎或native。** 每一步单独取证，功能正确性与端到端性能同时守住。
+
 ## 1. 场景与待验证假说
 
 第一期限定单 MySQL 实例、单机、稳定主键、ROW + FULL row image，支持 GTID/文件位置恢复；显式登记源表及允许列。StarRocks 固定 **4.1.1 主键表、默认服务端参数**。不支持 SQL、破坏性 DDL、日志缺口必须拒绝或显式重建。

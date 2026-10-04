@@ -5,6 +5,22 @@ the durable handoff if Codex quota/session ends; it does not promise automatic
 AI continuation. Routine repository changes, Actions and validated merges are
 authorized by the owner without expiry, subject to actual configured access.
 
+## 2026-10-04 performance resolution plan requested by owner
+
+Documentation-only work on main, base fd6da153142fe81b02ac30f7e2eb66ba3f20ffe5.
+README now has a performance-resolution section anchored to PR40/44/45 and
+frozen-W microbenchmark evidence. Proposed order: correlated event-stage trace
+and same-runner A/B/B/A; foreground service reservations/background build admission;
+budgeted output coalescing and dependency-preserving visibility pipeline;
+short transaction work/write-amplification reductions; state/native changes only
+if measurements justify them. Preserve strict5/10s and the original cold/mixed
+samples, full oracle, fixed2CPU/4GiB comparisons, default server settings and
+unknown-request isolation. Plans and 50–100ms tuning target are unimplemented,
+not claimed guarantees. No runtime or failed candidate was merged.
+Next code milestone starts with event-correlated tracing and same-host baseline,
+not another unmeasured combined candidate. Document/privacy/diff checks only;
+no expensive runtime revalidation is required for this prose change.
+
 ## 2026-10-04 continuation: snapshot claim candidate did not pass strict latency
 
 [PR #45](https://github.com/justgo4/m2s/pull/45), branch
