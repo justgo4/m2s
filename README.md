@@ -112,6 +112,26 @@ CI 与完整结果/恢复通过，严格 P95/P99=6.068/7.047s，仍因 P95 失�
 
 **实施顺序：事件链trace与同机基线 → 背景构建准入/实时资源份额 → 输出合批与有界异步等待 → 写事务内工作/写放大压缩 → 有证据时再迁移状态引擎或native。** 每一步单独取证，功能正确性与端到端性能同时守住。
 
+### 本轮实施与验收状态（2026-10-04）
+
+以下代码均在候选分支，尚未合并；严格延迟失败不能标为完成。
+
+| 改造 | 实际证据与下一步 |
+|---|---|
+| [PR46 事件关联追踪](https://github.com/justgo4/m2s/pull/46) | 默认关闭的有界 trace、重启/丢失标记、离线报告已实现；完整基线/native/state/8 项真实 E2E 与 smoke 通过。严格 small P95/P99=28.064/36.340s，失败 |
+| [PR47 同机 A/B/B/A 驱动](https://github.com/justgo4/m2s/pull/47) | 修正 TIME_WAIT 端口误判后，同 SHA 四轮真实 smoke 全部通过，镜像/服务资源指纹一致。验证的是试验驱动，不是严格 SLO |
+| [PR48 已知 TxnId 等待流水线](https://github.com/justgo4/m2s/pull/48) | 默认关闭；独立 lane 可继续，durable assignment/预算保留至可见及 ack，未知响应继续隔离。正确性/恢复通过；严格 small 27.861/45.838s，失败 |
+| [PR50 只读准入预检](https://github.com/justgo4/m2s/pull/50) | 实际发现准入已满时反复空写事务；真实 WAL 200 次拒绝为 0 次 BEGIN，原子资源复核保留。正确性/恢复通过；严格 small 35.787/38.783s，失败 |
+| [PR51 CDC 安全合批](https://github.com/justgo4/m2s/pull/51) | 仅引入可配置宽度上限16和既有预算/FIFO/plan 边界；5 项真实 Arrow/SQLite 测试通过，含宽 delivery 已知 TxnId 的重启/可见性恢复。完整 CI 与严格 small 待验收 |
+| [PR49 同机严格 small 对照](https://github.com/justgo4/m2s/pull/49) | 固定 A=04ed4cb6、B=bf4de9e2，A/B/B/A 每轮新建隔离数据与服务；运行中，保留全部失败，不挑一次绿灯 |
+
+不同 hosted runner 的延迟不能直接判断因果。采样 trace 显示 VISIBLE
+等待约1.14s，准备约26ms、HTTP约5ms；大量延迟位于 delivery 选择
+之前。只读预检消除空锁申请，并未证明端到端达标。后续根据受控
+结果继续验证依赖-aware 排队、后台构建预算与写放大；正式50M/72h
+仍需要已配置的持久隔离主机。原5/10s、cold/mixed、完整 oracle、
+故障恢复和资源门禁均保持不变。
+
 ## 1. 场景与待验证假说
 
 第一期限定单 MySQL 实例、单机、稳定主键、ROW + FULL row image，支持 GTID/文件位置恢复；显式登记源表及允许列。StarRocks 固定 **4.1.1 主键表、默认服务端参数**。不支持 SQL、破坏性 DDL、日志缺口必须拒绝或显式重建。

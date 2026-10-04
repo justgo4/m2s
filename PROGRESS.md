@@ -988,3 +988,34 @@ Next analyze all four trials and candidate CI, then isolate the next measured
 mechanism. Background admission/fairness, high-fanout atomic incremental work,
 scale/low-space/upgrade drills and formal unchanged50M72h remain open; no
 persistent isolated host/cloud identity configured. Do not claim certification.
+
+## 2026-10-04 continuation: visibility candidate and admission remain below SLO
+
+PR47 exact9121f629 four-smoke A=B control37179639329/artifact11294079531 PASS
+all four workload/gates; service image/resource fingerprints identical. Driver
+is validated for lifecycle/revision isolation, not strict latency certification.
+PR46 exact04ed4cb6 all baseline/native/state/eight E2E PASS, small FAIL recorded.
+PR48 exactbf4de9e2 baseline37179896984/native37179897000/state37179896979/eight
+E2E37179896988/smoke PASS; strictsmall37179896987/artifact11294373822 FAIL
+P95=27.861035947/P99=45.838196209s. Complete workload PASS; CPU368.53s,
+RSS436662272B. Smoke30s CDC claim8371/60s11108 empty writer attempts reveal
+new cap-denial write churn. No merge.
+PR50 exact70fa3f97 advisory admission preflight:4 new real-WAL safeguards +6
+pipeline regressions PASS; 200 denied snapshot/CDC calls under competing writer
+have0 BEGIN/0 assignments; atomic cap checks still revalidate after stale reads.
+Local paired1000 full-cap CDC calls: original1000 BEGIN/.02070s, preflight0/
+.01201s; both2 pre-existing assignments. This is acquisition evidence only.
+PR50 baseline37180478296/native37180478278/state37180478261 PASS, E2E37180478268
+pending final cell at checkpoint. Strictsmall37180478318/artifact11294813989
+FAIL P95=35.786906396/P99=38.782803180s; complete workload/oracle/recovery PASS,
+CPU215.52s/RSS440254464B. Smoke11294228145 first30s CDC claim95 vs8371 on prior
+smoke; independent hosted runners, no causal latency gain claimed. No merge.
+PR51 exact0655ce62110424eb0d0c2fbd88743fa3de6ecd60 narrow CDC cap16 on70fa3f97;
+config/catalog addition and5 real Arrow/SQLite tests including pending15-lane
+knownTxnId/restart/actual VISIBLE before ack, plus admission10/pipeline6 PASS.
+Only cap copied from prior candidate, no frozen-W/state changes imported.
+Full exact-head CI pending. PR49 controlled strict-small37179985693 still runs
+immutable A04ed4cb6/Bbf4de9e2; preserve all trials and compare only once complete.
+README records actual implementation/gate status. Next use controlled evidence,
+verify51, then isolate any dependency-aware priority/background admission work.
+All candidates remain unmerged; unchanged formal72h needs persistent host.
