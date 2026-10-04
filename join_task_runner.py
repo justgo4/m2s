@@ -164,7 +164,7 @@ def step(
     if binding is not None:
         try:
             result=join_shared_runtime.step(
-                con,task,mapping,cfg)
+                con,task,mapping,cfg,bootstrap_limit=bootstrap_limit)
         except KeyError:
             if join_shared_runtime.maybe_binding(
                 con,task["task_id"]

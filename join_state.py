@@ -166,6 +166,21 @@ def install(con):
             PRIMARY KEY(state_id,side,pk_blob));
         CREATE INDEX IF NOT EXISTS join_rows_by_key
             ON join_rows(state_id,side,join_blob,pk_blob);
+        CREATE TABLE IF NOT EXISTS join_frozen_pins(
+            owner TEXT PRIMARY KEY,
+            state_id TEXT NOT NULL REFERENCES join_states(state_id),
+            watermark INTEGER NOT NULL,
+            spec_hash TEXT NOT NULL);
+        CREATE INDEX IF NOT EXISTS join_frozen_pin_state
+            ON join_frozen_pins(state_id,watermark);
+        CREATE TABLE IF NOT EXISTS join_row_before_images(
+            state_id TEXT NOT NULL REFERENCES join_states(state_id) ON DELETE CASCADE,
+            side TEXT NOT NULL,
+            pk_blob BLOB NOT NULL,
+            change_seq INTEGER NOT NULL,
+            join_blob BLOB,
+            row_payload BLOB,
+            PRIMARY KEY(state_id,side,pk_blob,change_seq));
     """)
 
 
@@ -718,6 +733,23 @@ def apply_transaction(
 
         before_rows=_rows_for_keys_locked(
             con,state_id,affected)
+
+        # The first before-image for a PK in this source transaction preserves
+        # the committed cut, including absence before an INSERT. Same-PK
+        # delete/upsert sequences must never replace it with an intermediate row.
+        if con.execute('SELECT 1 FROM join_frozen_pins WHERE state_id=? LIMIT 1',
+                       (state_id,)).fetchone():
+            for side in ('left','right'):
+                for pk in changed[side]:
+                    stored=con.execute('''SELECT join_blob,row_payload FROM join_rows
+                        WHERE state_id=? AND side=? AND pk_blob=?''',
+                        (state_id,side,pk)).fetchone()
+                    con.execute('''INSERT INTO join_row_before_images(
+                        state_id,side,pk_blob,change_seq,join_blob,row_payload)
+                        VALUES(?,?,?,?,?,?)''',
+                        (state_id,side,pk,source_seq,
+                         None if stored is None else stored[0],
+                         None if stored is None else stored[1]))
 
         for side,row in changes:
             if int(row["_sync_op"])==1:

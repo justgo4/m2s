@@ -707,6 +707,9 @@ def retire_task(con,cfg,kind,task):
         shared_runtime=join_shared_runtime
     shared_binding=shared_runtime.maybe_binding(
         con,task["task_id"])
+    abandoned_shared=False
+    if kind=='inner_join' and shared_binding is not None:
+        abandoned_shared=join_shared_runtime.abandon_build(con,task)
     promoted_shared=[]
     if shared_binding is None:
         # A compute owner cannot disappear under live followers. Freeze them at
@@ -719,14 +722,14 @@ def retire_task(con,cfg,kind,task):
     # consumer. For an active hot-drop this is normally a no-op because the
     # caller already fenced on target VISIBLE; for an unpublished candidate it
     # preserves any durable jobs that were staged before cancellation.
-    if generation is not None and generation["source_pin_released"]:
+    if generation is not None and generation["source_pin_released"] and not abandoned_shared:
         if kind=="aggregate":
             aggregate_job_bridge.stage_pending(
                 con,task["consumer_id"],mapping,cfg)
         else:
             join_job_bridge.stage_pending(
                 con,task["consumer_id"],mapping,cfg)
-    elif generation is not None and kind=="inner_join":
+    elif generation is not None and kind=="inner_join" and not abandoned_shared:
         join_output_build.discard_unactivated(
             con,task["consumer_id"],generation["fixed_w"])
 
