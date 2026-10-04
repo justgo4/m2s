@@ -1,0 +1,57 @@
+name: Build CentOS 8 compatible native reader
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-centos8-native.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: true
+          fetch-depth: 0
+
+      - name: Build in Rocky Linux 8 x86_64
+        run: |
+          docker run --rm \
+            -v "$PWD:/work" \
+            -w /work \
+            rockylinux:8 \
+            bash -lc '
+              set -euxo pipefail
+              dnf -y install gcc gcc-c++ make git cmake file binutils
+              rm -rf build/centos8
+              cmake -S native -B build/centos8 -DCMAKE_BUILD_TYPE=Release
+              cmake --build build/centos8 --parallel 2 --target mysql_arrow_reader
+              cp build/centos8/mysql_arrow_reader ./mysql_arrow_reader-linux-x86_64
+              chmod 0755 ./mysql_arrow_reader-linux-x86_64
+              file ./mysql_arrow_reader-linux-x86_64
+              ldd ./mysql_arrow_reader-linux-x86_64
+              readelf --version-info ./mysql_arrow_reader-linux-x86_64 | grep -E "GLIBC_|GLIBCXX_|CXXABI_" || true
+            '
+
+      - name: Verify artifact
+        run: |
+          set -euxo pipefail
+          test -x mysql_arrow_reader-linux-x86_64
+          file mysql_arrow_reader-linux-x86_64
+          sha256sum mysql_arrow_reader-linux-x86_64
+
+      - name: Commit generated binary to branch
+        run: |
+          set -euxo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B generated/centos8-native
+          git add -f mysql_arrow_reader-linux-x86_64
+          git commit -m "build: add CentOS 8 compatible native reader"
+          git push --force origin HEAD:generated/centos8-native
