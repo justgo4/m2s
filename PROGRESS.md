@@ -7,6 +7,34 @@ authorized by the owner without expiry, subject to actual configured access.
 
 ## Immediate next action
 
+2026-10-04 next diagnostic branch `codex/perf-registry-readsync-20261004`,
+base PR37 head46f69041e35bc15b905ca2e2b97cc76388fed73c (fresh five workflow
+families running; keep its head unchanged). PR36 profiler shows repeated
+registry owner-ref retention and shared-result checks acquiring the writer:
+retain_state1052 calls/111.926s aggregate wait and shared registry2153 calls/
+80.179s wait. Investigate coherent WAL read-only shared checks and idempotent
+existing refs; all missing-ref, promotion and generation mismatch checks must
+remain fail-closed. This is a separate unvalidated candidate, not a merge or
+claimed strict latency improvement.
+
+Implemented read-only shared registry validation under source_state.read_snapshot;
+all promotion/private publication still rereads durable ownership under writer.
+Existing physical refs now return without INSERT OR IGNORE/write acquisition;
+missing refs still take writer/unique-key insert. New registry_read_sync_test4
+PASS for aggregate and JOIN: competing writer with20ms timeout, missing ref
+requiring writer, concurrent atomic promotion between binding/stream reads,
+missing dependency/stream mismatch fail-closed. Three blocking regressions run
+against original46f6904 functions fail all six aggregate/JOIN cases with actual
+SQLite BUSY; revised functions pass. Original coherent-snapshot4, shared runtime,
+physical registry/catalog, frozen11 and privacy PASS. Full fresh hosted CI and
+strict gate remain required; not a latency certification.
+
+PR37 exact46f6904 has baseline37164857608/native37164857594/state37164857639
+and smoke in37164857615 PASS; E2E37164857588 and strict small still running.
+Its local108 baseline script entries passed after building native and repeating
+three commands initially missing their binary:1000 binlog/fault differential,
+1000 recovery traces, decoder/local A/B. No production fixture or metrics committed.
+
 2026-10-04 follow-up, based on PR36 remote head
 `48f92c3b9f08b22309cb03b0d9ce824c3f8451f6` (same Git tree as local d00eac6;
 ordinary HTTPS push401, published through authenticated GitHub object APIs and
