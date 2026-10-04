@@ -365,6 +365,14 @@ def retain_state(con, instance_id, owner_id, role="consumer"):
     if role not in REF_ROLES:
         raise ValueError("unsupported physical state ref role: " + role)
     state_info(con, instance_id)
+    # An existing ref is already retained. Linearize this no-op at the read;
+    # a subsequent release is allowed, just as after a write transaction ends.
+    # Missing refs still acquire the writer and use the unique-key insert.
+    if con.execute("""
+        SELECT 1 FROM physical_state_refs
+        WHERE instance_id=? AND owner_id=? AND role=?
+    """, (str(instance_id),owner_id,role)).fetchone() is not None:
+        return
     with transaction(con):
         con.execute("""
             INSERT OR IGNORE INTO physical_state_refs(

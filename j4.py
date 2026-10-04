@@ -1344,6 +1344,7 @@ def read_config():
         catalog_config_revision=cdc_catalog.config_revision(
             catalog_paths["catalog"]),
         key_partitions=env_int("CDC_KEY_PARTITIONS", 16, maximum=64),
+        cdc_bundle_max_lanes=env_int("CDC_CDC_BUNDLE_MAX_LANES",16,maximum=64),
         writer_min=env_int("CDC_WRITE_WORKERS_MIN", 1, maximum=32),
         writer_initial=env_int("CDC_WRITE_WORKERS_INITIAL", min(4,resource_target), maximum=32),
         writer_max=env_int("CDC_WRITE_WORKERS_MAX", min(8,resource_cap), maximum=32),
@@ -3147,7 +3148,9 @@ def cdc_bundle_width(cfg, runtime, table):
     partitions = key_partition_count(cfg)
     active = max(1,writer_target(runtime,table))
     automatic = max(1,(partitions+active-1)//active)
-    return min(automatic,4)
+    # Keep logical lanes and their FIFO fences; coalesce only within the
+    # existing row, byte and prepared-reservation budgets.
+    return min(automatic,max(1,int(cfg.get("cdc_bundle_max_lanes",16))))
 
 
 def lane_blocking_delivery(con, table, lane):
@@ -10571,6 +10574,19 @@ def stateful_finish_retirement(
             "stateful retirement frontier mismatch task=%s "
             "consumer=%d frontier=%d"
             % (task["task_id"],watermark,int(frontier)))
+    if str(kind)=='inner_join' and con.execute('''SELECT 1 FROM join_shared_builds
+            WHERE follower_task_id=? AND phase<>'done' ''',(task['task_id'],)).fetchone():
+        # A new shared build already owns its journal-retention consumer, but
+        # has no published bootstrap to drain. Cancellation discards its
+        # unpublished chunks instead of waiting forever for VISIBLE at W.
+        durable=stateful_durable_task(con,kind,task['task_id'])
+        stateful_catalog_runtime.retire_task(con,cfg,kind,durable)
+        with runtime['plan_lock']:
+            runtime.get('stateful_active_task_ids',set()).discard(task['task_id'])
+            runtime.get('stateful_retire_frontiers',{}).pop(task['task_id'],None)
+            runtime.get('stateful_retire_items',{}).pop(task['task_id'],None)
+        runtime_mark_sink_retiring(runtime,mapping_key(mapping),cfg)
+        return True
     stateful_stage_pending(
         con,kind,task["consumer_id"],mapping,cfg)
     wake_loaders(runtime,mapping_key(mapping))
@@ -11625,7 +11641,7 @@ def stateful_task_worker(item, cfg, runtime):
             # can likewise be waiting on its leader. Pace both idle cases while
             # rechecking source/visibility/retirement within 50ms. Bootstrap
             # chunks and advancing CDC prefixes continue without a wait.
-            if watermark is not None and (
+            if result.get('phase')!='bootstrap' and watermark is not None and (
                 watermark>=applied or watermark==previous_watermark
             ):
                 stop.wait(0.05)

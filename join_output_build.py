@@ -156,7 +156,8 @@ def _seal(con,consumer_id,fixed_w,expected):
 
 
 def step(con,consumer_id,state_id,plan_version,generation_id,fixed_w,
-         row_limit=1000,scan_limit=4000,byte_limit=16*1024**2,max_row_bytes=64*1024**2):
+         row_limit=1000,scan_limit=4000,byte_limit=16*1024**2,max_row_bytes=64*1024**2,
+         stream_state_id=None):
     if con.in_transaction:
         raise RuntimeError('JOIN output build requires independent chunk transactions')
     consumer_id=join_outbox._text(consumer_id,'consumer_id')
@@ -168,7 +169,8 @@ def step(con,consumer_id,state_id,plan_version,generation_id,fixed_w,
     install(con)
     state=join_state.state_info(con,state_id)
     _validate_state(con,state_id,fixed_w,state['spec_hash'])
-    join_outbox.ensure_stream(con,consumer_id,state_id,plan_version,generation_id,fixed_w)
+    join_outbox.ensure_stream(con,consumer_id,state_id if stream_state_id is None else stream_state_id,
+                             plan_version,generation_id,fixed_w)
     with join_outbox.transaction(con):
         _validate_state(con,state_id,fixed_w,state['spec_hash'])
         try:
@@ -203,7 +205,7 @@ def step(con,consumer_id,state_id,plan_version,generation_id,fixed_w,
                 nrows=len(rows),scan_work=work,serialized_bytes=size)
 
 
-def discard_unactivated(con,consumer_id,fixed_w,limit=1000):
+def discard_unactivated(con,consumer_id,fixed_w,limit=1000,shared_candidate=False):
     """Drain a stopped candidate's unpublished bytes in restartable chunks.
 
     Caller holds a durable retirement intent and has stopped the worker. Its
@@ -216,13 +218,21 @@ def discard_unactivated(con,consumer_id,fixed_w,limit=1000):
         return False
     if _manifest(con,consumer_id,fixed_w) is None:
         return False
-    if con.execute('SELECT 1 FROM source_consumers WHERE consumer_id=?',(consumer_id,)).fetchone():
+    if not shared_candidate and con.execute('SELECT 1 FROM source_consumers WHERE consumer_id=?',(consumer_id,)).fetchone():
         raise RuntimeError('cannot discard activated JOIN build')
     if con.execute('SELECT 1 FROM join_job_links WHERE consumer_id=? LIMIT 1',(consumer_id,)).fetchone():
         raise RuntimeError('cannot discard JOIN build with durable jobs')
     limit=max(1,min(int(limit),1000))
     with join_outbox.transaction(con):
-        if con.execute('SELECT 1 FROM source_consumers WHERE consumer_id=?',(consumer_id,)).fetchone():
+        if shared_candidate:
+            fenced=con.execute('''SELECT 1 FROM join_shared_builds b
+                JOIN join_task_descriptors d ON d.task_id=b.follower_task_id
+                JOIN stateful_retirements r ON r.task_id=d.task_id
+                WHERE d.consumer_id=? AND d.status='candidate' AND b.phase='abandoned' ''',
+                (consumer_id,)).fetchone()
+            if not fenced:
+                raise RuntimeError('shared JOIN discard requires stopped candidate retirement')
+        if not shared_candidate and con.execute('SELECT 1 FROM source_consumers WHERE consumer_id=?',(consumer_id,)).fetchone():
             raise RuntimeError('cannot discard activated JOIN build')
         if con.execute('SELECT 1 FROM join_job_links WHERE consumer_id=? LIMIT 1',(consumer_id,)).fetchone():
             raise RuntimeError('cannot discard JOIN build with durable jobs')
