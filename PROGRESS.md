@@ -5,6 +5,33 @@ the durable handoff if Codex quota/session ends; it does not promise automatic
 AI continuation. Routine repository changes, Actions and validated merges are
 authorized by the owner without expiry, subject to actual configured access.
 
+## Active event-correlated performance instrumentation (2026-10-04)
+
+Branch codex/cdc-event-trace-20261004, base main9de6b014.
+Owner requested implementation of the performance-resolution plan.
+First milestone: opt-in bounded process-local source/delivery timeline, with
+stable hashed source epoch and delivery identities, monotonic per-process time,
+explicit restart/loss/coverage markers, no payload/SQL/address retention and no
+extra durable state writes. Instrument successful durable source/base boundaries
+and output prepare/send/accept/VISIBLE/ack, then offline causal analysis and
+same-runner comparison support. Diagnostics must not change recovery or gates.
+Implemented default-off bounded trace, hashed identities, process clock boundaries,
+source durability/base apply, observed aggregate/JOIN frontier, merge_async
+prepare/HTTP accepted/acceptance saved/VISIBLE/ack, offline deduplicated report,
+and CI smoke+strict small trace artifacts. No output/state protocol changes.
+Files: cdc_event_trace.py, j4.py, source_state.py, aggregate_task_runner.py,
+join_task_runner.py, tools/event_trace_report.py, tools/event_trace_test.py,
+README.md and ci.yml/validation.yml.
+Local python tools/event_trace_test.py:9 PASS (real source rollback/replay,
+real delivery membership/ack, accepted wire and unknown HTTP isolation,
+thread context/restart/cap/privacy, reporter loss/conflict). Compile/privacy/diff
+PASS. 96 baseline scripts run from ci.yml:95 PASS; validation_run_test.py
+fails local process identity/cancellation cases previously observed here.
+No GitHub CI or traced strict-small result yet. Next publish focused PR,
+record its exact-head checks and stage evidence before any performance claim.
+Same-runner A/B/B/A and resource/output changes remain unimplemented. Formal persistent50M72h and
+full performance completion remain open; no failed runtime candidate merged.
+
 ## 2026-10-04 performance resolution plan requested by owner
 
 Documentation-only work on main, base fd6da153142fe81b02ac30f7e2eb66ba3f20ffe5.

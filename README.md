@@ -502,3 +502,21 @@ JOIN 出口的下一候选改为有界 mutation/Arrow 批次与磁盘 spool，�
 主线914c163a的小型综合仍是完整精确性/故障恢复/排空通过、严格延迟失败；百万行在 native capture 的本地 SQLite 写锁超时停止。PR #12 的跨页回填批次候选也未因正确性绿色而提前合并。正式 P95≤5s/P99≤10s 与固定50M/72h目标保持不变；持久固定资源主机尚未配置。
 
 [PR #15](https://github.com/justgo4/m2s/pull/15) 已在最终组合 SHA 通过全部合同并合并：远端事务明确 VISIBLE 后，本地登记遇 SQLite BUSY 时仅重试该本地事务；取消保留 journal，重启沿用 durable TxnId，未知远端请求仍隔离且禁止重发。主线7fe6小型综合的 P95/P99=25.345/33.752s 仍未通过正式延迟阈值；空转日志降至四条和合成内存改善不能代替端到端验收。
+
+### 事件关联追踪的使用
+
+`CDC_EVENT_TRACE=1` 开启默认关闭的内存诊断环；
+`CDC_EVENT_TRACE_EVERY=16` 按 source sequence 采样，
+`CDC_EVENT_TRACE_LIMIT=2048` 限制事件数量（最大 8192）。
+已有 daemon metrics JSONL 保存诊断快照，无新增同步日志写入。
+执行 `python tools/event_trace_report.py <metrics.jsonl> --output <report.json>`
+取得 source durable→base、delivery 选择→ack，以及准备、HTTP 接受、
+接受状态落盘、VISIBLE 等待、VISIBLE 状态落盘、ack 各阶段的分位数。
+
+仅在同一进程实例内比较单调时钟；重启、更早采样缺失、环淘汰和元数据
+读取错误均显式计数。当前覆盖共享 source、merge_async output 和任务
+frontier 的观察时刻。source durable 是本地提交后的观察，不能代替真实
+MySQL commit；remote visible 也不能代替 sentinel 查询可见时间。任务
+frontier 是完成后的观察上界。报告不是认证门禁，原有 cold/mixed
+样本、完整 oracle、故障恢复和 P95/P99 门槛仍以原 gate 为准。
+标识仅存哈希，禁止将生产 metrics 或运行目录提交到仓库。

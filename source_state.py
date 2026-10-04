@@ -10,6 +10,7 @@ needed after W.
 This SQLite implementation is the first protocol implementation, not the final
 storage-engine decision.
 """
+import cdc_event_trace
 import base64
 import contextlib
 import datetime
@@ -916,6 +917,8 @@ def apply_one(con, seq):
             int(action_count),
             int(elapsed_ns),
         ))
+    cdc_event_trace.record("base_applied",seq=seq,
+        duration_seconds=(time.perf_counter_ns()-started_ns)/1e9,nrows=input_rows)
     return True
 
 

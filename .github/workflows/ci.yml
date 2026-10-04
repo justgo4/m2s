@@ -138,6 +138,7 @@ jobs:
           python tools/stateful_worker_contention_test.py
           python tools/stateful_worker_idle_test.py
           python tools/arrow_job_schema_test.py
+          python tools/event_trace_test.py
           python tools/source_pipeline_metrics_test.py
           python tools/source_transaction_spool_test.py
           python tools/capture_begin_contention_test.py
