@@ -3180,12 +3180,29 @@ def merge_visibility_admission_full(con,table,cfg):
                        (table,)).fetchone()[0]>=limit
 
 
+def merge_visibility_claim_deferred(con,table,lane,cfg):
+    if not cfg.get("merge_visibility_pipeline",False):
+        return False
+    # Recovery is independent of fresh admission. All atomic rechecks remain
+    # in the original assignment transaction; stale reads only defer a retry.
+    if con.execute("SELECT 1 FROM deliveries WHERE table_name=? AND lane=?",
+                   (table,lane)).fetchone() or lane_blocking_delivery(con,table,lane) is not None:
+        return False
+    if merge_visibility_admission_full(con,table,cfg):
+        return True
+    if con.execute("SELECT COUNT(*) FROM deliveries").fetchone()[0]>=cfg.get("max_inflight_deliveries",2**31):
+        return True
+    return prepared_budget_used(con)>=cfg.get("max_prepared_bytes",2**63-1)
+
+
 def claim_snapshot_bundle(con, table, primary_lane, cfg, runtime):
     """Coalesce head snapshot jobs from several logical lanes into one physical delivery.
 
     Logical lane identity is unchanged. Later CDC in every included lane remains blocked
     by the assigned head snapshot job until this delivery is VISIBLE and acknowledged.
     """
+    if merge_visibility_claim_deferred(con,table,primary_lane,cfg):
+        return None
     with state_transaction(con):
         existing = con.execute(
             "SELECT id FROM deliveries WHERE table_name=? AND lane=?",(table,primary_lane)).fetchone()
@@ -3266,6 +3283,8 @@ def claim_cdc_bundle(con, table, primary_lane, cfg, runtime):
     Member lanes stay durably assigned to one physical delivery, so their later jobs
     remain blocked across restart until the shared delivery is VISIBLE and acknowledged.
     """
+    if merge_visibility_claim_deferred(con,table,primary_lane,cfg):
+        return None
     with state_transaction(con):
         existing = con.execute(
             "SELECT id FROM deliveries WHERE table_name=? AND lane=?",(table,primary_lane)).fetchone()

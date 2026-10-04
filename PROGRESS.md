@@ -5,6 +5,23 @@ the durable handoff if Codex quota/session ends; it does not promise automatic
 AI continuation. Routine repository changes, Actions and validated merges are
 authorized by the owner without expiry, subject to actual configured access.
 
+## Active read-only visibility admission preflight (2026-10-04)
+
+Branch codex/visibility-admission-read-20261004 from bf4de9e2 (PR48).
+Actual smoke artifact11295111488 shows8371 CDC claim writer BEGINs in first30s,
+11108 by60s. Per-sink cap denial is repeatedly opening empty write transactions.
+Next add advisory read-only cap/global/prepared preflight for fresh claims, with
+existing durable recovery bypass and all atomic writer rechecks preserved.
+Use real WAL competing-writer tests, default-off zero extra queries, then fresh
+exact-head CI/strict small. Preserve PR48 bf4de9e2 and PR49 A/B/B/A evidence;
+do not cancel or rewrite their running heads. Implemented merge_visibility_claim_deferred before fresh snapshot/CDC writer
+transaction. Disabled path has zero reads; existing durable deliveries bypass
+admission; per-sink/global/prepared checks are advisory and original atomic
+assignment checks remain. Real WAL competing writer200 denials:0 BEGINs/0 new
+assignments. Added4 safeguards plus inherited6 pipeline regressions:10 PASS;
+privacy/diff PASS. Next exact-head CI and unchanged strict small.
+No end-to-end gain claimed yet.
+
 ## Active bounded known-TxnId visibility pipeline (2026-10-04)
 
 Branch codex/merge-visible-pipeline-20261004, base PR46 exact04ed4cb6.
