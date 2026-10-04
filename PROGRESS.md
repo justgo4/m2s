@@ -7,6 +7,44 @@ authorized by the owner without expiry, subject to actual configured access.
 
 ## Immediate next action
 
+2026-10-04 active isolated candidate `codex/perf-fair-sqlite-writers-20261004`
+based PR40 c367c98 plus main documentation13a0fc3, not PR42/43 experiments.
+PR43 exact77622126 all baseline/native/state/eight E2E/smoke PASS; strict small
+37168890814/job111337584022/artifact11290723898 FAIL only P95=6.167091591s;
+P99=7.106627845s PASS,119 samples/120.862975s. All seven115000-row full
+oracles/four hot-adds/right-side recovery180.678888s/drain/source301 PASS.
+Native JSON was active; no proven end-to-end pass and keep43 unmerged.
+First30s acquisition maxima: visibility ACK4.736799s, snapshot staging3.534580s,
+while maximum measured single hold0.294335s. Test FIFO process-local writer
+admission to prevent repeated short bootstrap writers overtaking waiting ACKs.
+SQLite still owns durability/external locks; one daemon/file remains mandatory.
+Readers/deferred/implicit/cursor writes retain SQLite semantics, not advertised
+as FIFO. Queued and SQLite waits share busy_timeout; never retry transaction body
+or COMMIT. Failed commit retains admission until rollback/close. Entries exist
+only for holders/waiters. Profiler includes admission wait, not a new denominator.
+Nine real SQLite FIFO/timeout/lifecycle/reader/alias/factory tests PASS.
+Pre-merge review found context-manager failed deferred-constraint COMMIT rolls
+back automatically but new profiler exit labelled it commit. Added reproducer
+fails original e2d54b0; fix records rollback, releases admission and keeps zero
+rows/active holders. Restart exact-head CI after this diagnostic correction;
+old e2d54b0 run results are not certification of the corrected head.
+Lifecycle review then reproduced79446c1 GC of an abandoned writer releasing
+SQLite but leaving its admission slot, and wrong-thread close failure releasing
+admission despite retaining SQLite transaction. Added two regressions and
+finalization cleanup; failed explicit close now retains live admission. New11
+FIFO lifecycle tests and10 profiler tests must pass before fresh final-head CI.
+Neither earlier44 head may be merged or treated as this revision's evidence.
+Local102 baseline scripts plus4 state/publication scripts=106 PASS;37 offline
+selftest groups PASS (online explicitly skipped absent persistent connections).
+Controlled8 writers x100 FULL commits,0.5ms body yield,exact800-row count/sum:
+old SQLite wall0.803788s/max acquisition0.735031s/P95=0.000006653s;
+FIFO wall0.767243s/max acquisition0.039829s/P95=0.009639087s,queue entries0.
+FIFO distributes wait rather than maximizing immediate reacquisition; this
+synthetic scheduler evidence does not certify the daemon SLO.
+Changed sqlite_writer.py,j4.py,sqlite_write_timing.py,two tests,baseline CI.
+Next full regressions and exact-head fresh unchanged5/10s gate before any merge;
+formal50M/72h still needs persistent isolated host/actual configured access.
+
 Owner renewed continuation on2026-10-04; routine code/test/workflow/PR/validated
 merge authorization remains in effect, limited by actual configured access.
 Main at checkpoint: d8fe46bab599c048a2e092057e49002b9a4bcf06. None of the

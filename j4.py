@@ -18,6 +18,7 @@ import shutil
 import signal
 import sqlite3
 import sqlite_write_timing
+import sqlite_writer
 import struct
 import subprocess
 import zlib
@@ -1344,6 +1345,7 @@ def read_config():
         catalog_config_revision=cdc_catalog.config_revision(
             catalog_paths["catalog"]),
         key_partitions=env_int("CDC_KEY_PARTITIONS", 16, maximum=64),
+        cdc_bundle_max_lanes=env_int("CDC_CDC_BUNDLE_MAX_LANES",16,maximum=64),
         writer_min=env_int("CDC_WRITE_WORKERS_MIN", 1, maximum=32),
         writer_initial=env_int("CDC_WRITE_WORKERS_INITIAL", min(4,resource_target), maximum=32),
         writer_max=env_int("CDC_WRITE_WORKERS_MAX", min(8,resource_cap), maximum=32),
@@ -1703,7 +1705,7 @@ STATE_WAL_CHECKPOINT_INTERVAL = 0.5
 
 
 def open_state(path):
-    options={}
+    options={"factory":sqlite_writer.FairConnection}
     if os.environ.get("CDC_SQLITE_WRITE_TIMING", "0")=="1":
         options["factory"]=sqlite_write_timing.TimingConnection
     con = sqlite3.connect(path, timeout=30, isolation_level=None,**options)
@@ -3147,7 +3149,9 @@ def cdc_bundle_width(cfg, runtime, table):
     partitions = key_partition_count(cfg)
     active = max(1,writer_target(runtime,table))
     automatic = max(1,(partitions+active-1)//active)
-    return min(automatic,4)
+    # Keep logical lanes and their FIFO fences; coalesce only within the
+    # existing row, byte and prepared-reservation budgets.
+    return min(automatic,max(1,int(cfg.get("cdc_bundle_max_lanes",16))))
 
 
 def lane_blocking_delivery(con, table, lane):
@@ -3244,6 +3248,30 @@ def claim_cdc_bundle(con, table, primary_lane, cfg, runtime):
     Member lanes stay durably assigned to one physical delivery, so their later jobs
     remain blocked across restart until the shared delivery is VISIBLE and acknowledged.
     """
+    # Existing delivery lookup and idle/non-CDC lanes do not mutate anything.
+    # Resolve related ownership/head reads at one WAL cut; new work is always
+    # selected again under the writer below, never assigned from this snapshot.
+    with source_state.read_snapshot(con):
+        existing = con.execute(
+            "SELECT id FROM deliveries WHERE table_name=? AND lane=?",(table,primary_lane)).fetchone()
+        if existing:
+            return existing[0]
+        blocked = lane_blocking_delivery(con,table,primary_lane)
+        if blocked is not None:
+            owner = con.execute("SELECT lane FROM deliveries WHERE id=?",(blocked,)).fetchone()
+            return blocked if owner and int(owner[0]) == int(primary_lane) else None
+        head = con.execute("""
+            SELECT j.kind,a.delivery_id FROM active_jobs j
+            LEFT JOIN job_assignments a ON a.job_id=j.id
+            WHERE j.table_name=? AND j.lane=? ORDER BY j.id LIMIT 1
+        """,(table,primary_lane)).fetchone()
+        if head is None or head[0] != "cdc" or head[1] is not None:
+            return None
+        if con.execute("SELECT COUNT(*) FROM deliveries").fetchone()[0] >= cfg.get("max_inflight_deliveries",2**31):
+            return None
+        if prepared_budget_used(con) >= cfg.get("max_prepared_bytes",2**63-1):
+            return None
+
     with state_transaction(con):
         existing = con.execute(
             "SELECT id FROM deliveries WHERE table_name=? AND lane=?",(table,primary_lane)).fetchone()
@@ -10571,6 +10599,19 @@ def stateful_finish_retirement(
             "stateful retirement frontier mismatch task=%s "
             "consumer=%d frontier=%d"
             % (task["task_id"],watermark,int(frontier)))
+    if str(kind)=='inner_join' and con.execute('''SELECT 1 FROM join_shared_builds
+            WHERE follower_task_id=? AND phase<>'done' ''',(task['task_id'],)).fetchone():
+        # A new shared build already owns its journal-retention consumer, but
+        # has no published bootstrap to drain. Cancellation discards its
+        # unpublished chunks instead of waiting forever for VISIBLE at W.
+        durable=stateful_durable_task(con,kind,task['task_id'])
+        stateful_catalog_runtime.retire_task(con,cfg,kind,durable)
+        with runtime['plan_lock']:
+            runtime.get('stateful_active_task_ids',set()).discard(task['task_id'])
+            runtime.get('stateful_retire_frontiers',{}).pop(task['task_id'],None)
+            runtime.get('stateful_retire_items',{}).pop(task['task_id'],None)
+        runtime_mark_sink_retiring(runtime,mapping_key(mapping),cfg)
+        return True
     stateful_stage_pending(
         con,kind,task["consumer_id"],mapping,cfg)
     wake_loaders(runtime,mapping_key(mapping))
@@ -11625,7 +11666,7 @@ def stateful_task_worker(item, cfg, runtime):
             # can likewise be waiting on its leader. Pace both idle cases while
             # rechecking source/visibility/retirement within 50ms. Bootstrap
             # chunks and advancing CDC prefixes continue without a wait.
-            if watermark is not None and (
+            if result.get('phase')!='bootstrap' and watermark is not None and (
                 watermark>=applied or watermark==previous_watermark
             ):
                 stop.wait(0.05)
