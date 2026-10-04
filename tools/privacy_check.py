@@ -4,6 +4,7 @@ import argparse
 import ast
 import base64
 import gzip
+import hashlib
 import ipaddress
 import os
 from pathlib import Path
@@ -104,7 +105,10 @@ def review(root, paths, forbidden=()):
         try:
             text = payload.decode("utf-8")
         except UnicodeDecodeError:
-            findings.append((name, 0, "unreviewed binary file"))
+            expected = REVIEWED_BINARIES.get(name)
+            actual = hashlib.sha256(payload).hexdigest()
+            if expected != actual:
+                findings.append((name, 0, "unreviewed binary file"))
             continue
         findings.extend((name, line, why) for line, why in scan_text(text, path, forbidden))
         if path.suffix == ".py":
