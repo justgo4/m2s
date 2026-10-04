@@ -16,7 +16,8 @@
 PR #39 P95/P99=6.078/7.050s，仅 P95 未达5s。最新 [PR #40](https://github.com/justgo4/m2s/pull/40)
 头 `c367c98` 加入 coherent read-only CDC claim/资源拒绝检查：全部正确性
 CI 与完整结果/恢复通过，严格 P95/P99=6.068/7.047s，仍因 P95 失败而未合并。
-下一步验证历史页及紧随 CDC 前缀的安全 FIFO 合批，不放宽门禁。
+历史页及紧随 CDC 前缀的 FIFO 合批已在 `codex/perf-snapshot-cdc-prefix-20261004`
+候选实现，四组真实 Arrow/FIFO/重启/预算回归通过，待完整 CI 与严格门禁；不放宽门槛。
 百万输出行合成完整 oracle 证明分块
 最长写事务0.067s，原子方案38.415s，但分块总耗时更长；不是 daemon SLO
 或5000万行/72小时认证。完整固定版本、失败 artifact、持续授权和下一步见

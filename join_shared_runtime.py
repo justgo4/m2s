@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 """Durable sharing for exact and projection-subview INNER JOIN tasks."""
 import time
+import functools
+import threading
+import contextlib
 
 import join_ir
+import join_frozen_state
 import join_job_bridge
 import join_log_consumer
 import join_outbox
+import join_output_build
 import join_physical_state
 import join_state
 import join_task_catalog
@@ -13,6 +18,37 @@ import physical_state_catalog
 import source_state
 import stateful_share_policy
 import task_generation
+
+
+# One daemon owns a state file. Locks survive until the final holder/waiter
+# exits; no hash collisions can couple unrelated owner/follower handoffs.
+_locks={}
+_lock_guard=threading.Lock()
+
+
+@contextlib.contextmanager
+def task_guard(con,task):
+    database=con.execute('PRAGMA database_list').fetchone()[2]
+    key=(database,task['task_id'])
+    with _lock_guard:
+        entry=_locks.setdefault(key,[threading.RLock(),0])
+        entry[1]+=1
+    try:
+        with entry[0]:
+            yield
+    finally:
+        with _lock_guard:
+            entry[1]-=1
+            if entry[1]==0:
+                del _locks[key]
+
+
+def _serialized(function):
+    @functools.wraps(function)
+    def call(con,task,*args,**kwargs):
+        with task_guard(con,task):
+            return function(con,task,*args,**kwargs)
+    return call
 
 
 def install(con):
@@ -27,6 +63,11 @@ def install(con):
             updated REAL NOT NULL);
         CREATE INDEX IF NOT EXISTS join_shared_leader
             ON join_shared_followers(leader_task_id,follower_task_id);
+        CREATE TABLE IF NOT EXISTS join_shared_builds(
+            follower_task_id TEXT PRIMARY KEY,
+            snapshot_state_id TEXT NOT NULL,
+            pin_owner TEXT NOT NULL,
+            phase TEXT NOT NULL CHECK(phase IN ('copy','output','cleanup','done','abandoned')));
     """)
 
 
@@ -160,6 +201,7 @@ def _leader_candidates(con,task):
     ]
 
 
+@_serialized
 def try_bind(con,task,cfg=None):
     task=join_task_catalog.task_info(
         con,task["task_id"])
@@ -170,6 +212,15 @@ def try_bind(con,task,cfg=None):
         con,task["task_id"])
     if existing is not None:
         return existing
+
+    # Existing private builds keep their ownership while outputs catch up.
+    # Binding creation still rechecks state after acquiring the writer below.
+    try:
+        join_state.state_info(con,task["state_id"])
+    except KeyError:
+        pass
+    else:
+        return None
 
     with join_state.transaction(con):
         existing=maybe_binding(
@@ -222,21 +273,66 @@ def try_bind(con,task,cfg=None):
             con,task["consumer_id"],leader["state_id"],
             task["plan_version"],generation["generation_id"],
             fixed_w)
-        if reuse["mode"]=="exact":
-            join_outbox.seed_bootstrap(
-                con,task["consumer_id"],leader["state_id"],
-                task["plan_version"],generation["generation_id"],
-                fixed_w)
-        else:
-            join_outbox.seed_bootstrap_projected(
-                con,task["consumer_id"],leader["state_id"],
-                task["plan_version"],generation["generation_id"],
-                fixed_w,join_ir.state_spec(task["ir"]))
+        owner='join-follower-build:'+task['task_id']
+        snapshot='join-follower-snapshot:'+task['task_id']
+        join_frozen_state.pin(con,owner,leader['state_id'],fixed_w)
+        con.execute('INSERT INTO join_shared_builds VALUES(?,?,?,?)',
+                    (task['task_id'],snapshot,owner,'copy'))
         physical_state_catalog.retain_state(
             con,physical["instance_id"],
             task["task_id"],"dependency")
     return binding_info(
         con,task["task_id"])
+
+
+@_serialized
+def _build_step(con,task,binding,cfg,limit=1000):
+    row=con.execute('''SELECT snapshot_state_id,pin_owner,phase FROM join_shared_builds
+        WHERE follower_task_id=?''',(task['task_id'],)).fetchone()
+    if row is None:
+        output=join_outbox.commit_info(con,task['consumer_id'],binding['fixed_w'])
+        if not output['sealed'] or output['kind']!='bootstrap':
+            raise RuntimeError('legacy JOIN follower is missing sealed bootstrap')
+        return True
+    if row[2]=='done':
+        return True
+    snapshot,owner,phase=row
+    if phase=='abandoned':
+        raise RuntimeError('JOIN follower build is abandoned')
+    budget=cfg.get('batch_bytes',16*1024**2)
+    maximum=cfg.get('max_row_bytes',64*1024**2)
+    if phase=='copy':
+        copied=join_frozen_state.copy_step(con,owner,snapshot,join_ir.state_spec(task['ir']),
+                    limit=limit,byte_limit=budget,max_row_bytes=maximum)
+        # A small left side can complete without spending the next call only
+        # discovering the right side. Each side still owns its own bounded txn.
+        if not copied['done'] and join_state.state_info(con,snapshot)['left_complete']:
+            copied=join_frozen_state.copy_step(con,owner,snapshot,join_ir.state_spec(task['ir']),
+                        limit=limit,byte_limit=budget,max_row_bytes=maximum)
+        if not copied['done']:
+            return False
+        with join_state.transaction(con):
+            join_frozen_state.release(con,owner)
+            con.execute("UPDATE join_shared_builds SET phase='output' WHERE follower_task_id=? AND phase='copy'",
+                        (task['task_id'],))
+        phase='output'
+    if phase=='output':
+        built=join_output_build.step(con,task['consumer_id'],snapshot,task['plan_version'],
+                    task['generation_id'],binding['fixed_w'],row_limit=limit,
+                    byte_limit=budget,max_row_bytes=maximum,stream_state_id=binding['shared_state_id'])
+        if not built['done']:
+            return False
+        con.execute("UPDATE join_shared_builds SET phase='cleanup' WHERE follower_task_id=? AND phase='output'",
+                    (task['task_id'],))
+    if not join_frozen_state.discard_step(con,snapshot,limit=limit,byte_limit=budget):
+        return False
+    with join_state.transaction(con):
+        # Removing the manifest precedes deleting its frozen backing FK.
+        con.execute('DELETE FROM join_output_builds WHERE consumer_id=? AND source_seq=?',
+                    (task['consumer_id'],binding['fixed_w']))
+        con.execute('DELETE FROM join_states WHERE state_id=?',(snapshot,))
+        con.execute("UPDATE join_shared_builds SET phase='done' WHERE follower_task_id=?",(task['task_id'],))
+    return True
 
 
 def _validate_binding(con,task,binding):
@@ -272,7 +368,20 @@ def _validate_binding(con,task,binding):
     return leader,follower,stream,reuse
 
 
-def step(con,task,mapping,cfg):
+@_serialized
+def step(con,task,mapping,cfg,bootstrap_limit=1000):
+    if con.execute('SELECT 1 FROM join_frozen_pins WHERE owner=?',
+                   ('join-promotion:'+task['task_id'],)).fetchone():
+        return dict(generation=task_generation.info(con,task['sink_key'],task['plan_version']),
+                    consumer=source_state.consumer_info(con,task['consumer_id']),
+                    phase='waiting_promotion',waiting_shared_leader=True)
+    binding=binding_info(con,task['task_id'])
+    if not _build_step(con,task,binding,cfg,limit=bootstrap_limit):
+        return dict(generation=task_generation.info(con,task['sink_key'],task['plan_version']),
+                    consumer=source_state.consumer_info(con,task['consumer_id']),
+                    source_applied=source_state.base_applied_seq(con),visible_frontier=None,
+                    phase='bootstrap',shared_physical=True,
+                    shared_leader_task_id=binding['leader_task_id'],shared_state_id=binding['shared_state_id'])
     with source_state.read_snapshot(con):
         binding=binding_info(
             con,task["task_id"])
@@ -354,17 +463,18 @@ def _copy_through(
         con,follower_consumer_id)
     while int(follower["watermark"])<int(through_w):
         seq=int(follower["watermark"])+1
-        if reuse["mode"]=="exact":
-            join_outbox.copy_commit(
-                con,leader_consumer_id,
-                follower_consumer_id,seq)
-        else:
-            join_outbox.copy_commit_projected(
-                con,leader_consumer_id,
-                follower_consumer_id,seq,
-                join_ir.state_spec(target_ir))
-        follower=source_state.advance_consumer(
-            con,follower_consumer_id,seq)
+        with join_state.transaction(con):
+            if reuse["mode"]=="exact":
+                join_outbox.copy_commit(
+                    con,leader_consumer_id,
+                    follower_consumer_id,seq)
+            else:
+                join_outbox.copy_commit_projected(
+                    con,leader_consumer_id,
+                    follower_consumer_id,seq,
+                    join_ir.state_spec(target_ir))
+            follower=source_state.advance_consumer(
+                con,follower_consumer_id,seq)
     return follower
 
 
@@ -376,87 +486,95 @@ def promote_followers(con,leader_task):
     if not bindings:
         return []
     promoted=[]
-    with join_state.transaction(con):
-        leader_state=join_state.state_info(
-            con,leader_task["state_id"])
-        leader_consumer=source_state.consumer_info(
-            con,leader_task["consumer_id"])
-        frontier=int(leader_consumer["watermark"])
-        if int(leader_state["watermark"])!=frontier:
-            raise RuntimeError(
-                "cannot promote shared JOIN followers from divergent leader")
-        for binding in bindings:
-            follower_task=join_task_catalog.task_info(
-                con,binding["follower_task_id"])
-            if follower_task["status"] in {"retired","failed"}:
-                continue
-            reuse=join_ir.reuse_plan(
-                leader_task["ir"],follower_task["ir"])
-            if reuse is None:
-                raise RuntimeError(
-                    "cannot promote JOIN follower after reuse semantics changed")
-            _copy_through(
-                con,leader_task["consumer_id"],
-                follower_task["consumer_id"],frontier,
-                reuse,follower_task["ir"])
-            try:
-                private=join_state.state_info(
-                    con,follower_task["state_id"])
-            except KeyError:
-                if reuse["mode"]=="exact":
-                    private=join_state.clone_complete_state(
-                        con,leader_task["state_id"],
-                        follower_task["state_id"],
-                        leader_state["spec"],frontier)
-                else:
-                    private=join_state.clone_projected_state(
-                        con,leader_task["state_id"],
-                        follower_task["state_id"],
-                        join_ir.state_spec(
-                            follower_task["ir"]),frontier)
-            if int(private["watermark"])!=frontier:
-                raise RuntimeError(
-                    "promoted JOIN follower private state has wrong W")
-            join_physical_state.sync_instance(
-                con,follower_task["state_id"],
-                follower_task["ir"],generation=1)
-            stream=join_outbox.stream_info(
-                con,follower_task["consumer_id"])
-            if stream["state_id"]!=leader_task["state_id"]:
-                raise RuntimeError(
-                    "JOIN shared follower stream already detached")
-            con.execute("""
-                UPDATE join_output_streams
-                SET state_id=?,updated=?
-                WHERE consumer_id=?
-            """,(
-                follower_task["state_id"],time.time(),
-                follower_task["consumer_id"],
-            ))
-            source_state.remove_consumer(
-                con,follower_task["consumer_id"])
-            source_state.register_consumer(
-                con,follower_task["consumer_id"],frontier,
-                owner="join:"+follower_task["consumer_id"],
-                metadata=join_log_consumer.consumer_metadata(
-                    follower_task["plan_version"],
-                    follower_task["ir"],
-                    follower_task["state_id"],
-                    follower_task["generation_id"]))
-            physical_state_catalog.release_state(
-                con,join_physical_state.instance_id(
-                    leader_task["state_id"]),
-                follower_task["task_id"],"dependency")
-            con.execute("""
-                DELETE FROM join_shared_followers
-                WHERE follower_task_id=?
-            """,(follower_task["task_id"],))
-            promoted.append(dict(
-                follower_task_id=follower_task["task_id"],
-                state_id=follower_task["state_id"],
-                frontier=frontier,
-            ))
+    if con.in_transaction:
+        raise RuntimeError('JOIN promotion requires independent chunk transactions')
+    for binding in bindings:
+        follower_task=join_task_catalog.task_info(con,binding['follower_task_id'])
+        if follower_task['status'] in {'retired','failed'}:
+            continue
+        result=_promote_one(con,follower_task,leader_task,binding)
+        if result is not None:
+            promoted.append(result)
     return promoted
+
+
+@_serialized
+def _promote_one(con,follower_task,leader_task,binding):
+    follower_task=join_task_catalog.task_info(con,follower_task['task_id'])
+    if follower_task['status'] in {'retired','failed'}:
+        return None
+    if maybe_binding(con,follower_task['task_id']) is None:
+        return None
+    reuse=join_ir.reuse_plan(leader_task['ir'],follower_task['ir'])
+    if reuse is None:
+        raise RuntimeError('cannot promote JOIN follower after reuse semantics changed')
+    owner='join-promotion:'+follower_task['task_id']
+    with join_state.transaction(con):
+        pinned=con.execute('SELECT watermark FROM join_frozen_pins WHERE owner=?',(owner,)).fetchone()
+        leader_state=join_state.state_info(con,leader_task['state_id'])
+        leader_consumer=source_state.consumer_info(con,leader_task['consumer_id'])
+        frontier=leader_consumer['watermark'] if pinned is None else int(pinned[0])
+        if leader_state['watermark']!=frontier or leader_consumer['watermark']!=frontier:
+            raise RuntimeError('JOIN promotion requires a stopped leader at its frozen frontier')
+        join_frozen_state.pin(con,owner,leader_task['state_id'],frontier)
+    # The persistent promotion pin parks the follower worker after a
+    # process restart until owner retirement resumes this handoff.
+    while not _build_step(con,follower_task,binding,{}):
+        pass
+    _copy_through(con,leader_task['consumer_id'],follower_task['consumer_id'],frontier,
+                  reuse,follower_task['ir'])
+    while not join_frozen_state.copy_step(con,owner,follower_task['state_id'],
+                join_ir.state_spec(follower_task['ir']))['done']:
+        pass
+    with join_state.transaction(con):
+        # The final handoff touches only metadata; copied backing bytes
+        # and output are already durable, complete and at the same cut.
+        join_frozen_state.info(con,owner)
+        private=join_state.state_info(con,follower_task['state_id'])
+        if int(private["watermark"])!=frontier:
+            raise RuntimeError(
+                "promoted JOIN follower private state has wrong W")
+        join_physical_state.sync_instance(
+            con,follower_task["state_id"],
+            follower_task["ir"],generation=1)
+        stream=join_outbox.stream_info(
+            con,follower_task["consumer_id"])
+        if stream["state_id"]!=leader_task["state_id"]:
+            raise RuntimeError(
+                "JOIN shared follower stream already detached")
+        con.execute("""
+            UPDATE join_output_streams
+            SET state_id=?,updated=?
+            WHERE consumer_id=?
+        """,(
+            follower_task["state_id"],time.time(),
+            follower_task["consumer_id"],
+        ))
+        source_state.remove_consumer(
+            con,follower_task["consumer_id"])
+        source_state.register_consumer(
+            con,follower_task["consumer_id"],frontier,
+            owner="join:"+follower_task["consumer_id"],
+            metadata=join_log_consumer.consumer_metadata(
+                follower_task["plan_version"],
+                follower_task["ir"],
+                follower_task["state_id"],
+                follower_task["generation_id"]))
+        physical_state_catalog.release_state(
+            con,join_physical_state.instance_id(
+                leader_task["state_id"]),
+            follower_task["task_id"],"dependency")
+        con.execute("""
+            DELETE FROM join_shared_followers
+            WHERE follower_task_id=?
+        """,(follower_task["task_id"],))
+        join_frozen_state.release(con,owner)
+        con.execute('DELETE FROM join_shared_builds WHERE follower_task_id=?',(follower_task['task_id'],))
+        return dict(
+            follower_task_id=follower_task["task_id"],
+            state_id=follower_task["state_id"],
+            frontier=frontier,
+        )
 
 
 def release_dependency(con,task_id):
@@ -474,6 +592,46 @@ def release_dependency(con,task_id):
     return binding
 
 
+@_serialized
+def abandon_build(con,task):
+    row=con.execute('''SELECT snapshot_state_id,pin_owner,phase FROM join_shared_builds
+        WHERE follower_task_id=?''',(task['task_id'],)).fetchone()
+    if row is None or row[2]=='done':
+        return False
+    snapshot,owner,_=row
+    with join_state.transaction(con):
+        con.execute("UPDATE join_shared_builds SET phase='abandoned' WHERE follower_task_id=?",
+                    (task['task_id'],))
+    binding=binding_info(con,task['task_id'])
+    # This candidate has never staged jobs. A durable retirement intent fences
+    # the worker before deleting even an already sealed but unpublished seed.
+    join_output_build.discard_unactivated(con,task['consumer_id'],binding['fixed_w'],
+                                         shared_candidate=True)
+    while not join_frozen_state.discard_step(con,snapshot):
+        pass
+    with join_state.transaction(con):
+        join_frozen_state.release(con,owner)
+        con.execute('DELETE FROM join_states WHERE state_id=?',(snapshot,))
+        con.execute('DELETE FROM join_output_streams WHERE consumer_id=?',(task['consumer_id'],))
+        con.execute("UPDATE join_shared_builds SET phase='done' WHERE follower_task_id=?",(task['task_id'],))
+    return True
+
+
+@_serialized
+def abandon_promotion(con,task):
+    owner='join-promotion:'+task['task_id']
+    if not con.execute('SELECT 1 FROM join_frozen_pins WHERE owner=?',(owner,)).fetchone():
+        return False
+    if maybe_binding(con,task['task_id']) is None:
+        raise RuntimeError('cannot discard detached JOIN promotion')
+    while not join_frozen_state.discard_step(con,task['state_id']):
+        pass
+    with join_state.transaction(con):
+        con.execute('DELETE FROM join_states WHERE state_id=?',(task['state_id'],))
+        join_frozen_state.release(con,owner)
+    return True
+
+
 def release_binding(con,task_id):
     binding=release_dependency(
         con,task_id)
@@ -483,10 +641,12 @@ def release_binding(con,task_id):
         DELETE FROM join_shared_followers
         WHERE follower_task_id=?
     """,(binding["follower_task_id"],))
+    con.execute('DELETE FROM join_shared_builds WHERE follower_task_id=?',(binding['follower_task_id'],))
     return binding
 
 
 def gc_retired_followers(con,limit=64):
+    join_frozen_state.gc_step(con)
     rows=con.execute("""
         SELECT f.follower_task_id
         FROM join_shared_followers f

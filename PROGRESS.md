@@ -5,6 +5,29 @@ the durable handoff if Codex quota/session ends; it does not promise automatic
 AI continuation. Routine repository changes, Actions and validated merges are
 authorized by the owner without expiry, subject to actual configured access.
 
+## Active snapshot/CDC FIFO candidate (2026-10-04)
+
+Branch `codex/perf-snapshot-cdc-prefix-20261004`, code parent
+c367c98df984ea3e0a37c0d8a1f256ba13ad3e46, incorporates documentation-only
+main13a0fc3241ac4199f5fa5ba169d22732af4e2e8e (PR41 exactab80a8a5f64f9f6063ecdcb1632447fd1658728b
+baseline37166920074/native37166920040 PASS before merge). Current raw-head
+snapshot claims additionally select only immediate unassigned same-plan CDC
+suffixes from their selected lanes, within unchanged snapshot transform row/byte
+and reservation budgets. No next snapshot group, plan, assignment or lane FIFO
+is crossed. Dense durable job-id order gives exact net updates/deletes; one
+ack transaction advances snapshot groups and CDC frontiers together.
+
+`python tools/snapshot_cdc_prefix_test.py`:4 PASS (wide membership/restart,
+group/cursor/plan barriers, row/byte/reservation limits, real Arrow net update/
+delete, invisible ack, prepared-wire immutability after future DELETE/restart).
+Original c367c98 claim functions fail all four candidate regression cases.
+CDC bundle5/claim read5, frozen12, registry4, metric SLO, identity/quarantine,
+privacy and37 offline selftest groups PASS. Existing snapshot/mixed metric
+latency denominators are preserved; external strict sentinel sampling and
+full-output oracles remain unchanged. No performance pass inferred from local
+protocol tests. Next fresh exact-head complete CI/eight E2E/smoke/strict5/10s;
+previous failed candidates and formal infrastructure blocker remain as below.
+
 ## Immediate next action
 
 Owner renewed continuation on2026-10-04; routine code/test/workflow/PR/validated
