@@ -70,13 +70,15 @@ PR56 已完成固定 SHA 的 `CDC_MERGE_COMMIT_INTERVAL_MS=1000↔500` A/B/B/A�
 
 PR55 已把 frozen-W follower/owner promotion 分块整合到固定基线。Native/source-state/public baseline/actual daemon/smoke 均通过；strict small workload 本身、完整结果、恢复、4 个动态任务 ready、最终 pending=0/deliveries=0 均通过，但 P95/P99=10.399/13.417s，仍未达标。trace 显示 `selected→ack P95≈2.09s`、`remote visibility P95≈1.43s`、`prepare P95≈0.18s`，而 `source→selected P95≈32.34s`，所以当前主要长尾在选中之前，不应为了这轮结果破坏 HTTP 前 intent/响应后 TxnId 两段持久边界。分块后最长实际 writer hold 约 0.249s，但 writer acquire 仍可达 4.54s（`physical_state_catalog:retain_state`）和 4.14s（`stateful_physical_registry:sync_runtime_result`）；因此 README 第 5 项的公平写闸门前提已经成立，PR57 已在 PR55 之上启动 FIFO SQLite writer admission 候选。
 
+PR58 已完成 PR57 FIFO/frozen-follower + `CDC_MERGE_COMMIT_INTERVAL_MS=500` 的组合验证，并通过全部 exact-head Actions。strict-small：healthy P95/P99=4.356/7.381s，recovery P95/P99=2.250/2.821s，recovery max=3.800s；115,000 行 event/aggregate/JOIN 全量 digest 全匹配，4 个动态任务全部 ready，最终 pending=0/deliveries=0，max rowset=59，version recovery 未触发。SQLite timing 中最大 writer acquire≈0.354s，最大 hold≈0.293s。该结果说明 FIFO 与 500ms merge interval 的组合能够同时修复 PR57 的 healthy P95 和 recovery 退化；但仍只是 hosted strict-small，不替代 million/scale/upgrade/50M-72h 生产认证。
+
 | 顺序 | 具体动作 | 通过条件与边界 |
 |---|---|---|
 | 1 | **完成**：分析 PR53 四轮同机对照并冻结下一轮基线为 `fd734d617e74b9cb9a401f7c5aeecfae0156f50f` | 保留全部失败；B 只证明 healthy 延迟方向有利，未证明 recovery/CPU/写放大有利 |
 | 2 | **完成**：`CDC_BATCH_MS` 1000→200 无稳定收益；PR56 的 `CDC_MERGE_COMMIT_INTERVAL_MS` 1000→500 中，两轮500ms均过门禁、两轮1000ms均失败，500ms进入组合候选 | 每次只改一个参数，同机A/B/B/A、相同2CPU/4GiB开发预算与服务指纹、新隔离数据；继续检查rowset/版本债务、吞吐和CPU |
 | 3 | **候选已实现、性能未过门禁**：PR55 已把 PR40 frozen-W follower/owner promotion 分块整合到固定基线；正确性/恢复/smoke 通过，strict small P95/P99=10.399/13.417s FAIL | fixed-W可读、pin/consumer/GC、generation、状态/outbox与发布边界不变；覆盖每个持久边界强退、重启、leader变化及删除；测持锁max和总构建成本，不直接合并旧失败候选 |
 | 4 | **已完成首轮 trace 归因**：PR55 中 prepare/visibility/ack 不是主要长尾，source→selected 才是；继续补 WAL checkpoint 命中证据，暂不合并安全边界 | HTTP前持久请求意图与响应后TxnId登记继续分开；5秒兜底须先取命中证据；fixed-W逻辑pin不能当成长SQLite读事务证据 |
-| 5 | **PR57 已完成首轮**：FIFO 把最大 acquire 约4.54s降到0.171s、hold降到0.181s，strict-small P95/P99 10.399/13.417→6.171/7.009s，但 recovery P95/P99 恶化到35.16/42.21s；PR58 已将 PR56 胜出的 500ms merge interval 叠到 PR57 上做组合验证 | 验证锁顺序、取消/错误释放、ready任务进展及GC/构建不饥饿；重点看组合后 recovery 是否恢复，同时保持 P95<5s/P99<10s |
+| 5 | **PR58 组合候选已通过 strict-small**：在 PR57 FIFO/frozen-follower 上叠加 PR56 胜出的 500ms merge interval。P95/P99=4.356/7.381s，recovery P95/P99=2.250/2.821s；完整 event/aggregate/JOIN exactness、故障恢复、4 个动态任务、最终 pending=0/deliveries=0 均通过。最大 writer acquire≈0.354s、hold≈0.293s，max rowset=59<700，未触发 version recovery。 | 进入更大规模与升级/长期认证；不能把 strict-small PASS 等同于生产认证 |
 | 6 | 选择有效组合，冻结最终SHA，重跑完整合同与原严格small；通过后逐级升至million/中型/压力、升级恢复，再做正式50M/72h | 原P95≤5s/P99≤10s、完整oracle、故障、drain及资源门禁不变；各stateful target的SLO证据也要补齐；正式长跑需先配置持久隔离主机 |
 
 **同lane并发暂不实施。** 先证明DELETE/tombstone、同键版本顺序和generation隔离；只有 `_cdc_seq` 列不足以防止旧UPSERT在新DELETE后复活数据。拆库/替换状态引擎继续以后续测量为依据。以上均是待执行工作，不是已实现或已达标声明。
