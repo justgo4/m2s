@@ -5,6 +5,20 @@ the durable handoff if Codex quota/session ends; it does not promise automatic
 AI continuation. Routine repository changes, Actions and validated merges are
 authorized by the owner without expiry, subject to actual configured access.
 
+## Active event-correlated performance instrumentation (2026-10-04)
+
+Branch codex/cdc-event-trace-20261004, base main9de6b014.
+Owner requested implementation of the performance-resolution plan.
+First milestone: opt-in bounded process-local source/delivery timeline, with
+stable hashed source epoch and delivery identities, monotonic per-process time,
+explicit restart/loss/coverage markers, no payload/SQL/address retention and no
+extra durable state writes. Instrument successful durable source/base boundaries
+and output prepare/send/accept/VISIBLE/ack, then offline causal analysis and
+same-runner comparison support. Diagnostics must not change recovery or gates.
+Next implement meaningful real-SQLite/wire/restart/bounds tests, exact-head CI,
+and update this checkpoint with measured evidence. Formal persistent50M72h and
+full performance completion remain open; no failed runtime candidate merged.
+
 ## 2026-10-04 performance resolution plan requested by owner
 
 Documentation-only work on main, base fd6da153142fe81b02ac30f7e2eb66ba3f20ffe5.
