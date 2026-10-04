@@ -81,6 +81,7 @@ jobs:
           python tools/stateful_catalog_runtime_test.py
           python tools/stateful_hot_add_test.py
           python tools/stateful_physical_registry_test.py
+          python tools/registry_read_sync_test.py
           python tools/metric_slo_test.py
           python tools/p11_profile_test.py
           python tools/validation_run_test.py
@@ -118,7 +119,11 @@ jobs:
           python tools/join_bootstrap_stream_test.py
           python tools/join_runtime_test.py
           python tools/join_shared_runtime_test.py
+          python tools/join_frozen_state_test.py
           python tools/shared_leader_snapshot_test.py
+          python tools/private_state_share_check_test.py
+          python tools/join_affected_reads_test.py
+          python tools/cdc_bundle_test.py
           python tools/join_subview_shared_runtime_test.py
           python tools/join_state_test.py
           python tools/join_incremental_delta_test.py

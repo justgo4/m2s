@@ -12,6 +12,7 @@ import join_physical_state
 import join_shared_runtime
 import join_task_catalog
 import physical_state_catalog
+import source_state
 import task_generation
 
 
@@ -124,6 +125,21 @@ def _shared_identity(kind,state_id):
         +str(kind))
 
 
+def _bound_shared_state(con,kind,current,binding,stream_state):
+    shared_state=str(binding["shared_state_id"])
+    if stream_state!=shared_state:
+        raise RuntimeError(
+            "shared follower durable binding and output stream state disagree")
+    identity=_shared_identity(kind,shared_state)
+    state=physical_state_catalog.state_info(con,identity)
+    refs=physical_state_catalog.state_refs(con,identity)
+    if not any(row["owner_id"]==current["task_id"]
+               and row["role"]=="dependency" for row in refs):
+        raise RuntimeError(
+            "shared follower physical dependency ref is missing")
+    return state
+
+
 def sync_runtime_result(con,item,result):
     task=result.get("task") or item["task"]
     generation=result.get("generation") or {}
@@ -133,6 +149,20 @@ def sync_runtime_result(con,item,result):
         if not reported:
             raise RuntimeError(
                 "shared stateful runtime omitted physical state identity")
+
+        # Bound followers need validation, not mutation. A coherent read view
+        # may precede a concurrent promotion; never mix its old binding with
+        # the new private stream/ref. Promoted-state publication still rechecks
+        # everything under the writer below.
+        with source_state.read_snapshot(con):
+            current=_task_info(con,kind,task["task_id"])
+            if current["status"] in {"retired","failed"}:
+                return None
+            binding=_shared_binding(con,kind,current["task_id"])
+            if binding is not None:
+                return _bound_shared_state(
+                    con,kind,current,binding,
+                    _stream_state_id(con,kind,current["consumer_id"]))
 
         # runner.step() and registry sync are separate calls. Owner retirement
         # can legally promote a follower between them. Re-resolve durable
@@ -152,26 +182,8 @@ def sync_runtime_result(con,item,result):
                 con,kind,current["consumer_id"])
 
             if binding is not None:
-                shared_state=str(
-                    binding["shared_state_id"])
-                if stream_state!=shared_state:
-                    raise RuntimeError(
-                        "shared follower durable binding and output "
-                        "stream state disagree")
-                identity=_shared_identity(
-                    kind,shared_state)
-                state=physical_state_catalog.state_info(
-                    con,identity)
-                refs=physical_state_catalog.state_refs(
-                    con,identity)
-                if not any(
-                    row["owner_id"]==current["task_id"]
-                    and row["role"]=="dependency"
-                    for row in refs
-                ):
-                    raise RuntimeError(
-                        "shared follower physical dependency ref is missing")
-                return state
+                return _bound_shared_state(
+                    con,kind,current,binding,stream_state)
 
             # No binding means a concurrent owner retirement may have promoted
             # this follower to its private backing state. Promotion updates the

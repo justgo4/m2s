@@ -211,6 +211,33 @@ def install(con):
                 con.execute("ROLLBACK")
             raise
 
+    if con.execute("SELECT 1 FROM sqlite_master WHERE name='join_row_before_images'").fetchone():
+        con.executescript('''
+            CREATE TRIGGER IF NOT EXISTS join_history_size_insert
+            AFTER INSERT ON join_row_before_images BEGIN
+                INSERT INTO stateful_state_sizes(kind,state_id,rows,payload_bytes)
+                VALUES('inner_join_history',NEW.state_id,1,length(NEW.pk_blob)
+                    +coalesce(length(NEW.join_blob),0)+coalesce(length(NEW.row_payload),0))
+                ON CONFLICT(kind,state_id) DO UPDATE SET
+                    rows=rows+1,payload_bytes=payload_bytes+excluded.payload_bytes;
+            END;
+            CREATE TRIGGER IF NOT EXISTS join_history_size_delete
+            AFTER DELETE ON join_row_before_images BEGIN
+                UPDATE stateful_state_sizes SET rows=rows-1,payload_bytes=payload_bytes
+                    -(length(OLD.pk_blob)+coalesce(length(OLD.join_blob),0)+coalesce(length(OLD.row_payload),0))
+                WHERE kind='inner_join_history' AND state_id=OLD.state_id;
+                DELETE FROM stateful_state_sizes
+                WHERE kind='inner_join_history' AND state_id=OLD.state_id AND rows=0;
+            END;
+        ''')
+        if not con.execute("SELECT 1 FROM stateful_share_meta WHERE key='join_history_sizes_v1'").fetchone():
+            with source_state.transaction(con):
+                con.execute('''INSERT INTO stateful_state_sizes(kind,state_id,rows,payload_bytes)
+                    SELECT 'inner_join_history',state_id,count(*),sum(length(pk_blob)
+                        +coalesce(length(join_blob),0)+coalesce(length(row_payload),0))
+                    FROM join_row_before_images GROUP BY state_id''')
+                con.execute("INSERT INTO stateful_share_meta VALUES('join_history_sizes_v1','1')")
+
 
 def _text(value,name):
     value=str(value or "").strip()

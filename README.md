@@ -28,6 +28,22 @@
 
 严格 small 的 sentinel 目前测量 raw events 查询可见延迟，不能替代每个 stateful target 的 SLO；其他任务也保存各自可见/源龄指标与完整 oracle。不同 hosted runner、启用/关闭测量的运行不是受控 A/B。后续继续分层验证规模、低空间/升级恢复和固定资源，在持久主机上才运行正式认证。
 
+2026-10-04 新候选 `codex/v1-join-frozen-followers-20261003`：JOIN 在持久
+backing pin 存续时原子保留变化前的行（包括新插入前的不存在标记），以相同 W
+分块复制 follower 的临时输入状态、构建并封口 outbox，再分块回收临时状态。
+owner promotion 在停止的 leader frontier 分块构建私有状态，最后原子交接
+consumer/stream/ref。每个复制、输出和回收写事务最多 1000 行及 16MiB 预算；
+沿用 max-row singleton 边界。版本与临时状态进入 state-byte 计数。现有单 daemon
+内部按任务同步 promotion 与 follower worker；不增加多进程共享 state 文件支持。
+第一版 PR #36 全部正确性 CI、八格 E2E、smoke 和完整 small 数据/恢复通过，
+但严格 P95/P99=25.106/33.101s 失败，未合并。后续补齐退役并发 fencing、
+中断 promotion 取消和有界版本 GC；十一组真实 WAL 回归通过。新组合候选
+`codex/perf-frozen-join-cdc-20261004` 纳入 PR #33 的 CDC/读取优化，需重新
+验证完整 CI 与严格 small，不能继承旧头验收。10 万输出行合成测量完整摘要一致，最长写事务
+3.141s→0.032s，总构建耗时3.141s→7.438s；临时复制增加 I/O 和空间，不能将此
+作为 daemon 延迟通过的结论。单个增量 source commit 的高 fan-out journal 复制
+仍按事务原子处理，其成本不在本次分块保证之内。
+
 ## 1. 场景与待验证假说
 
 第一期限定单 MySQL 实例、单机、稳定主键、ROW + FULL row image，支持 GTID/文件位置恢复；显式登记源表及允许列。StarRocks 固定 **4.1.1 主键表、默认服务端参数**。不支持 SQL、破坏性 DDL、日志缺口必须拒绝或显式重建。
