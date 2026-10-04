@@ -1355,6 +1355,8 @@ def read_config():
         rowset_yellow=env_int("CDC_ROWSET_YELLOW", 500, maximum=10000),
         rowset_red=env_int("CDC_ROWSET_RED", 700, maximum=10000),
         version_recovery_checks=env_int("CDC_VERSION_RECOVERY_CHECKS", 2, maximum=10),
+        merge_visibility_pipeline=env("CDC_MERGE_VISIBILITY_PIPELINE","0")=="1",
+        merge_visibility_per_sink=env_int("CDC_MERGE_VISIBILITY_PER_SINK",2,maximum=64),
         event_trace=env("CDC_EVENT_TRACE","0")=="1",
         event_trace_every=env_int("CDC_EVENT_TRACE_EVERY",16,maximum=1000000),
         event_trace_limit=env_int("CDC_EVENT_TRACE_LIMIT",2048,maximum=8192),
@@ -3170,6 +3172,14 @@ def lane_blocking_delivery(con, table, lane):
     return row[0] if row else None
 
 
+def merge_visibility_admission_full(con,table,cfg):
+    if not cfg.get("merge_visibility_pipeline",False):
+        return False
+    limit=max(1,int(cfg.get("merge_visibility_per_sink",2)))
+    return con.execute("SELECT COUNT(*) FROM deliveries WHERE table_name=?",
+                       (table,)).fetchone()[0]>=limit
+
+
 def claim_snapshot_bundle(con, table, primary_lane, cfg, runtime):
     """Coalesce head snapshot jobs from several logical lanes into one physical delivery.
 
@@ -3188,6 +3198,8 @@ def claim_snapshot_bundle(con, table, primary_lane, cfg, runtime):
             return blocked if owner and int(owner[0]) == int(primary_lane) else None
 
         if con.execute("SELECT COUNT(*) FROM deliveries").fetchone()[0] >= cfg.get("max_inflight_deliveries",2**31):
+            return None
+        if merge_visibility_admission_full(con,table,cfg):
             return None
         if prepared_budget_used(con) >= cfg.get("max_prepared_bytes",2**63-1):
             return None
@@ -3266,6 +3278,8 @@ def claim_cdc_bundle(con, table, primary_lane, cfg, runtime):
             return blocked if owner and int(owner[0]) == int(primary_lane) else None
 
         if con.execute("SELECT COUNT(*) FROM deliveries").fetchone()[0] >= cfg.get("max_inflight_deliveries",2**31):
+            return None
+        if merge_visibility_admission_full(con,table,cfg):
             return None
         if prepared_budget_used(con) >= cfg.get("max_prepared_bytes",2**63-1):
             return None
@@ -7802,7 +7816,7 @@ def transaction_history_state(con, cfg, txn_id):
     return "pending",dict(Message="; ".join(details))
 
 
-def wait_visible(cfg, txn_id, stop):
+def wait_visible(cfg, txn_id, stop, once=False):
     started = time.monotonic()
     next_warning,failures,con = 0,0,None
     try:
@@ -7845,6 +7859,8 @@ def wait_visible(cfg, txn_id, stop):
                 failures += 1
                 delay = min(30,0.5*2**min(failures,6))
                 detail = dict(Message=str(exc))
+            if once:
+                return "pending",detail
             now = time.monotonic()
             overdue = now-started >= cfg["load_timeout"]
             if overdue:
@@ -8086,7 +8102,12 @@ def merge_async_delivery(handle, con, mapping, delivery, cfg, runtime):
         retry = False
         for txn_id in txn_ids:
             cdc_event_trace.record("visible_wait_begin",txn=txn_id)
-            state,detail = wait_visible(cfg,txn_id,stop)
+            if cfg.get("merge_visibility_pipeline",False):
+                state,detail = wait_visible(cfg,txn_id,stop,once=True)
+            else:
+                state,detail = wait_visible(cfg,txn_id,stop)
+            if state == "pending":
+                return None
             if state == "visible":
                 cdc_event_trace.record("remote_visible",txn=txn_id)
                 mark_merge_transaction_visible(con,delivery,txn_id,stop)
@@ -8684,11 +8705,20 @@ def process_merge_lane(con, engine_cache, handle, table, lane, cfg, runtime):
             return False
         extra_locks.append(lock)
 
+    if cfg.get("merge_visibility_pipeline",False):
+        with runtime["control_lock"]:
+            ready=time.monotonic()>=runtime.get("visibility_poll_after",{}).get(delivery,0)
+        if not ready:
+            for held in reversed(extra_locks):held.release()
+            return False
     trace_token=cdc_event_trace.select_delivery(con,table,delivery)
     try:
         if merge_table_quarantined(runtime,table) or version_recovery_active(runtime,table):
             return False
         started = time.monotonic()
+        if cfg.get("merge_visibility_pipeline",False):
+            with runtime["control_lock"]:
+                started=runtime.setdefault("visibility_delivery_started",{}).setdefault(delivery,started)
         try:
             cdc_event_trace.record("prepare_begin")
             prepared = prepare_delivery(con,engine,mapping,delivery,cfg,stop=stop)
@@ -8780,7 +8810,11 @@ def process_merge_lane(con, engine_cache, handle, table, lane, cfg, runtime):
             SELECT part,nrows,length(payload),json_bytes
             FROM load_parts WHERE delivery_id=? ORDER BY part
         """,(delivery,)).fetchall()
-        merge_async_delivery(handle,con,mapping,delivery,cfg,runtime)
+        result=merge_async_delivery(handle,con,mapping,delivery,cfg,runtime)
+        if result is None:
+            with runtime["control_lock"]:
+                runtime.setdefault("visibility_poll_after",{})[delivery]=time.monotonic()+0.2
+            return False
         remote_txns = con.execute("""
             SELECT COUNT(DISTINCT txn_id) FROM load_parts WHERE delivery_id=? AND txn_id IS NOT NULL
         """,(delivery,)).fetchone()[0]
@@ -8788,6 +8822,9 @@ def process_merge_lane(con, engine_cache, handle, table, lane, cfg, runtime):
         cdc_event_trace.record("ack_begin")
         acknowledge_delivery(con,delivery)
         cdc_event_trace.record("ack_end")
+        with runtime["control_lock"]:
+            runtime.get("visibility_poll_after",{}).pop(delivery,None)
+            runtime.get("visibility_delivery_started",{}).pop(delivery,None)
         prune_plan_engines(engine_cache,con,runtime)
         wake_loaders(runtime,table)
         elapsed = time.monotonic()-started
