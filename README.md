@@ -542,3 +542,12 @@ frontier 是完成后的观察上界。报告不是认证门禁，原有 cold/mi
 合批；成员 lane 的 durable assignment 一直保留至全体 parts 可见及
 ack。扩大宽度不等于提高远端并发，不解除未知请求隔离，也不构成
 端到端达标声明。
+
+
+### 冷构建准入候选（2026-10-04，未合并）
+
+`CDC_COLD_BUILD_ADMISSION=1` 串行化 aggregate/JOIN 尚未完成历史 staging 的构建步骤；默认关闭。队列从既有 durable candidate/generation 记录重建，按登记时间/task id排序，没有需人工清除的租约；已退役 worker、源回填未完成的任务不占用额度。等待 candidate leader 的 follower 让出额度；关闭共享策略时该依赖不适用。历史完成后允许其他任务构建，同时原任务继续 catchup/可见性确认，避免 cohort 等待所有成员历史完成时互相阻塞。
+
+`CDC_COLD_BUILD_ROWS=256`（最大4096）仅限制这些 cold step 的 bootstrap输入行数，不缩小ready任务的CDC批次。进程内互斥在异常/取消栈退出时释放；重启重新读取任务状态。metrics增加当前队列/owner与已准入步骤、顺序拒绝次数；计数不是锁等待时间或完整性能证据。此版本不暂停raw源snapshot，不隔离SQLite文件，不为网络/远端确认增加准入锁；也尚未实现源龄反馈。单次 follower seed/历史导出事务仍可能很长，行数上限不是50–100ms事务保证。
+
+新增9项真实SQLite/Arrow测试覆盖重启顺序、只读拒绝、failed/退役让位、源未完成、共享leader、aggregate/JOIN实际小步构建、history_staged让出及visible/ack→ready、并发互斥、异常释放和默认关闭零SQL。候选CI开启上述选项，继续运行完整合同及原严格small门槛；性能必须取真实端到端结果，不以单元测试替代。

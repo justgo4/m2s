@@ -60,6 +60,8 @@ jobs:
         profile: ${{ fromJSON(github.event_name == 'pull_request' && '["smoke","small"]' || github.event_name == 'workflow_dispatch' && format('["{0}"]', inputs.profile) || '["small","million"]') }}
     env:
       PYTHONUNBUFFERED: '1'
+      CDC_COLD_BUILD_ADMISSION: '1'
+      CDC_COLD_BUILD_ROWS: '256'
       CDC_MERGE_VISIBILITY_PIPELINE: '1'
       CDC_MERGE_VISIBILITY_PER_SINK: '2'
       CDC_RESOURCE_CPU_CORES: '2'

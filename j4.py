@@ -59,6 +59,7 @@ import physical_state_catalog
 import relational_ir
 import source_state
 import stateful_admission
+import cold_build_admission
 import stateful_catalog_runtime
 import stateful_physical_registry
 import stateful_rebuild
@@ -452,6 +453,8 @@ def metrics_status_record(runtime, cfg, prepared, state):
         record["sqlite_write_timing"]=sqlite_write_timing.PROCESS.snapshot()
     if cdc_event_trace.enabled():
         record["event_trace"]=cdc_event_trace.snapshot()
+    if cfg.get("cold_build_admission",False):
+        record["cold_build_admission"]=dict(runtime.get("cold_build_status",{}))
     metrics_path,summary_path = report_paths(cfg)
     append_report(metrics_path,record,cfg.get("metrics_max_bytes",64*1024*1024))
     write_summary(summary_path,record)
@@ -1355,6 +1358,8 @@ def read_config():
         rowset_yellow=env_int("CDC_ROWSET_YELLOW", 500, maximum=10000),
         rowset_red=env_int("CDC_ROWSET_RED", 700, maximum=10000),
         version_recovery_checks=env_int("CDC_VERSION_RECOVERY_CHECKS", 2, maximum=10),
+        cold_build_admission=env("CDC_COLD_BUILD_ADMISSION","0")=="1",
+        cold_build_rows=env_int("CDC_COLD_BUILD_ROWS",256,maximum=4096),
         cdc_bundle_max_lanes=env_int("CDC_CDC_BUNDLE_MAX_LANES",16,maximum=64),
         merge_visibility_pipeline=env("CDC_MERGE_VISIBILITY_PIPELINE","0")=="1",
         merge_visibility_per_sink=env_int("CDC_MERGE_VISIBILITY_PER_SINK",2,maximum=64),
@@ -11618,10 +11623,13 @@ def stateful_task_worker(item, cfg, runtime):
                     continue
 
             try:
-                result=stateful_rebuild_guarded_step(
-                    con,cfg,runtime,item,runner,mapping,
-                    bootstrap_limit=max(
-                        1,min(int(cfg.get("snapshot_rows",1000)),4096)))
+                def run_stateful_step(limit):
+                    return stateful_rebuild_guarded_step(
+                        con,cfg,runtime,item,runner,mapping,
+                        bootstrap_limit=limit)
+                result=cold_build_admission.step(
+                    con,cfg,runtime,kind,task["task_id"],run_stateful_step,
+                    max(1,min(int(cfg.get("snapshot_rows",1000)),4096)))
             except sqlite3.OperationalError as exc:
                 stateful_worker_busy_retry(con,runtime,task["task_id"],exc)
                 # Re-read active task membership, source completeness and
