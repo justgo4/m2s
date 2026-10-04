@@ -5,6 +5,16 @@ the durable handoff if Codex quota/session ends; it does not promise automatic
 AI continuation. Routine repository changes, Actions and validated merges are
 authorized by the owner without expiry, subject to actual configured access.
 
+## Active same-runner A/B/B/A driver (2026-10-04)
+
+Branch codex/performance-abba-20261004 based on PR46 exact04ed4cb6.
+PR46 real CI underway (baseline37179029737/native37179029744/state37179029722,
+E2E37179029726/validation37179029713). No results claimed yet.
+Next implement immutable A/B/B/A, disposable services per trial, one host,
+fixed configuration and image fingerprints, all four failure artifacts retained.
+Driver is diagnostic orchestration; preserve strict gate failures and no certificate.
+Test exact revision/clean-checkout/run-directory safeguards before real execution.
+
 ## Active event-correlated performance instrumentation (2026-10-04)
 
 Branch codex/cdc-event-trace-20261004, base main9de6b014.
