@@ -158,7 +158,7 @@ jobs:
             benchmark-results/validation/longhaul-daemon-metrics.jsonl
             benchmark-results/validation/work/daemon-*.log
           if-no-files-found: warn
-          retention-days: 14
+          retention-days: 1
       - name: Remove disposable services
         if: always()
         run: |
