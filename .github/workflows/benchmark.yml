@@ -43,4 +43,4 @@ jobs:
           name: synthetic-partition-${{ github.sha }}
           path: benchmark-results/partition.json
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 1
