@@ -88,7 +88,7 @@ jobs:
           name: milestone-${{ github.sha }}
           path: milestone-evidence/manifest.json
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 1
       - name: Require every evidence workflow to pass
         if: always()
         run: |
