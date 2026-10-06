@@ -89,6 +89,7 @@ jobs:
         run: python tools/source_gc_overlap_benchmark.py --commits 80 --rows-per-commit 500 --part-rows 250 --key-space 10000 --gc-version-rows 512 --gc-commit-rows 32 --gc-sleep-ms 5 --output benchmark-results/source-gc-overlap.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
+          retention-days: 1
           name: state-layout-python-${{ matrix.python }}
           path: |
             benchmark-results/join-bootstrap-stream.json
