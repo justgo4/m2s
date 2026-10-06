@@ -62,4 +62,4 @@ jobs:
           name: native-AB-${{ matrix.layer }}-${{ matrix.workload }}-${{ github.sha }}
           path: benchmark-results/${{ matrix.layer }}-${{ matrix.workload }}.json
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 1
