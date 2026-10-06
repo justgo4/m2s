@@ -172,7 +172,7 @@ jobs:
           name: e2e-failure-${{ matrix.protocol }}-gtid-${{ matrix.gtid }}-shared-${{ matrix.shared }}
           path: benchmark-results/**
           if-no-files-found: warn
-          retention-days: 14
+          retention-days: 1
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: e2e-${{ matrix.protocol }}-gtid-${{ matrix.gtid }}-shared-${{ matrix.shared }}
@@ -186,7 +186,7 @@ jobs:
             benchmark-results/longhaul-smoke-checkpoint.json
             benchmark-results/longhaul-smoke-gate.json
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 1
       - name: Remove disposable services
         if: always()
         run: |
