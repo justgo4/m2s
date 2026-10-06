@@ -1,0 +1,108 @@
+name: Actions storage cleanup
+
+on:
+  workflow_dispatch:
+    inputs:
+      keep_per_workflow:
+        description: Completed runs to keep for each workflow
+        required: true
+        default: '5'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/actions-storage-cleanup.yml'
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: actions-storage-cleanup
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Delete old completed workflow runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEEP_PER_WORKFLOW: ${{ github.event.inputs.keep_per_workflow || '5' }}
+          CURRENT_RUN_ID: ${{ github.run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          repo="$GITHUB_REPOSITORY"
+          keep="$KEEP_PER_WORKFLOW"
+
+          if ! [[ "$keep" =~ ^[0-9]+$ ]] || [ "$keep" -lt 1 ]; then
+            echo "keep_per_workflow must be a positive integer" >&2
+            exit 2
+          fi
+
+          tmp="$(mktemp)"
+          trap 'rm -f "$tmp"' EXIT
+
+          echo "Reading workflow runs for $repo ..."
+          gh api --paginate             -H "Accept: application/vnd.github+json"             -H "X-GitHub-Api-Version: 2022-11-28"             "/repos/$repo/actions/runs?per_page=100"             --jq '.workflow_runs[] | [.id,.workflow_id,.status,.created_at,.name] | @tsv'             > "$tmp"
+
+          total="$(wc -l < "$tmp" | tr -d ' ')"
+          echo "Found $total workflow runs."
+
+          declare -A kept
+          deleted=0
+          preserved=0
+          active=0
+          failed=0
+
+          while IFS=$'\t' read -r run_id workflow_id status created_at run_name; do
+            [ -n "$run_id" ] || continue
+
+            if [ "$run_id" = "$CURRENT_RUN_ID" ]; then
+              active=$((active + 1))
+              continue
+            fi
+
+            if [ "$status" != "completed" ]; then
+              active=$((active + 1))
+              continue
+            fi
+
+            count="${kept[$workflow_id]:-0}"
+            if [ "$count" -lt "$keep" ]; then
+              kept[$workflow_id]=$((count + 1))
+              preserved=$((preserved + 1))
+              continue
+            fi
+
+            echo "Deleting run id=$run_id workflow=$workflow_id created=$created_at name=$run_name"
+            if gh api --method DELETE               -H "Accept: application/vnd.github+json"               -H "X-GitHub-Api-Version: 2022-11-28"               "/repos/$repo/actions/runs/$run_id"
+            then
+              deleted=$((deleted + 1))
+            else
+              failed=$((failed + 1))
+            fi
+
+            # Avoid GitHub secondary-rate-limit bursts while still finishing
+            # thousands of historical runs in a reasonable time.
+            sleep 0.05
+          done < "$tmp"
+
+          {
+            echo "## Actions storage cleanup"
+            echo
+            echo "- scanned: $total"
+            echo "- deleted old completed runs: $deleted"
+            echo "- preserved recent completed runs: $preserved"
+            echo "- preserved active/current runs: $active"
+            echo "- delete failures: $failed"
+            echo "- policy: keep latest $keep completed runs per workflow"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "Cleanup complete: deleted=$deleted preserved=$preserved active=$active failed=$failed"
+
+          if [ "$failed" -ne 0 ]; then
+            exit 1
+          fi
