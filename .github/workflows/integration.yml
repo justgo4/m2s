@@ -67,6 +67,7 @@ jobs:
       - name: Publish synthetic counts and environment only
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
+          retention-days: 1
           name: mysql-contract
           path: |
             benchmark-results/live-mysql-contract.json
@@ -117,6 +118,7 @@ jobs:
         run: python tools/starrocks_contract.py
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
+          retention-days: 1
           name: starrocks-protocol-contract
           path: benchmark-results/starrocks-contract.json
           if-no-files-found: error
