@@ -183,6 +183,32 @@ class EventTraceTest(unittest.TestCase):
         wrong=dict(snapshot,events=[dict(events[0],mono=11)])
         with self.assertRaises(ValueError):report.analyze([snapshot,wrong])
 
+    def test_report_source_to_selected_oldest_newest_and_job_age(self):
+        # Multi-seq delivery: expanded source_to_selected keeps both; newest/oldest are per-delivery.
+        events=[dict(id=1,stage='source_durable',seq=1,mono=0.0,wall=100.0),
+                dict(id=2,stage='source_durable',seq=2,mono=15.0,wall=115.0),
+                dict(id=3,stage='delivery_selected',target='t',delivery='d',sequences=[1,2],
+                     mono=17.0,wall=117.0,oldest_created_wall=114.5),
+                dict(id=4,stage='ack_end',target='t',delivery='d',mono=18.0,wall=118.0)]
+        result=report.analyze([dict(enabled=True,epoch='e',instance='i',dropped=0,events=events)])
+        stages=result['stages']
+        self.assertEqual(stages['source_to_selected']['n'],2)
+        self.assertEqual(stages['source_to_selected']['max'],17.0)
+        self.assertEqual(stages['source_to_selected']['p50'],(17.0+2.0)/2)
+        self.assertEqual(stages['source_to_selected_oldest']['n'],1)
+        self.assertEqual(stages['source_to_selected_oldest']['p95'],17.0)
+        self.assertEqual(stages['source_to_selected_newest']['n'],1)
+        self.assertEqual(stages['source_to_selected_newest']['p95'],2.0)
+        self.assertEqual(stages['job_age']['n'],1)
+        self.assertAlmostEqual(stages['job_age']['p95'],2.5)
+        # Missing oldest_created_wall → no job_age sample.
+        bare=[dict(id=1,stage='source_durable',seq=9,mono=1.0),
+              dict(id=2,stage='delivery_selected',target='t',delivery='e',sequences=[9],mono=3.0,wall=50.0),
+              dict(id=3,stage='ack_end',target='t',delivery='e',mono=4.0)]
+        bare_result=report.analyze([dict(enabled=True,epoch='e',instance='i',dropped=0,events=bare)])
+        self.assertNotIn('job_age',bare_result['stages'])
+        self.assertEqual(bare_result['stages']['source_to_selected_newest']['p95'],2.0)
+
 
 if __name__=='__main__':
     unittest.main()

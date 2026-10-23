@@ -84,14 +84,24 @@ def analyze(records,max_events=200000):
         complete+=1
         selected=first['delivery_selected'];ack=last['ack_end']
         add('selected_to_ack',selected['mono'],ack['mono'])
+        durable_monos=[]
         for seq in selected['sequences']:
             durable=source.get((*key[:2],seq,'source_durable'))
             if durable is not None:
+                durable_monos.append(durable)
+                # Per-seq expand (backward-compatible upper-bound bag).
                 add('source_to_selected',durable,selected['mono'])
                 add('source_to_ack',durable,ack['mono'])
+        if durable_monos:
+            # One sample per delivery: oldest/newest sampled source_durable on that delivery.
+            add('source_to_selected_oldest',min(durable_monos),selected['mono'])
+            add('source_to_selected_newest',max(durable_monos),selected['mono'])
+        oldest_created=selected.get('oldest_created_wall')
+        if oldest_created is not None and 'wall' in selected:
+            add('job_age',oldest_created,selected['wall'])
     return dict(kind='m2s_correlated_trace_diagnostic',certification=False,
         clock_scope='within same process instance only',
-        coverage='sampled after-durable observations; no MySQL commit/queryable guarantee; task_frontier is an upper-bound observation',
+        coverage='sampled after-durable observations; no MySQL commit/queryable guarantee; task_frontier is an upper-bound observation; source_to_selected expands each sampled seq (upper-bound); source_to_selected_oldest/newest are per-delivery; job_age=selected.wall-oldest_created_wall',
         instances=len(loss),disabled_records=disabled,unique_events=len(unique),
         ring_evictions=sum(loss.values()),metadata_errors=sum(metadata.values()),
         analysis_dropped=analysis_dropped,clock_order_conflicts=clock_conflicts,
