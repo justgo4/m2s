@@ -1,0 +1,87 @@
+name: Fixed-revision merge-interval A-B-B-A
+
+on:
+  pull_request:
+    paths:
+      - 'tools/config_abba*.py'
+      - '.github/workflows/config-abba.yml'
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: Full immutable tested commit SHA
+        required: true
+        default: fd734d617e74b9cb9a401f7c5aeecfae0156f50f
+      variable:
+        type: choice
+        options: [CDC_BATCH_MS, CDC_MERGE_COMMIT_INTERVAL_MS]
+        default: CDC_MERGE_COMMIT_INTERVAL_MS
+      a:
+        description: A value
+        required: true
+        default: '1000'
+      b:
+        description: B value
+        required: true
+        default: '500'
+      profile:
+        type: choice
+        options: [smoke, small]
+        default: small
+      trace:
+        type: choice
+        options: ['1', '0']
+        default: '1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: config-abba-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  controlled:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      PYTHONUNBUFFERED: '1'
+      REVISION: ${{ inputs.revision || 'fd734d617e74b9cb9a401f7c5aeecfae0156f50f' }}
+      VARIABLE: ${{ inputs.variable || 'CDC_MERGE_COMMIT_INTERVAL_MS' }}
+      A_VALUE: ${{ inputs.a || '1000' }}
+      B_VALUE: ${{ inputs.b || '500' }}
+      PROFILE: ${{ inputs.profile || 'small' }}
+      TRACE: ${{ inputs.trace || '1' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.14'
+          cache: pip
+      - run: python -m pip install -r requirements.txt
+      - name: Safeguards
+        run: |
+          python tools/config_abba_test.py
+          python tools/privacy_check.py
+          python tools/config_abba.py             --revision "$REVISION" --variable "$VARIABLE"             --a "$A_VALUE" --b "$B_VALUE" --profile "$PROFILE"             --run-directory "$RUNNER_TEMP/m2s-config-abba" --plan-only
+      - name: Release hosted disk space
+        run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
+      - name: Four fresh isolated trials with unchanged gates
+        run: |
+          python tools/config_abba.py             --revision "$REVISION" --variable "$VARIABLE"             --a "$A_VALUE" --b "$B_VALUE" --profile "$PROFILE" --trace "$TRACE"             --run-directory "$RUNNER_TEMP/m2s-config-abba" --isolated
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: config-abba-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            ${{ runner.temp }}/m2s-config-abba/experiment.json
+            ${{ runner.temp }}/m2s-config-abba/*/*.log
+            ${{ runner.temp }}/m2s-config-abba/*/event-trace-report.json
+            ${{ runner.temp }}/m2s-config-abba/*/run/*.json
+            ${{ runner.temp }}/m2s-config-abba/*/run/*.jsonl
+            ${{ runner.temp }}/m2s-config-abba/*/run/*.log
+            ${{ runner.temp }}/m2s-config-abba/*/run/work/daemon-*.log
+          retention-days: 14
