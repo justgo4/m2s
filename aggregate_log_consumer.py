@@ -68,9 +68,18 @@ def ensure_consumer(
     aggregate_outbox.ensure_stream(
         con,consumer_id,state_id,int(plan_version),
         generation_id,watermark)
-    aggregate_outbox.seed_bootstrap(
-        con,consumer_id,state_id,int(plan_version),
-        generation_id,watermark)
+    # Seeding commits its own pages. Registration stays in the caller's
+    # transaction when one is open, so a failed activation can roll it back.
+    if con.in_transaction:
+        if not aggregate_outbox.bootstrap_sealed(
+            con,consumer_id,watermark
+        ):
+            raise RuntimeError(
+                "aggregate bootstrap must be sealed before registering its consumer")
+    else:
+        aggregate_outbox.seed_bootstrap(
+            con,consumer_id,state_id,int(plan_version),
+            generation_id,watermark)
     if int(state["watermark"])!=watermark:
         raise RuntimeError(
             "aggregate state exists at a different watermark; resume from its "

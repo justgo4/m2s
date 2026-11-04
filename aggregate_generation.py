@@ -194,6 +194,12 @@ def activate_catchup(
         raise RuntimeError(
             "aggregate bootstrap must finish exactly at generation fixed-W")
 
+    # Pages commit themselves. Consumer registration and pin release stay
+    # in one transaction, so a crash after a sealed seed does not publish
+    # a consumer without releasing the fixed-W pin, or the reverse.
+    aggregate_outbox.seed_bootstrap(
+        con,consumer_id,state_id,generation["plan_version"],
+        generation["generation_id"],generation["fixed_w"])
     with task_generation.transaction(con):
         consumer=aggregate_log_consumer.ensure_consumer(
             con,consumer_id,generation["source_relation"],

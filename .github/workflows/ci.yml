@@ -65,6 +65,7 @@ jobs:
           python tools/aggregate_job_bridge_test.py
           python tools/aggregate_ir_test.py
           python tools/aggregate_log_consumer_test.py
+          python tools/aggregate_seed_chunk_test.py
           python tools/aggregate_runtime_test.py
           python tools/aggregate_shared_runtime_test.py
           python tools/aggregate_subview_shared_runtime_test.py

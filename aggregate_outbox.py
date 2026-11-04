@@ -14,7 +14,9 @@ import hashlib
 import pickle
 import time
 
+import aggregate_frozen
 import aggregate_state
+import source_state
 
 
 @contextlib.contextmanager
@@ -71,7 +73,40 @@ def install(con):
                 ON DELETE CASCADE);
         CREATE INDEX IF NOT EXISTS aggregate_output_pending
             ON aggregate_output_commits(consumer_id,visible,source_seq);
+
+        CREATE TABLE IF NOT EXISTS aggregate_output_seeds(
+            consumer_id TEXT NOT NULL,
+            source_seq INTEGER NOT NULL,
+            state_id TEXT NOT NULL,
+            spec_hash TEXT NOT NULL,
+            cursor_key BLOB,
+            staged_rows INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(consumer_id,source_seq));
     """)
+
+
+def _ensure_seed_table(con):
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS aggregate_output_seeds(
+            consumer_id TEXT NOT NULL,
+            source_seq INTEGER NOT NULL,
+            state_id TEXT NOT NULL,
+            spec_hash TEXT NOT NULL,
+            cursor_key BLOB,
+            staged_rows INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(consumer_id,source_seq))
+    """)
+    columns={
+        row[1] for row in con.execute(
+            "PRAGMA table_info(aggregate_output_seeds)").fetchall()
+    }
+    if "cursor_key" not in columns:
+        con.execute(
+            "ALTER TABLE aggregate_output_seeds ADD COLUMN cursor_key BLOB")
+    if "staged_rows" not in columns:
+        con.execute(
+            "ALTER TABLE aggregate_output_seeds "
+            "ADD COLUMN staged_rows INTEGER NOT NULL DEFAULT 0")
 
 
 def ensure_installed(con):
@@ -79,9 +114,10 @@ def ensure_installed(con):
         SELECT 1 FROM sqlite_master
         WHERE type='table' AND name='aggregate_output_streams'
     """).fetchone()
-    if exists:
+    if not exists:
+        install(con)
         return
-    install(con)
+    _ensure_seed_table(con)
 
 
 def _text(value,name):
@@ -200,21 +236,215 @@ def _public_row(spec,row):
     }
 
 
-def seed_bootstrap(
-        con,consumer_id,state_id,plan_version,generation_id,fixed_w
+def _seed_open(con,consumer_id,source_seq):
+    _ensure_seed_table(con)
+    return con.execute("""
+        SELECT state_id,spec_hash,cursor_key,staged_rows
+        FROM aggregate_output_seeds
+        WHERE consumer_id=? AND source_seq=?
+    """,(consumer_id,int(source_seq))).fetchone()
+
+
+def _seed_cursor(row):
+    if row is None or row[2] is None:
+        return None
+    return bytes(row[2])
+
+
+def _hash_bootstrap(con,consumer_id,source_seq):
+    """Digest committed bootstrap rows without holding the writer lock."""
+    with source_state.read_snapshot(con):
+        digest=hashlib.sha256()
+        digest.update(b"bootstrap")
+        count=0
+        max_key=None
+        for key_blob,op,payload in con.execute("""
+            SELECT key_blob,op,row_payload FROM aggregate_output_rows
+            WHERE consumer_id=? AND source_seq=? ORDER BY key_blob
+        """,(consumer_id,int(source_seq))):
+            key_blob=bytes(key_blob)
+            payload=bytes(payload)
+            digest.update(len(key_blob).to_bytes(8,"big"))
+            digest.update(key_blob)
+            digest.update(bytes([int(op)]))
+            digest.update(len(payload).to_bytes(8,"big"))
+            digest.update(payload)
+            count+=1
+            max_key=key_blob
+        return digest.hexdigest(),count,max_key
+
+
+def bootstrap_sealed(con,consumer_id,fixed_w):
+    """True only after every bootstrap group has been durable and digested."""
+    consumer_id=_text(consumer_id,"consumer_id")
+    fixed_w=int(fixed_w)
+    if _seed_open(con,consumer_id,fixed_w) is not None:
+        return False
+    row=con.execute("""
+        SELECT kind FROM aggregate_output_commits
+        WHERE consumer_id=? AND source_seq=?
+    """,(consumer_id,fixed_w)).fetchone()
+    return row is not None and str(row[0])=="bootstrap"
+
+
+def _seal_bootstrap(con,consumer_id,fixed_w):
+    digest,count,max_key=_hash_bootstrap(con,consumer_id,fixed_w)
+    with transaction(con):
+        existing=_seed_open(con,consumer_id,fixed_w)
+        if existing is None:
+            return True
+        if int(existing[3])!=count:
+            return False
+        stored=con.execute("""
+            SELECT MAX(key_blob) FROM aggregate_output_rows
+            WHERE consumer_id=? AND source_seq=?
+        """,(consumer_id,int(fixed_w))).fetchone()[0]
+        if count==0:
+            if stored is not None:
+                return False
+        elif bytes(stored)!=max_key:
+            return False
+        con.execute("""
+            UPDATE aggregate_output_commits
+            SET nrows=?,digest=?,updated=?
+            WHERE consumer_id=? AND source_seq=?
+        """,(count,digest,time.time(),consumer_id,int(fixed_w)))
+        con.execute("""
+            DELETE FROM aggregate_output_seeds
+            WHERE consumer_id=? AND source_seq=?
+        """,(consumer_id,int(fixed_w)))
+    aggregate_frozen.release(
+        con,aggregate_frozen.seed_owner(consumer_id))
+    aggregate_frozen.gc_step(con)
+    return True
+
+
+def seed_chunk(
+        con,consumer_id,state_id,plan_version,generation_id,fixed_w,
+        limit=1000,byte_limit=16*1024**2,target_spec=None
 ):
+    """Insert one bounded, restartable page of a fixed-W bootstrap journal.
+
+    An unsealed page is invisible to stage/copy. The scan cursor, not the
+    last emitted key, is what the next call resumes from, so keys that were
+    absent at the pinned cut cannot stall the scan. The digest is written
+    only after the last page, and that hash does not hold the writer lock.
+    """
+    if con.in_transaction:
+        raise RuntimeError(
+            "aggregate bootstrap chunk requires its own transaction")
+    limit=max(1,min(int(limit),1000))
+    byte_limit=max(1,min(int(byte_limit),16*1024**2))
     ensure_stream(
         con,consumer_id,state_id,plan_version,generation_id,fixed_w)
+    consumer_id=_text(consumer_id,"consumer_id")
+    state_id=_text(state_id,"state_id")
+    fixed_w=int(fixed_w)
+    if bootstrap_sealed(con,consumer_id,fixed_w):
+        aggregate_frozen.release(
+            con,aggregate_frozen.seed_owner(consumer_id))
+        aggregate_frozen.gc_step(con)
+        return dict(done=True,nrows=0)
+    owner=aggregate_frozen.seed_owner(consumer_id)
+    aggregate_frozen.pin(con,owner,state_id,fixed_w)
+    source=aggregate_state.state_info(con,state_id)
+    if target_spec is not None:
+        target_spec=_projected_spec(source["spec"],target_spec)
+    opened=_seed_open(con,consumer_id,fixed_w)
+    cursor=_seed_cursor(opened)
+    page,exhausted=aggregate_frozen.group_page_at(
+        con,state_id,fixed_w,after_key=cursor,limit=limit+1)
     rows=[]
-    spec=aggregate_state.state_info(con,state_id)["spec"]
-    for row in aggregate_state.read_rows(con,state_id):
-        key_blob,_=aggregate_state._group_key(spec,row)
-        rows.append((
-            bytes(key_blob),0,
-            pickle.dumps(_public_row(spec,row),protocol=5)))
+    size=0
+    consumed=0
+    last=cursor
+    for key_blob,row in page:
+        if row is None:
+            last=key_blob
+            consumed+=1
+            continue
+        if target_spec is None:
+            public=_public_row(source["spec"],row)
+        else:
+            public=_project_row(target_spec,row,delete=False)
+        payload=pickle.dumps(public,protocol=5)
+        nbytes=len(key_blob)+len(payload)
+        if rows and (len(rows)>=limit or size+nbytes>byte_limit):
+            break
+        rows.append((key_blob,0,payload))
+        size+=nbytes
+        last=key_blob
+        consumed+=1
+    reached_end=consumed==len(page) and exhausted
     with transaction(con):
-        _insert_commit(
-            con,consumer_id,int(fixed_w),"bootstrap",rows)
+        aggregate_frozen.info(con,owner)
+        current=aggregate_state.state_info(con,state_id)
+        if (
+            current["spec_hash"]!=source["spec_hash"]
+            or not current["bootstrap_complete"]
+            or int(current["watermark"])<fixed_w
+        ):
+            raise RuntimeError(
+                "aggregate bootstrap state changed while seeding output")
+        existing=_seed_open(con,consumer_id,fixed_w)
+        commit=con.execute("""
+            SELECT kind FROM aggregate_output_commits
+            WHERE consumer_id=? AND source_seq=?
+        """,(consumer_id,fixed_w)).fetchone()
+        if commit is not None and str(commit[0])!="bootstrap":
+            raise RuntimeError(
+                "aggregate bootstrap seed conflicts with another commit")
+        if existing is None and commit is not None:
+            aggregate_frozen.release(con,owner)
+            return dict(done=True,nrows=0)
+        if existing is not None and _seed_cursor(existing)!=cursor:
+            return dict(done=False,nrows=0)
+        if existing is not None and (
+            existing[0]!=state_id or existing[1]!=source["spec_hash"]
+        ):
+            raise RuntimeError(
+                "aggregate bootstrap seed identity changed across restart")
+        now=time.time()
+        if commit is None:
+            con.execute("""
+                INSERT INTO aggregate_output_commits(
+                    consumer_id,source_seq,kind,nrows,digest,visible,created,updated)
+                VALUES(?,?,'bootstrap',0,'',0,?,?)
+            """,(consumer_id,fixed_w,now,now))
+            con.execute("""
+                INSERT INTO aggregate_output_seeds(
+                    consumer_id,source_seq,state_id,spec_hash,cursor_key,staged_rows)
+                VALUES(?,?,?,?,NULL,0)
+            """,(consumer_id,fixed_w,state_id,source["spec_hash"]))
+            existing=_seed_open(con,consumer_id,fixed_w)
+        for key_blob,op,payload in rows:
+            con.execute("""
+                INSERT INTO aggregate_output_rows(
+                    consumer_id,source_seq,key_blob,op,row_payload)
+                VALUES(?,?,?,?,?)
+            """,(consumer_id,fixed_w,key_blob,int(op),payload))
+        con.execute("""
+            UPDATE aggregate_output_seeds
+            SET cursor_key=?,staged_rows=?
+            WHERE consumer_id=? AND source_seq=?
+        """,(
+            last,int(existing[3])+len(rows),consumer_id,fixed_w))
+        if not reached_end:
+            return dict(done=False,nrows=len(rows))
+    if not _seal_bootstrap(con,consumer_id,fixed_w):
+        return dict(done=False,nrows=len(rows))
+    return dict(done=True,nrows=len(rows))
+
+
+def seed_bootstrap(
+        con,consumer_id,state_id,plan_version,generation_id,fixed_w,
+        limit=1000,byte_limit=16*1024**2
+):
+    while not seed_chunk(
+        con,consumer_id,state_id,plan_version,generation_id,fixed_w,
+        limit=limit,byte_limit=byte_limit
+    )["done"]:
+        pass
     return commit_info(con,consumer_id,fixed_w)
 
 
@@ -257,7 +487,7 @@ def _project_row(target_spec,row,delete=False):
 
 def seed_bootstrap_projected(
         con,consumer_id,source_state_id,plan_version,generation_id,
-        fixed_w,target_spec
+        fixed_w,target_spec,limit=1000,byte_limit=16*1024**2
 ):
     """Seed a follower bootstrap from a compatible aggregate superset state."""
     source=aggregate_state.state_info(
@@ -270,21 +500,11 @@ def seed_bootstrap_projected(
     if int(source["watermark"])!=int(fixed_w):
         raise RuntimeError(
             "aggregate projected bootstrap source moved from fixed-W")
-    rows=[]
-    for row in aggregate_state.read_rows(
-        con,source_state_id
-    ):
-        key_blob,_=aggregate_state._group_key(
-            source["spec"],row)
-        public=_project_row(
-            target_spec,row,delete=False)
-        rows.append((
-            bytes(key_blob),0,
-            pickle.dumps(public,protocol=5)))
-    with transaction(con):
-        _insert_commit(
-            con,consumer_id,int(fixed_w),
-            "bootstrap",rows)
+    while not seed_chunk(
+        con,consumer_id,source_state_id,plan_version,generation_id,
+        fixed_w,target_spec=target_spec,limit=limit,byte_limit=byte_limit
+    )["done"]:
+        pass
     return commit_info(
         con,consumer_id,fixed_w)
 
@@ -302,6 +522,7 @@ def copy_commit_projected(
     if source_consumer_id==target_consumer_id:
         raise ValueError(
             "aggregate projected copy source and target consumers must differ")
+    _require_sealed(con,source_consumer_id,source_seq)
     source_commit=commit_info(
         con,source_consumer_id,source_seq)
     source_stream=stream_info(
@@ -401,6 +622,7 @@ def copy_commit(
     if source_consumer_id==target_consumer_id:
         raise ValueError(
             "aggregate output copy source and target consumers must differ")
+    _require_sealed(con,source_consumer_id,source_seq)
     source=commit_info(
         con,source_consumer_id,source_seq)
     stream=stream_info(
@@ -469,14 +691,29 @@ def commit_rows(con,consumer_id,source_seq):
     return result
 
 
+def _require_sealed(con,consumer_id,source_seq):
+    _ensure_seed_table(con)
+    if con.execute("""
+        SELECT 1 FROM aggregate_output_seeds
+        WHERE consumer_id=? AND source_seq=?
+    """,(consumer_id,int(source_seq))).fetchone():
+        raise RuntimeError(
+            "aggregate output commit is still being seeded")
+
+
 def pending_commits(con,consumer_id,limit=100):
+    _ensure_seed_table(con)
+    consumer_id=_text(consumer_id,"consumer_id")
     return [
         commit_info(con,consumer_id,row[0])
         for row in con.execute("""
-            SELECT source_seq FROM aggregate_output_commits
-            WHERE consumer_id=? AND visible=0
-            ORDER BY source_seq LIMIT ?
-        """,(_text(consumer_id,"consumer_id"),max(1,int(limit))))
+            SELECT c.source_seq FROM aggregate_output_commits c
+            WHERE c.consumer_id=? AND c.visible=0
+              AND NOT EXISTS (
+                SELECT 1 FROM aggregate_output_seeds s
+                WHERE s.consumer_id=c.consumer_id AND s.source_seq=c.source_seq)
+            ORDER BY c.source_seq LIMIT ?
+        """,(consumer_id,max(1,int(limit))))
     ]
 
 
@@ -484,6 +721,7 @@ def mark_visible(con,consumer_id,source_seq):
     consumer_id=_text(consumer_id,"consumer_id")
     source_seq=int(source_seq)
     now=time.time()
+    _require_sealed(con,consumer_id,source_seq)
     with transaction(con):
         stream=stream_info(con,consumer_id)
         row=con.execute("""
