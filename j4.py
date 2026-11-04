@@ -7888,7 +7888,11 @@ def wait_visible(cfg, txn_id, stop, once=False):
                         log(f"TXN RECOVERED txn={txn_id} state={state} "
                             f"source={detail['source']} label={detail['Label']}")
                         return state,detail
-                    delay = 5
+                    # Missing from SHOW TRANSACTION is not VISIBLE and not an
+                    # abort. History was just read. Park 0.2s, not 5s, so a
+                    # publish that has not appeared yet does not freeze the lane.
+                    # The overdue floor below still backs off after load_timeout.
+                    delay = 0.2
                 failures = 0
             except (pymysql.err.OperationalError,pymysql.err.InterfaceError) as exc:
                 if not retryable_mysql_error(exc):
@@ -8853,7 +8857,7 @@ def process_merge_lane(con, engine_cache, handle, table, lane, cfg, runtime):
         result=merge_async_delivery(handle,con,mapping,delivery,cfg,runtime)
         if result is None:
             with runtime["control_lock"]:
-                runtime.setdefault("visibility_poll_after",{})[delivery]=time.monotonic()+0.2
+                runtime.setdefault("visibility_poll_after",{})[delivery]=time.monotonic()+0.1
             return False
         remote_txns = con.execute("""
             SELECT COUNT(DISTINCT txn_id) FROM load_parts WHERE delivery_id=? AND txn_id IS NOT NULL

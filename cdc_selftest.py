@@ -445,6 +445,12 @@ def recovery_selftest(directory, mapping, cfg):
     exercise(missing,history=lambda n: [] if n == 0 else [finished])
     exercise(missing,live=pymysql.err.OperationalError(1142,"access denied"),history=[finished])
     exercise(missing,history=[],expected="pending")
+    cfg["load_timeout"] = 600
+    try:
+        _,waits = exercise(missing,history=[],expected="pending")
+    finally:
+        cfg["load_timeout"] = 0
+    assert waits == [0.2,0.2,0.2],waits
     exercise(missing,history=[("wrong","FINISHED",orjson.dumps(dict(txn_id=683331180)),None)],expected="pending")
     exercise(missing,history=[("pending","COMMITED",finished[2],None)],expected="pending")
     exercise(missing,history=[finished,cancelled],expected="pending")
