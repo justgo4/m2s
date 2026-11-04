@@ -1120,3 +1120,5 @@ Same caps, trace off, 90s settle, new directory each round. A is `60069ff` (main
 | M1A2 | 60069ff | 270 | 1.647 | 4.025 | 4.984 | 6.983 | 3 | 0 | 230.71 | 417157120 | 7223676928 | 1.27 | 3438 / 7.198s |
 
 P95 for B is 4.001-4.027s, inside A's 4.025-4.983s. P99 overlaps (A 4.984-7.026, B 4.999-6.986). CPU matches. The empty `sync_runtime_result` writer transactions are gone (3035 and 3438 versus 0). `retain_state` is still a writer transaction and is not claimed as removed. Not a latency win beyond noise. Eligible to merge because the gate passed on every round and the tail is not worse.
+
+PR 62 merged at `241d156bf49e9d171015df3ccbd296bc7db18a6d`.
