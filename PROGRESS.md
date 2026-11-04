@@ -1160,3 +1160,30 @@ Scored A/B/B/A after that warmup. A is `e96e2e6`. B is `c3210d9`. Trace off, 90s
 | M3A2 | e96e2e6 | 279 | 1.818 | 4.027 | 4.834 | 5.826 | 1 | 0 | 243.31 | 421548032 | 7216320512 | 1.09 | 1.006 |
 
 Events-table `visible_seconds` p95 stays about 1.0s on both sides (0.974-1.034). B1's P95 3.028s did not repeat; B2 is 4.023s, next to A 4.027-4.029s. P99 is not worse. CPU on B is 21-31s higher. Not merged. The branch is pushed and left open. Formal 50M/72h was not run.
+
+## 2026-11-04 milestone 4: 250ms merge interval, not merged
+
+Base `be91cb6da55f20facb184e6b4e121a3e09b5af9d`. Branch `cursor/merge-interval-250-b3f1`, exact `d0c00cc764f2a901bb5cfde1598b4a5b3b290d65`. The only code change is the daemon default `CDC_MERGE_COMMIT_INTERVAL_MS` 500→250. `p11_profile.py` is unchanged (`p11-50m-50rps-72h-v4`). Containers were recreated empty (`--cpus=0.5 --memory=1g` MySQL, `--cpus=2 --memory=8g` StarRocks) because `/data` had reached 3.3G. Unscored warmup on `be91cb6` passed the gate but kept slow samples: n=280, P95/P99/max=3.982/9.985/12.985s, over5=8, over10=3, CPU 240.47s.
+
+Scored A is 500ms `be91cb6`. B is 250ms `d0c00cc`. Trace off, 90s settle, new directory.
+
+| Round | SHA | gate | n | P50 | P95 | P99 | max | >5s | >10s | CPU s | RSS | write bytes | visible p95 | max_rowset | merge txns | version pauses |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| M4A1 | be91cb6 | pass | 267 | 1.647 | 3.758 | 4.736 | 4.957 | 0 | 0 | 237.24 | 408690688 | 7102885888 | 0.982 | 14 | 27 | 0 |
+| M4B1 | d0c00cc | fail | 295 | 0.946 | 2.027 | 3.027 | 3.029 | 0 | 0 | 223.54 | 377827328 | 6978301952 | 0.625 | 23 | 45 | 0 |
+| M4B2 | d0c00cc | fail | 295 | 0.921 | 2.024 | 2.028 | 2.924 | 0 | 0 | 222.52 | 382283776 | 7029587968 | 0.656 | 36 | 45 | 0 |
+| M4A2 | be91cb6 | pass | 257 | 1.611 | 4.027 | 5.820 | 6.949 | 4 | 0 | 233.82 | 433995776 | 7193010176 | 0.971 | 13 | 18 | 0 |
+
+Both B failures are only `fault_source_stalled`. Oracles true, pending=0, deliveries=0. Each B round's second fault had `source_rows_during_fault=0` and catchup 0.045s / 0.048s. Both A rounds passed that check. `merge_left` max is 249ms on B and 499ms on A. Visible p95 fell from about 0.98s to 0.63s. CPU and write bytes are not higher. `max_rowset` rose from 13-14 to 23-36. `version_pauses` stayed 0 on this 300s profile, which does not show whether a long run would pause. Not merged: the strict-small gate failed on both candidate rounds. Branch pushed, not opened as a PR to merge. Slow samples kept, including the warmup 12.985s.
+
+## 2026-11-04 milestone 5: no duplicate-write removal
+
+Same base `be91cb6`. `j4.py` sets `PRAGMA synchronous=FULL` and the comment there says commits are durable in WAL at FULL. A crash must keep the intent that was committed before the HTTP request. No measurement showed that NORMAL would preserve that order, so the pragma stays FULL. The largest writer holds on M4A1 are the bounded JOIN pages that already exist (`join_output_build:_commit_chunk` total 4.700s, max 0.073s; `join_frozen_state:discard_step` total 2.448s; `copy_step` total 1.757s). Those writes are the frozen cut and the output journal, not a second copy that can be dropped without losing restart. No code change. No A/B, because there is no candidate.
+
+## 2026-11-04 milestone 6: profile, no Rust
+
+Profile is the M4A1 sqlite writer timing on `be91cb6` (trace off, strict-small, timing enabled). Max hold is 0.115s in `join_log_consumer:process_next` (n=55, total 0.801s). No hold is large enough to explain the 4s healthy tail. Events visible p95 on that round is 0.982s; the rest of the tail is queue age, which the 250ms interval reduced and then failed the fault gate. A second native implementation would not move that tail and would split the fail-closed contracts. No Rust. No A/B.
+
+## 2026-11-04 stop: formal 50M/72h still blocked
+
+No persistent isolated host is configured. `p11-50m-50rps-72h-v4` was not run. 无数据. Merged runtime since this session: PR 63 `23dcf34` (bounded aggregate bootstrap pages). Not merged: visible poll `c3210d9`, merge interval `d0c00cc`. Main head after this note is the docs commit that records it.
