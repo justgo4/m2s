@@ -1103,3 +1103,5 @@ Scored A/B/B/A, trace every=16 on B only. All four passed the strict-small gate.
 | A2 | 47b9a75 | off | 275 | 1.604 | 4.029 | 7.886 | 10.886 | 7 | 1 | 233.70 | 416169984 | 7126765568 |
 
 P95 stays inside 3.969-4.039s on both sides. Baseline P99 already spans 5.709-7.886s; both trace-on P99 values are inside or below that span. CPU and write bytes differ by about one run of noise (B1 CPU +10s, writes +1.5%). Default-off code was not the B condition; B is the expensive setting, trace enabled. Observation overhead is not separable from this machine's tail noise, and it does not move P95. Slow samples were kept; A2's 10.886s sample is in the table. Merge of PR 61 is justified by this series, not by Actions. Same-machine baseline for later milestones is the A1/A2 pair above, under these container caps.
+
+PR 61 merged at `0675d056cce79d97514a796412554f7e1bd1b2d9`. That merge commit is the main SHA that contains the observation code plus this evidence. Later milestones branch from it and compare with the A1/A2 numbers above, same container caps, new run directory, 90s settle, at least A/B/B/A. Trace stays off unless the change under test is the trace itself.
