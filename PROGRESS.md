@@ -1187,3 +1187,37 @@ Profile is the M4A1 sqlite writer timing on `be91cb6` (trace off, strict-small, 
 ## 2026-11-04 stop: formal 50M/72h still blocked
 
 No persistent isolated host is configured. `p11-50m-50rps-72h-v4` was not run. 无数据. Merged runtime since this session: PR 63 `23dcf34` (bounded aggregate bootstrap pages). Not merged: visible poll `c3210d9`, merge interval `d0c00cc`. Main head after this note is the docs commit that records it.
+
+## 2026-11-04 milestone 4 continued: fault window was the gate failure
+
+The two `d0c00cc` failures were `fault_source_stalled` only. Recorded fault rows:
+
+| Round | Fault | rows | restart s | catchup s | sequence | sequence_after | frontier |
+|---|---|---|---|---|---|---|---|
+| M4B1 | 2 | 0 | 0.051 | 0.045 | 12150 | 12150 | 244=244 |
+| M4B2 | 2 | 0 | 0.051 | 0.048 | 12150 | 12150 | 244=244 |
+| M4A1 | 2 | 1250 | 0.096 | 25.726 | 12300 | 13550 | 273=273 |
+| M4A2 | 2 | 1150 | 0.292 | 23.521 | 12800 | 13950 | 281=281 |
+
+`source_rows_during_fault` is `sequence_after-sequence`. The source writer in `tools/longhaul_workload.py` inserts one batch only when `now>=next_tick`, then adds 1.0s. B's second window was restart+catch-up of 0.095s and 0.100s, so the loop condition was false for the whole window. The same runs still finished 115000 event rows, pending=0, and both frontiers were already equal. Daemon-002 on M4B1, immediately before the 18:12:10Z restart, logged `reader_state=connected`, `reader_retries=0`, `source_apply_pending_bytes=0`, `source_apply_backpressure_count=0`. Daemon-003 came up at 18:12:10Z with the same zeros. The writer was not blocked. 250ms made catch-up finish between ticks.
+
+`00da35b6e16a012cb6f1b4cba34cdfa264e7066a` holds the fault open until that scheduled batch commits. The gate still fails a zero count. `278aa75b27e2a38440910ad714871cd62db2340a` then sets the daemon default to 250ms. `p11-50m-50rps-72h-v4` is unchanged. `python3 tools/longhaul_workload_test.py` and `python3 tools/longhaul_gate_test.py` passed.
+
+Containers recreated empty, same caps. A is `00da35b` (500ms plus the hold). B is `278aa75` (250ms plus the hold). Trace off, 90s settle, new directory.
+
+M4F-A1 did not produce a latency result. At 18:46:23Z daemon-003 quarantined `starrocks.agg_003` because a SIGKILL left one `merge_uncertain` row (`unresolved Merge Commit request restored`). Both of its faults had already recorded source rows 500 and 600. Pending stayed 797. The drain was stopped with signal 15 so the series could continue. That quarantine behavior is the existing fail-closed rule, not a 250ms change.
+
+| Round | SHA | gate | n | P50 | P95 | P99 | max | >5s | >10s | CPU s | write bytes | visible p95 | max rowset | pauses | fault rows |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| WARM | 00da35b | pass | 282 | 1.648 | 4.036 | 5.069 | 6.996 | 4 | 0 | 233.60 | 7067885568 | 0.985 | 96 agg_001 | 0 | 550, 200 |
+| A1 | 00da35b | interrupted |  |  |  |  |  |  |  |  |  |  |  |  | 500, 600 |
+| B1 | 278aa75 | pass | 293 | 0.858 | 2.026 | 3.027 | 3.027 | 0 | 0 | 227.44 | 7113969664 | 0.675 | 112 agg_003 | 0 | 200, 100 |
+| B2 | 278aa75 | pass | 290 | 0.992 | 2.025 | 2.931 | 3.035 | 0 | 0 | 227.33 | 7106854912 | 0.653 | 107 agg_003 | 0 | 150, 300 |
+| B3 | 278aa75 | pass | 293 | 0.996 | 2.030 | 3.029 | 3.033 | 0 | 0 | 230.39 | 7057760256 | 0.675 | 107 agg_003 | 0 | 150, 100 |
+| A2 | 00da35b | pass | 283 | 1.596 | 3.997 | 4.037 | 4.998 | 0 | 0 | 233.43 | 7052656640 | 0.946 | 95 agg_003 | 0 | 350, 150 |
+
+Completed B rounds are inside the 5s/10s gate and below the completed A rounds. CPU and write bytes are not higher. Every fault row count is positive. `version_pauses` is 0. Aggregate `max_rowset` is 95-112 on both intervals in these 300s runs; the earlier 13→36 figure was the events table only.
+
+One 1804.5s run on `278aa75`, same caps, 100k snapshot, 50 rows/s, fault every 600s, directory `benchmark-results/abba/M4F-LONG`. Gate passed with the same 5s/10s thresholds. n=1794, P95/P99/max=1.974/2.025/2.955s, over5=0, over10=0, oracles true, pending=0. Fault rows 100 and 100, catch-up 1.445s and 1.878s. CPU 1116.06s, write bytes 17320558592, peak RSS 411738112. `version_pauses` 0 on every sink. `max_rowset` events=95, agg_000=97, agg_001=127, agg_003=77, join_000=98, join_002=28, join_004=68. Visible p95 on events is 0.607s. Rowset did not scale with the sixfold duration. This is not a 72h result.
+
+Eligible to merge both commits. Formal 50M/72h was not run.
