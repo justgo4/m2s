@@ -1221,3 +1221,6 @@ Completed B rounds are inside the 5s/10s gate and below the completed A rounds. 
 One 1804.5s run on `278aa75`, same caps, 100k snapshot, 50 rows/s, fault every 600s, directory `benchmark-results/abba/M4F-LONG`. Gate passed with the same 5s/10s thresholds. n=1794, P95/P99/max=1.974/2.025/2.955s, over5=0, over10=0, oracles true, pending=0. Fault rows 100 and 100, catch-up 1.445s and 1.878s. CPU 1116.06s, write bytes 17320558592, peak RSS 411738112. `version_pauses` 0 on every sink. `max_rowset` events=95, agg_000=97, agg_001=127, agg_003=77, join_000=98, join_002=28, join_004=68. Visible p95 on events is 0.607s. Rowset did not scale with the sixfold duration. This is not a 72h result.
 
 Eligible to merge both commits. Formal 50M/72h was not run.
+
+PR 64 merged at `728fcb74ab25cf0280dae30f53805ce2b86f1e36`. Actions was not required; mergeable state was CLEAN. Local A/B and the 1804.5s run are the evidence.
+
