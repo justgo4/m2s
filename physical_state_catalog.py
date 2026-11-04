@@ -31,6 +31,21 @@ def transaction(con):
         raise
 
 
+@contextlib.contextmanager
+def read_snapshot(con):
+    """Observe related catalog rows together without taking the writer lock."""
+    if con.in_transaction:
+        yield
+        return
+    con.execute("BEGIN")
+    try:
+        yield
+        con.execute("COMMIT")
+    except BaseException:
+        con.execute("ROLLBACK")
+        raise
+
+
 def install(con):
     con.executescript("""
         CREATE TABLE IF NOT EXISTS physical_states(
