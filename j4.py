@@ -2818,8 +2818,22 @@ def commit_spool(
                 raise RuntimeError("GTID transaction found without a durable initial GTID set")
             meta_set(con,"gtid_set",gtid_add(current,gtid))
     if trace_started is not None and source_seq is not None:
+        # Decode only a sampled commit, and only after the writer transaction
+        # has committed. A diagnostic failure must not undo the durable commit.
+        marker=None
+        if cdc_event_trace.sampled(source_seq):
+            try:
+                if source_spool is not None:
+                    marker_parts=list(source_part_records(source_spool))
+                else:
+                    marker_parts=source_parts
+                marker=source_state.max_integer_primary_key(con,marker_parts)
+            except Exception:
+                cdc_event_trace.note_metadata_error()
+                marker=None
         cdc_event_trace.record("source_durable",seq=source_seq,
-            duration_seconds=time.monotonic()-trace_started,source_time_wall=source_time)
+            duration_seconds=time.monotonic()-trace_started,
+            source_time_wall=source_time,marker=marker)
     return changed_tables
 
 def touched_keys(con, table, column):

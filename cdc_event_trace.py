@@ -29,6 +29,33 @@ def identity(value):
     return hashlib.sha256(str(value).encode('utf-8')).hexdigest()
 
 
+def marker_key(value):
+    """Hash the decimal form of one integer primary key.
+
+    The longhaul sentinel and source_durable share this key. Raw key
+    material is not stored in the trace.
+    """
+    if isinstance(value,bool) or not isinstance(value,int):
+        raise ValueError('trace marker must be an integer primary key')
+    return identity(str(int(value)))
+
+
+def sampled(seq):
+    state=STATE
+    if state is None or seq is None:
+        return False
+    return int(seq)%state['every']==0
+
+
+def note_metadata_error():
+    state=STATE
+    if state is None:
+        return
+    with LOCK:
+        if STATE is state:
+            state['metadata_errors']+=1
+
+
 def configure(epoch,enabled=False,limit=2048,every=16):
     global STATE
     with LOCK:
@@ -44,12 +71,13 @@ def enabled():
     return STATE is not None
 
 
-def record(stage,seq=None,target=None,delivery=None,generation=None,**numbers):
+def record(stage,seq=None,target=None,delivery=None,generation=None,marker=None,**numbers):
     state=STATE
     if state is None:
         return
     if stage not in STAGES or set(numbers)-NUMBERS:
         raise ValueError('unknown trace stage or numeric field')
+    hashed_marker=None if marker is None else marker_key(marker)
     context=CURRENT.get()
     if context is not None and context.get("instance")!=state["instance"]:
         context=None
@@ -68,6 +96,8 @@ def record(stage,seq=None,target=None,delivery=None,generation=None,**numbers):
         event['delivery']=identity(delivery)
     if generation is not None:
         event['generation']=identity(generation)
+    if hashed_marker is not None:
+        event['marker_key']=hashed_marker
     for key,value in numbers.items():
         if value is not None:
             if isinstance(value,bool) or not isinstance(value,(int,float)) or not math.isfinite(value):
@@ -146,7 +176,7 @@ def snapshot():
             return dict(enabled=False)
         return dict(enabled=True,instance=state['instance'],epoch=state['epoch'],
                     clock='process_monotonic',source_time='binlog wall time; precision not guaranteed',
-                    coverage='shared source durable/base; merge_async output; observed task frontier',
+                    coverage='shared source durable/base; merge_async output; observed task frontier; source_durable.marker_key hashes the decimal max single-column integer primary key when that seq is sampled',
                     authoritative=False,every=state['every'],limit=state['limit'],
                     dropped=state['dropped'],metadata_errors=state['metadata_errors'],
                     events=[dict(event,**({'sequences':list(event['sequences'])}

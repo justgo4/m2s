@@ -12,6 +12,7 @@ ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 sys.path.insert(0,str(ROOT/"tools"))
 
+import cdc_event_trace
 import longhaul_workload
 import validation_profiles
 
@@ -275,6 +276,46 @@ def main():
     assert commit_times=={}
     assert len(recovered["latencies"])==2
     assert recovered["state"]["base_applied_seq"]==7
+    assert recovered["samples"]
+    assert [
+        sample["latency_seconds"]
+        for sample in recovered["samples"]
+    ]==recovered["latencies"]
+    assert {
+        sample["phase"] for sample in recovered["samples"]
+    }=={"recovery"}
+    assert {
+        sample["marker_key"] for sample in recovered["samples"]
+    }=={
+        cdc_event_trace.marker_key(100),
+        cdc_event_trace.marker_key(101),
+    }
+    assert all(
+        "100" not in sample["marker_key"]
+        and "101" not in sample["marker_key"]
+        for sample in recovered["samples"]
+    )
+
+    commit_times={10:5.0,11:6.0}
+    commit_walls={10:100.0}
+    durations,samples=longhaul_workload.observe_visible_latency(
+        commit_times,[10,11],9.0,"healthy",
+        commit_walls=commit_walls,observed_wall=104.0)
+    assert commit_times=={}
+    assert commit_walls=={}
+    assert durations==[4.0,3.0]
+    assert [sample["latency_seconds"] for sample in samples]==durations
+    assert samples[0]["marker_key"]==cdc_event_trace.marker_key(10)
+    assert samples[0]["commit_wall"]==100.0
+    assert samples[1]["commit_wall"] is None
+    assert samples[0]["observed_mono"]==9.0
+    try:
+        longhaul_workload.observe_visible_latency(
+            {},[],1.0,"drain")
+    except ValueError as exc:
+        assert "unknown latency phase" in str(exc)
+    else:
+        raise AssertionError("unknown phase was accepted")
 
     startup_progress=[]
     startup_clock=iter([20.0,20.1,20.2])
