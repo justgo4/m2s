@@ -1444,6 +1444,12 @@ def copy_evidence(directory,output):
             "longhaul-daemon-metrics.jsonl")
         shutil.copyfile(metrics,target)
         copied["daemon_metrics"]=str(target)
+    trace=Path(str(state_path)+".event-trace.jsonl")
+    if trace.exists():
+        target=output.parent/(
+            "longhaul-daemon-event-trace.jsonl")
+        shutil.copyfile(trace,target)
+        copied["event_trace"]=str(target)
     return copied
 
 

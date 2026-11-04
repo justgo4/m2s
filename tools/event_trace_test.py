@@ -350,6 +350,28 @@ class EventTraceTest(unittest.TestCase):
         self.assertIn('http_accepted is not queryable',result['queryable'])
         self.assertEqual(result['trace']['ring_evictions'],3)
 
+    def test_sidecar_appends_hashed_marker_and_pairs_after_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=str(Path(directory)/'trace.jsonl')
+            trace.configure('epoch',enabled=True,every=1,path=path)
+            trace.record('source_durable',seq=4,marker=424242)
+            self.assertEqual(trace.snapshot()['metadata_errors'],0)
+            trace.configure('disabled')
+            text=Path(path).read_text(encoding='utf-8')
+            self.assertNotIn('424242',text)
+            self.assertIn(trace.marker_key(424242),text)
+            samples=[dict(
+                marker_id=424242,marker_key=trace.marker_key(424242),
+                commit_mono=1.0,observed_mono=2.25,latency_seconds=1.25,
+                phase='healthy')]
+            result=pair.pair(samples,pair.load_trace_sidecar([path]))
+            self.assertEqual(result['paired_samples'],1)
+            self.assertEqual(result['phases']['healthy']['all']['samples'],1)
+            trace.configure('epoch',enabled=True,every=1,path=directory)
+            self.assertGreaterEqual(trace.snapshot()['metadata_errors'],1)
+            trace.record('source_durable',seq=1)
+            self.assertEqual(self.events()[0]['stage'],'source_durable')
+
 
 if __name__=='__main__':
     unittest.main()

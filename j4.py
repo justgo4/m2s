@@ -11756,8 +11756,12 @@ def stateful_task_worker(item, cfg, runtime):
 def run_cdc(
         cfg, prepared, source_uuid, start, start_gtid, available_logs,
         fingerprint, control=None, catalog_control=None):
+    trace_path=None
+    if cfg.get("event_trace") and cfg.get("state"):
+        trace_path=str(cfg["state"])+".event-trace.jsonl"
     cdc_event_trace.configure(source_uuid,enabled=cfg.get("event_trace",False),
-        every=cfg.get("event_trace_every",16),limit=cfg.get("event_trace_limit",2048))
+        every=cfg.get("event_trace_every",16),limit=cfg.get("event_trace_limit",2048),
+        path=trace_path)
     control = control if control is not None else dict(stop=threading.Event(),reason="stopped")
     apply_resource_policy(cfg["resource"])
     if signal_stop_requested(control):

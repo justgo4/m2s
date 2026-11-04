@@ -46,6 +46,37 @@ def load_metrics(paths):
     return records
 
 
+def load_trace_sidecar(paths):
+    """Turn the append-only trace log into one snapshot per daemon instance."""
+    groups={}
+    order=[]
+    for path in paths:
+        with Path(path).open(encoding='utf-8') as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                row=json.loads(line)
+                kind=row.get('kind')
+                if kind=='m2s_event_trace_header':
+                    key=(row['epoch'],row['instance'])
+                    if key not in groups:
+                        groups[key]=dict(
+                            enabled=True,epoch=row['epoch'],instance=row['instance'],
+                            dropped=0,metadata_errors=0,events=[])
+                        order.append(key)
+                elif kind=='m2s_event_trace_event':
+                    key=(row['epoch'],row['instance'])
+                    group=groups.get(key)
+                    if group is None:
+                        group=dict(
+                            enabled=True,epoch=row['epoch'],instance=row['instance'],
+                            dropped=0,metadata_errors=0,events=[])
+                        groups[key]=group
+                        order.append(key)
+                    group['events'].append(row['event'])
+    return [groups[key] for key in order]
+
+
 def _span_seconds(events):
     events=sorted(events,key=lambda event:event['id'])
     open_spans={}
@@ -172,10 +203,18 @@ def pair(samples,records,max_events=200000):
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--latency',type=Path,nargs='+',required=True)
-    parser.add_argument('--metrics',type=Path,nargs='+',required=True)
+    parser.add_argument('--metrics',type=Path,nargs='*')
+    parser.add_argument('--trace',type=Path,nargs='*')
     parser.add_argument('--output',type=Path)
     args=parser.parse_args()
-    result=pair(load_samples(args.latency),load_metrics(args.metrics))
+    if not args.metrics and not args.trace:
+        parser.error('provide --metrics or --trace')
+    records=[]
+    if args.metrics:
+        records.extend(load_metrics(args.metrics))
+    if args.trace:
+        records.extend(load_trace_sidecar(args.trace))
+    result=pair(load_samples(args.latency),records)
     text=json.dumps(result,sort_keys=True,indent=2)+'\n'
     if args.output:
         args.output.write_text(text,encoding='utf-8')
