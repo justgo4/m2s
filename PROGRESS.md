@@ -1141,3 +1141,5 @@ Same caps (MySQL `--cpus=0.5 --memory=1g`, StarRocks `--cpus=2 --memory=8g`), tr
 | M2A2 | 217e541 | 268 | 1.631 | 4.031 | 6.037 | 7.684 | 7 | 0 | 237.75 | 397537280 | 7108284416 | 0.60 |
 
 P95 for B is 4.005-4.028s, inside A's 4.029-4.031s. P99 for B is 4.802-5.003s, below A's 5.963-6.037s. That P99 gap is inside the noise already seen on this VM (milestone 1 P99 spanned 4.984-7.026s) and is not claimed as a latency win. CPU on B is about 5-13s higher. Writes are not higher. Strict-small aggregate writer holds stay under 0.04s on both sides (`aggregate_log_consumer:process_next`, `aggregate_outbox:copy_commit`); this profile does not contain a large seed, so the series does not measure the chunking benefit. It shows the hot path is not worse. Eligible to merge. Formal `p11-50m-50rps-72h-v4` was not run. No persistent isolated host.
+
+PR 63 merged at `23dcf348fc88095dcf23a91a9205f305b715739b`. Actions was not required; mergeable state was UNSTABLE because checks had not finished. Local A/B is the evidence.
