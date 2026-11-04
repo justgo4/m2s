@@ -22,6 +22,7 @@ import time
 import uuid
 
 import pyarrow as pa
+import pyarrow.compute as pc
 
 
 SOURCE_ARROW_MAGIC = b"M2SSRC1\0"
@@ -442,6 +443,40 @@ def decode_batch(payload):
     return pa.ipc.open_stream(
         pa.BufferReader(view[len(SOURCE_ARROW_MAGIC):])
     ).read_all()
+
+
+def max_integer_primary_key(con, parts):
+    """Largest single-column integer primary key in source parts.
+
+    Composite and non-integer keys are ignored. Callers use this only to
+    build an optional trace correlation key after the writer transaction
+    has already committed.
+    """
+    maximum=None
+    relations={}
+    for part in parts:
+        name=part["table_name"]
+        info=relations.get(name)
+        if info is None:
+            info=relation_info(con,name)
+            relations[name]=info
+        columns=info["pk_columns"]
+        if len(columns)!=1:
+            continue
+        column_name=columns[0]
+        table=decode_batch(part["payload"])
+        if column_name not in table.column_names:
+            continue
+        column=table.column(column_name)
+        if not pa.types.is_integer(column.type):
+            continue
+        value=pc.max(column).as_py()
+        if value is None:
+            continue
+        value=int(value)
+        if maximum is None or value>maximum:
+            maximum=value
+    return maximum
 
 
 def prepare_part(table_name, table, schema_epoch=1):

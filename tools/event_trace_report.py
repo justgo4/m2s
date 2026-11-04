@@ -19,7 +19,7 @@ def quantiles(values):
     return dict(n=len(values),p50=at(.5),p95=at(.95),p99=at(.99),max=max(values)) if values else dict(n=0)
 
 
-def analyze(records,max_events=200000):
+def unique_events(records,max_events=200000):
     unique={};loss={};metadata={};disabled=0;analysis_dropped=0
     for record in records:
         snapshot=record.get('event_trace',record)
@@ -42,6 +42,14 @@ def analyze(records,max_events=200000):
             if event['stage'] not in trace.STAGES:
                 raise ValueError('unknown event stage')
             unique[key]=dict(event)
+    return unique,dict(
+        disabled_records=disabled,ring_evictions=sum(loss.values()),
+        metadata_errors=sum(metadata.values()),analysis_dropped=analysis_dropped,
+        instances=len(loss))
+
+
+def analyze(records,max_events=200000):
+    unique,stats=unique_events(records,max_events=max_events)
     source={};deliveries=defaultdict(list)
     for key,event in unique.items():
         scope=key[:2]
@@ -101,10 +109,10 @@ def analyze(records,max_events=200000):
             add('job_age',oldest_created,selected['wall'])
     return dict(kind='m2s_correlated_trace_diagnostic',certification=False,
         clock_scope='within same process instance only',
-        coverage='sampled after-durable observations; no MySQL commit/queryable guarantee; task_frontier is an upper-bound observation; source_to_selected expands each sampled seq (upper-bound); source_to_selected_oldest/newest are per-delivery; job_age=selected.wall-oldest_created_wall',
-        instances=len(loss),disabled_records=disabled,unique_events=len(unique),
-        ring_evictions=sum(loss.values()),metadata_errors=sum(metadata.values()),
-        analysis_dropped=analysis_dropped,clock_order_conflicts=clock_conflicts,
+        coverage='sampled after-durable observations; no MySQL commit/queryable guarantee; task_frontier is an upper-bound observation; source_to_selected expands each sampled seq (upper-bound); source_to_selected_oldest/newest are per-delivery; job_age=selected.wall-oldest_created_wall; source_durable.marker_key pairs to a workload latency sample',
+        instances=stats['instances'],disabled_records=stats['disabled_records'],unique_events=len(unique),
+        ring_evictions=stats['ring_evictions'],metadata_errors=stats['metadata_errors'],
+        analysis_dropped=stats['analysis_dropped'],clock_order_conflicts=clock_conflicts,
         complete_delivery_observations=complete,incomplete_delivery_observations=incomplete,
         stages={name:quantiles(values) for name,values in sorted(segments.items())})
 

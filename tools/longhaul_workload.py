@@ -29,6 +29,7 @@ ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 
 import cdc_catalog
+import cdc_event_trace
 import j4
 import p11_profile
 from starrocks_contract import configuration,execute,wait_ready
@@ -73,6 +74,57 @@ def percentile(values,p):
         len(values)-1,
         max(0,int((len(values)-1)*float(p))))
     return values[index]
+
+
+def observe_visible_latency(
+        commit_times,visible,observed,phase,
+        commit_walls=None,observed_wall=None):
+    """Record one gate sample per newly visible marker.
+
+    latency_seconds is observed monotonic minus the monotonic time taken
+    immediately after the source commit. The SELECT that decides visibility
+    stays in visible_markers. This function does not issue a query.
+    """
+    if phase not in ("healthy","recovery"):
+        raise ValueError("unknown latency phase: "+str(phase))
+    observed=float(observed)
+    durations=[]
+    samples=[]
+    for marker in visible:
+        committed=commit_times.pop(marker,None)
+        if committed is None:
+            continue
+        committed=float(committed)
+        duration=observed-committed
+        wall=None
+        if commit_walls is not None:
+            wall=commit_walls.pop(marker,None)
+        marker_id=int(marker)
+        durations.append(duration)
+        samples.append(dict(
+            marker_id=marker_id,
+            marker_key=cdc_event_trace.marker_key(marker_id),
+            commit_mono=committed,
+            observed_mono=observed,
+            latency_seconds=duration,
+            phase=phase,
+            commit_wall=(
+                None if wall is None else float(wall)),
+            observed_wall=(
+                None if observed_wall is None
+                else float(observed_wall)),
+        ))
+    return durations,samples
+
+
+def write_latency_samples(handle,samples):
+    for sample in samples:
+        handle.write(
+            json.dumps(
+                sample,sort_keys=True,
+                separators=(",",":"))+"\n")
+    if samples:
+        handle.flush()
 
 
 
@@ -871,13 +923,14 @@ def visible_markers(cfg,marker_ids):
 
 def recover_after_fault(
         proc,log,state_path,cfg,commit_times,
-        timeout_seconds,progress=None
+        timeout_seconds,progress=None,commit_walls=None
 ):
     pending=set(
         int(value) for value in commit_times)
     started=time.monotonic()
     deadline=started+float(timeout_seconds)
     recorded=[]
+    samples=[]
     while time.monotonic()<deadline:
         if progress is not None:
             progress()
@@ -888,13 +941,15 @@ def recover_after_fault(
             cfg,pending)
         if visible:
             observed=time.monotonic()
+            observed_wall=time.time()
             for marker in visible:
-                committed=commit_times.pop(
-                    marker,None)
                 pending.discard(marker)
-                if committed is not None:
-                    recorded.append(
-                        observed-committed)
+            durations,batch=observe_visible_latency(
+                commit_times,visible,observed,"recovery",
+                commit_walls=commit_walls,
+                observed_wall=observed_wall)
+            recorded.extend(durations)
+            samples.extend(batch)
         current=read_state(state_path)
         if (
             not pending
@@ -905,6 +960,7 @@ def recover_after_fault(
             return dict(
                 seconds=time.monotonic()-started,
                 latencies=recorded,
+                samples=samples,
                 state=current,
             )
         time.sleep(.2)
@@ -1388,6 +1444,12 @@ def copy_evidence(directory,output):
             "longhaul-daemon-metrics.jsonl")
         shutil.copyfile(metrics,target)
         copied["daemon_metrics"]=str(target)
+    trace=Path(str(state_path)+".event-trace.jsonl")
+    if trace.exists():
+        target=output.parent/(
+            "longhaul-daemon-event-trace.jsonl")
+        shutil.copyfile(trace,target)
+        copied["event_trace"]=str(target)
     return copied
 
 
@@ -1415,6 +1477,7 @@ def run(args):
             sort_keys=True),
         flush=True)
     proc=handle=log=None
+    latency_log=None
     try:
         seed_seconds=setup_databases(
             source,cfg,args.rows,args.seed_chunk)
@@ -1510,8 +1573,15 @@ def run(args):
             marker_start=int(args.rows)
             sequence=0
             commit_times={}
+            commit_walls={}
             latency=[]
             recovery_latency=[]
+            latency_path=args.output.with_name(
+                args.output.stem+"-latency.jsonl")
+            latency_path.parent.mkdir(
+                parents=True,exist_ok=True)
+            latency_log=latency_path.open(
+                "w",encoding="utf-8")
             daemon_index=1
             faults=[]
             fault_unavailable_seconds=0.0
@@ -1686,6 +1756,7 @@ def run(args):
                     committed=time.monotonic()
                     sentinel=int(rows[-1][0])
                     commit_times[sentinel]=committed
+                    commit_walls[sentinel]=time.time()
                     next_tick+=1.0
                     produced+=len(rows)
                 return produced
@@ -1743,7 +1814,8 @@ def run(args):
                         proc,log,state_path,cfg,
                         commit_times,
                         args.fault_recovery_timeout_seconds,
-                        progress=fault_progress)
+                        progress=fault_progress,
+                        commit_walls=commit_walls)
                     fault_recovered_at=time.monotonic()
                     fault_unavailable_seconds+=interval_overlap_seconds(
                         fault_started,fault_recovered_at,
@@ -1751,6 +1823,8 @@ def run(args):
                     sample_daemon_resources(force=True)
                     recovery_latency.extend(
                         recovered["latencies"])
+                    write_latency_samples(
+                        latency_log,recovered["samples"])
                     faults.append(dict(
                         sequence=before,
                         sequence_after=int(sequence),
@@ -1794,12 +1868,14 @@ def run(args):
                         cfg,commit_times.keys())
                     if visible:
                         observed=time.monotonic()
-                        for marker in visible:
-                            committed=commit_times.pop(
-                                marker,None)
-                            if committed is not None:
-                                latency.append(
-                                    observed-committed)
+                        durations,batch=observe_visible_latency(
+                            commit_times,visible,observed,
+                            "healthy",
+                            commit_walls=commit_walls,
+                            observed_wall=time.time())
+                        latency.extend(durations)
+                        write_latency_samples(
+                            latency_log,batch)
                     next_sample=now+float(
                         args.sample_seconds)
 
@@ -1837,12 +1913,14 @@ def run(args):
                     cfg,commit_times.keys())
                 if visible:
                     observed=time.monotonic()
-                    for marker in visible:
-                        committed=commit_times.pop(
-                            marker,None)
-                        if committed is not None:
-                            latency.append(
-                                observed-committed)
+                    durations,batch=observe_visible_latency(
+                        commit_times,visible,observed,
+                        "healthy",
+                        commit_walls=commit_walls,
+                        observed_wall=time.time())
+                    latency.extend(durations)
+                    write_latency_samples(
+                        latency_log,batch)
                 statuses=observe_task_ready(
                     current)
                 tasks_ready=all(
@@ -1981,6 +2059,15 @@ def run(args):
                 latency_over_10_seconds=sum(
                     1 for value in latency
                     if float(value)>10.0),
+                latency_observations=dict(
+                    path=str(latency_path),
+                    samples=(
+                        len(latency)+len(recovery_latency)),
+                    marker_key=(
+                        "sha256 of the decimal marker id"),
+                    pairs_with="source_durable.marker_key",
+                    certification=False,
+                ),
                 recovery_latency_samples=len(
                     recovery_latency),
                 recovery_latency_p95_seconds=percentile(
@@ -2026,6 +2113,8 @@ def run(args):
                 flush=True)
             return report
     finally:
+        if latency_log is not None:
+            latency_log.close()
         if proc is not None:
             try:
                 stop_daemon(

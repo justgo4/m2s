@@ -17,6 +17,7 @@ import cdc_event_trace as trace
 import j4
 import source_state
 import event_trace_report as report
+import event_trace_pair as pair
 import merge_accepted_contention_test as wire
 
 
@@ -208,6 +209,168 @@ class EventTraceTest(unittest.TestCase):
         bare_result=report.analyze([dict(enabled=True,epoch='e',instance='i',dropped=0,events=bare)])
         self.assertNotIn('job_age',bare_result['stages'])
         self.assertEqual(bare_result['stages']['source_to_selected_newest']['p95'],2.0)
+
+    def test_marker_key_hides_the_integer_and_rejects_non_integers(self):
+        key=trace.marker_key(424242)
+        self.assertEqual(len(key),64)
+        self.assertNotIn('424242',key)
+        self.assertEqual(key,trace.marker_key(424242))
+        with self.assertRaises(ValueError):
+            trace.marker_key(True)
+        with self.assertRaises(ValueError):
+            trace.marker_key('424242')
+        trace.record('source_durable',seq=7,marker=424242)
+        saved=trace.snapshot()
+        self.assertEqual(saved['events'][0]['marker_key'],key)
+        self.assertNotIn('424242',json.dumps(saved))
+        trace.configure('disabled')
+        trace.record('source_durable',seq=7,marker='not-an-int')
+        self.assertEqual(trace.snapshot(),{'enabled':False})
+
+    def test_sampled_commit_records_max_integer_primary_key_after_commit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            con=j4.init_state(str(Path(directory)/'state.sqlite3'))
+            try:
+                source_state.register_relation(con,'private-source','private-source-epoch',
+                    pa.schema([pa.field('id',pa.int64())]),['id'])
+                low=source_state.prepare_part('private-source',pa.table({
+                    'id':[3],'_sync_op':pa.array([0],type=pa.int8()),
+                    '_sync_order':pa.array([0],type=pa.int64())}))
+                high=source_state.prepare_part('private-source',pa.table({
+                    'id':[424242,9],'_sync_op':pa.array([0,0],type=pa.int8()),
+                    '_sync_order':pa.array([1,2],type=pa.int64())}))
+                j4.meta_set(con,'read_position',('private-binlog.000001',4))
+                calls=[]
+                real=source_state.max_integer_primary_key
+                def counting(con,parts):
+                    calls.append(source_state.log_durable_seq(con))
+                    return real(con,parts)
+                with patch.object(source_state,'max_integer_primary_key',side_effect=counting):
+                    trace.configure('private-source-epoch',enabled=True,every=2,limit=16)
+                    with tempfile.TemporaryFile() as spool:
+                        j4.commit_spool(con,spool,('private-binlog.000001',100),123,{},
+                            source_parts=[low],source_epoch='private-source-epoch')
+                    self.assertEqual(calls,[])
+                    self.assertEqual(self.events(),[])
+                    self.assertEqual(source_state.log_durable_seq(con),1)
+                    with tempfile.TemporaryFile() as spool:
+                        j4.commit_spool(con,spool,('private-binlog.000001',200),124,{},
+                            source_parts=[low,high],source_epoch='private-source-epoch')
+                self.assertEqual(calls,[2])
+                self.assertFalse(con.in_transaction)
+                event=self.events()[0]
+                self.assertEqual(event['stage'],'source_durable')
+                self.assertEqual(event['seq'],2)
+                self.assertEqual(event['marker_key'],trace.marker_key(424242))
+                self.assertNotIn('424242',json.dumps(trace.snapshot()))
+                trace.configure('private-source-epoch',enabled=True,every=1,limit=16)
+                spool_part=source_state.prepare_part('private-source',pa.table({
+                    'id':[11,777001],'_sync_op':pa.array([0,0],type=pa.int8()),
+                    '_sync_order':pa.array([0,1],type=pa.int64())}))
+                with tempfile.TemporaryFile() as journal,tempfile.TemporaryFile() as spool:
+                    j4.write_source_part_record(spool,spool_part)
+                    spool.seek(0)
+                    j4.commit_spool(con,journal,('private-binlog.000001',300),125,{},
+                        source_spool=spool,source_epoch='private-source-epoch')
+                self.assertFalse(con.in_transaction)
+                self.assertEqual(self.events()[0]['marker_key'],trace.marker_key(777001))
+                self.assertNotIn('777001',json.dumps(trace.snapshot()))
+            finally:
+                con.close()
+
+    def test_marker_decode_failure_keeps_the_durable_commit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            con=j4.init_state(str(Path(directory)/'state.sqlite3'))
+            try:
+                source_state.register_relation(con,'private-source','private-source-epoch',
+                    pa.schema([pa.field('id',pa.int64())]),['id'])
+                part=source_state.prepare_part('private-source',pa.table({
+                    'id':[5],'_sync_op':pa.array([0],type=pa.int8()),
+                    '_sync_order':pa.array([0],type=pa.int64())}))
+                j4.meta_set(con,'read_position',('private-binlog.000001',4))
+                with patch.object(source_state,'max_integer_primary_key',
+                                   side_effect=RuntimeError('diagnostic decode failed')):
+                    with tempfile.TemporaryFile() as spool:
+                        j4.commit_spool(con,spool,('private-binlog.000001',100),123,{},
+                            source_parts=[part],source_epoch='private-source-epoch')
+                self.assertFalse(con.in_transaction)
+                self.assertEqual(source_state.log_durable_seq(con),1)
+                self.assertEqual(self.events()[0]['stage'],'source_durable')
+                self.assertNotIn('marker_key',self.events()[0])
+                self.assertEqual(trace.snapshot()['metadata_errors'],1)
+            finally:
+                con.close()
+
+    def test_pair_joins_marker_key_without_subtracting_clocks_or_dropping_samples(self):
+        marker=trace.marker_key(7)
+        other=trace.marker_key(8)
+        events=[
+            dict(id=1,stage='source_durable',seq=4,mono=10.0,marker_key=marker),
+            dict(id=2,stage='delivery_selected',target='t',delivery='d',sequences=[4],mono=11.0),
+            dict(id=3,stage='prepare_begin',target='t',delivery='d',mono=11.0),
+            dict(id=4,stage='prepare_end',target='t',delivery='d',mono=11.2),
+            dict(id=5,stage='http_begin',target='t',delivery='d',part=0,mono=11.2),
+            dict(id=6,stage='http_accepted',target='t',delivery='d',part=0,mono=11.21),
+            dict(id=7,stage='visible_wait_begin',target='t',delivery='d',txn=9,mono=11.3),
+            dict(id=8,stage='remote_visible',target='t',delivery='d',txn=9,mono=12.0),
+            dict(id=9,stage='ack_end',target='t',delivery='d',mono=12.1),
+            dict(id=10,stage='source_durable',seq=5,mono=20.0,marker_key=other),
+            dict(id=11,stage='source_durable',seq=6,mono=21.0,marker_key=other),
+        ]
+        snapshot=dict(enabled=True,epoch='e',instance='i',dropped=3,metadata_errors=1,events=events)
+        samples=[
+            dict(marker_id=7,marker_key=marker,commit_mono=1.0,observed_mono=5.5,
+                 latency_seconds=4.5,phase='healthy'),
+            dict(marker_id=9,marker_key=trace.marker_key(9),commit_mono=1.0,observed_mono=9.0,
+                 latency_seconds=8.0,phase='healthy'),
+            dict(marker_id=8,marker_key=other,commit_mono=2.0,observed_mono=3.0,
+                 latency_seconds=1.0,phase='recovery'),
+            dict(marker_id=10,commit_mono=1.0,observed_mono=2.0,latency_seconds=1.0,phase='recovery'),
+        ]
+        result=pair.pair(samples,[snapshot,snapshot])
+        self.assertFalse(result['certification'])
+        self.assertEqual(result['latency_samples'],4)
+        self.assertEqual(result['paired_samples'],1)
+        self.assertEqual(result['unpaired_samples'],3)
+        self.assertEqual(result['unpaired_no_trace'],1)
+        self.assertEqual(result['ambiguous_marker_keys'],1)
+        self.assertEqual(result['missing_marker_keys'],1)
+        self.assertEqual(result['phases']['healthy']['all']['samples'],2)
+        self.assertEqual(result['phases']['healthy']['all']['latency']['max'],8.0)
+        self.assertEqual(result['phases']['healthy']['paired']['samples'],1)
+        self.assertEqual(result['phases']['healthy']['unpaired']['samples'],1)
+        self.assertEqual(result['phases']['recovery']['paired']['samples'],0)
+        self.assertEqual(result['phases']['recovery']['all']['samples'],2)
+        self.assertAlmostEqual(result['trace_stages']['prepare']['p50'],0.2)
+        self.assertAlmostEqual(result['trace_stages']['remote_visibility_wait']['p50'],0.7)
+        self.assertIn('http_request',result['trace_stages'])
+        text=json.dumps(result)
+        self.assertNotIn('cross_clock',text)
+        self.assertIn('not subtracted',result['clocks'])
+        self.assertIn('http_accepted is not queryable',result['queryable'])
+        self.assertEqual(result['trace']['ring_evictions'],3)
+
+    def test_sidecar_appends_hashed_marker_and_pairs_after_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=str(Path(directory)/'trace.jsonl')
+            trace.configure('epoch',enabled=True,every=1,path=path)
+            trace.record('source_durable',seq=4,marker=424242)
+            self.assertEqual(trace.snapshot()['metadata_errors'],0)
+            trace.configure('disabled')
+            text=Path(path).read_text(encoding='utf-8')
+            self.assertNotIn('424242',text)
+            self.assertIn(trace.marker_key(424242),text)
+            samples=[dict(
+                marker_id=424242,marker_key=trace.marker_key(424242),
+                commit_mono=1.0,observed_mono=2.25,latency_seconds=1.25,
+                phase='healthy')]
+            result=pair.pair(samples,pair.load_trace_sidecar([path]))
+            self.assertEqual(result['paired_samples'],1)
+            self.assertEqual(result['phases']['healthy']['all']['samples'],1)
+            trace.configure('epoch',enabled=True,every=1,path=directory)
+            self.assertGreaterEqual(trace.snapshot()['metadata_errors'],1)
+            trace.record('source_durable',seq=1)
+            self.assertEqual(self.events()[0]['stage'],'source_durable')
 
 
 if __name__=='__main__':

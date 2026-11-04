@@ -2818,8 +2818,22 @@ def commit_spool(
                 raise RuntimeError("GTID transaction found without a durable initial GTID set")
             meta_set(con,"gtid_set",gtid_add(current,gtid))
     if trace_started is not None and source_seq is not None:
+        # Decode only a sampled commit, and only after the writer transaction
+        # has committed. A diagnostic failure must not undo the durable commit.
+        marker=None
+        if cdc_event_trace.sampled(source_seq):
+            try:
+                if source_spool is not None:
+                    marker_parts=list(source_part_records(source_spool))
+                else:
+                    marker_parts=source_parts
+                marker=source_state.max_integer_primary_key(con,marker_parts)
+            except Exception:
+                cdc_event_trace.note_metadata_error()
+                marker=None
         cdc_event_trace.record("source_durable",seq=source_seq,
-            duration_seconds=time.monotonic()-trace_started,source_time_wall=source_time)
+            duration_seconds=time.monotonic()-trace_started,
+            source_time_wall=source_time,marker=marker)
     return changed_tables
 
 def touched_keys(con, table, column):
@@ -11742,8 +11756,12 @@ def stateful_task_worker(item, cfg, runtime):
 def run_cdc(
         cfg, prepared, source_uuid, start, start_gtid, available_logs,
         fingerprint, control=None, catalog_control=None):
+    trace_path=None
+    if cfg.get("event_trace") and cfg.get("state"):
+        trace_path=str(cfg["state"])+".event-trace.jsonl"
     cdc_event_trace.configure(source_uuid,enabled=cfg.get("event_trace",False),
-        every=cfg.get("event_trace_every",16),limit=cfg.get("event_trace_limit",2048))
+        every=cfg.get("event_trace_every",16),limit=cfg.get("event_trace_limit",2048),
+        path=trace_path)
     control = control if control is not None else dict(stop=threading.Event(),reason="stopped")
     apply_resource_policy(cfg["resource"])
     if signal_stop_requested(control):
