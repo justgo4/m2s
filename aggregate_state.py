@@ -69,6 +69,25 @@ def install(con):
         con.execute(
             "ALTER TABLE aggregate_states "
             "ADD COLUMN input_semantic_id TEXT NOT NULL DEFAULT ''")
+    con.executescript("""
+        CREATE TABLE IF NOT EXISTS aggregate_frozen_pins(
+            owner TEXT PRIMARY KEY,
+            state_id TEXT NOT NULL
+                REFERENCES aggregate_states(state_id) ON DELETE CASCADE,
+            watermark INTEGER NOT NULL,
+            spec_hash TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS aggregate_group_before_images(
+            state_id TEXT NOT NULL
+                REFERENCES aggregate_states(state_id) ON DELETE CASCADE,
+            key_blob BLOB NOT NULL,
+            change_seq INTEGER NOT NULL,
+            key_payload BLOB,
+            row_count INTEGER CHECK(row_count IS NULL OR row_count>0),
+            accum_payload BLOB,
+            PRIMARY KEY(state_id,key_blob,change_seq));
+        CREATE INDEX IF NOT EXISTS aggregate_group_before_images_gc
+            ON aggregate_group_before_images(state_id,change_seq,key_blob);
+    """)
 
 
 def _text(value, name):
@@ -670,6 +689,27 @@ def apply_transaction(con, state_id, source_seq, changes):
             raise RuntimeError(
                 "aggregate source_seq gap/regression expected=%d got=%d"
                 % (watermark+1,source_seq))
+        # The first image after a pinned cut is the row at that watermark,
+        # including a NULL row_count when the key was absent. Later applies
+        # append newer images and do not rewrite this one.
+        if _frozen_pinned(con,state_id):
+            for key_blob,_key_payload in affected_group_keys(spec,changes):
+                stored=con.execute("""
+                    SELECT key_payload,row_count,accum_payload
+                    FROM aggregate_groups
+                    WHERE state_id=? AND key_blob=?
+                """,(str(state_id),key_blob)).fetchone()
+                con.execute("""
+                    INSERT INTO aggregate_group_before_images(
+                        state_id,key_blob,change_seq,key_payload,row_count,
+                        accum_payload)
+                    VALUES(?,?,?,?,?,?)
+                """,(
+                    str(state_id),key_blob,source_seq,
+                    None if stored is None else stored[0],
+                    None if stored is None else stored[1],
+                    None if stored is None else stored[2],
+                ))
         for change in changes:
             _apply_change_locked(con,state_id,spec,change)
         con.execute("""
@@ -678,6 +718,17 @@ def apply_transaction(con, state_id, source_seq, changes):
             WHERE state_id=?
         """,(source_seq,digest,time.time(),str(state_id)))
     return True
+
+
+def _frozen_pinned(con,state_id):
+    if con.execute("""
+        SELECT 1 FROM sqlite_master
+        WHERE type='table' AND name='aggregate_frozen_pins'
+    """).fetchone() is None:
+        return False
+    return con.execute("""
+        SELECT 1 FROM aggregate_frozen_pins WHERE state_id=? LIMIT 1
+    """,(str(state_id),)).fetchone() is not None
 
 
 def affected_group_keys(spec, changes):
@@ -724,35 +775,47 @@ def read_group(con,state_id,key_blob):
     return item
 
 
-def read_rows(con, state_id):
-    info = state_info(con,state_id)
+def _public_group(spec,key_payload,row_count,accum_payload):
+    keys=pickle.loads(key_payload)
+    accum=pickle.loads(accum_payload)
+    item=dict(zip(spec["group_keys"],keys))
+    for aggregate in spec["aggregates"]:
+        output=aggregate["output"]
+        function=aggregate["function"]
+        state=accum[output]
+        if function=="count":
+            item[output]=int(state["count"])
+        elif function=="sum":
+            item[output]=state["sum"]
+        else:
+            item[output]=(
+                None if int(state["nonnull"])==0
+                else float(state["sum"]/int(state["nonnull"])))
+    item["_row_count"]=int(row_count)
+    return item
+
+
+def group_page(con,state_id,after_key=None,limit=None):
+    """Ordered aggregate groups. after_key/limit make bootstrap seeding resumable."""
+    info=state_info(con,state_id)
     if not info["bootstrap_complete"]:
         raise RuntimeError(
             "cannot read incomplete aggregate bootstrap state")
-    spec = info["spec"]
-    result = []
-    rows = con.execute("""
-        SELECT key_payload,row_count,accum_payload
-        FROM aggregate_groups
-        WHERE state_id=?
-        ORDER BY key_blob
-    """,(str(state_id),)).fetchall()
-    for key_payload,row_count,accum_payload in rows:
-        keys = pickle.loads(key_payload)
-        accum = pickle.loads(accum_payload)
-        item = dict(zip(spec["group_keys"],keys))
-        for aggregate in spec["aggregates"]:
-            output = aggregate["output"]
-            function = aggregate["function"]
-            state = accum[output]
-            if function == "count":
-                item[output] = int(state["count"])
-            elif function == "sum":
-                item[output] = state["sum"]
-            else:
-                item[output] = (
-                    None if int(state["nonnull"]) == 0
-                    else float(state["sum"]/int(state["nonnull"])))
-        item["_row_count"] = int(row_count)
-        result.append(item)
-    return result
+    sql=("SELECT key_blob,key_payload,row_count,accum_payload "
+         "FROM aggregate_groups WHERE state_id=?")
+    params=[str(state_id)]
+    if after_key is not None:
+        sql+=" AND key_blob>?"
+        params.append(after_key)
+    sql+=" ORDER BY key_blob"
+    if limit is not None:
+        sql+=" LIMIT ?"
+        params.append(max(1,int(limit)))
+    return [
+        (bytes(key_blob),_public_group(info["spec"],key_payload,row_count,accum_payload))
+        for key_blob,key_payload,row_count,accum_payload in con.execute(sql,params)
+    ]
+
+
+def read_rows(con, state_id):
+    return [row for _key,row in group_page(con,state_id)]

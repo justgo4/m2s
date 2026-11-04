@@ -10,6 +10,7 @@ the owner's frozen watermark before the owner consumer is removed.
 """
 import time
 
+import aggregate_frozen
 import aggregate_ir
 import aggregate_job_bridge
 import aggregate_log_consumer
@@ -183,85 +184,97 @@ def try_bind(con,task,cfg=None):
     existing=maybe_binding(
         con,task["task_id"])
     if existing is not None:
+        _finish_follower_bootstrap(con,task,existing)
         return existing
 
     with aggregate_state.transaction(con):
-        # Recheck after taking the SQLite writer lock; owner state cannot move
-        # while the bootstrap output is copied.
+        # Recheck after taking the SQLite writer lock. The bootstrap journal
+        # is copied after this transaction, in bounded pages.
         existing=maybe_binding(
             con,task["task_id"])
-        if existing is not None:
-            return existing
-        try:
-            aggregate_state.state_info(
-                con,task["state_id"])
-        except KeyError:
-            pass
-        else:
-            return None
-        leaders=_leader_candidates(
-            con,task)
-        chosen=stateful_share_policy.choose(
-            con,KIND,task,leaders,cfg=cfg)
-        if chosen is None:
-            return None
-        leader,state,consumer,physical,reuse=chosen
-        fixed_w=int(state["watermark"])
-        if fixed_w!=int(consumer["watermark"]):
-            return None
-        if fixed_w>source_state.base_applied_seq(con):
-            raise RuntimeError(
-                "shared aggregate leader is ahead of authoritative base")
+        if existing is None:
+            try:
+                aggregate_state.state_info(
+                    con,task["state_id"])
+            except KeyError:
+                pass
+            else:
+                return None
+            leaders=_leader_candidates(
+                con,task)
+            chosen=stateful_share_policy.choose(
+                con,KIND,task,leaders,cfg=cfg)
+            if chosen is None:
+                return None
+            leader,state,consumer,physical,reuse=chosen
+            fixed_w=int(state["watermark"])
+            if fixed_w!=int(consumer["watermark"]):
+                return None
+            if fixed_w>source_state.base_applied_seq(con):
+                raise RuntimeError(
+                    "shared aggregate leader is ahead of authoritative base")
 
-        generation=task_generation.import_existing(
-            con,task["sink_key"],task["plan_version"],
-            task["source_relation"],"history_staged")
-        now=time.time()
-        binding=dict(
-            follower_task_id=task["task_id"],
-            leader_task_id=leader["task_id"],
-            shared_state_id=leader["state_id"],
-            leader_consumer_id=leader["consumer_id"],
-            fixed_w=fixed_w,
-        )
-        con.execute("""
-            INSERT INTO aggregate_shared_followers(
-                follower_task_id,leader_task_id,shared_state_id,
-                leader_consumer_id,fixed_w,created,updated)
-            VALUES(?,?,?,?,?,?,?)
-        """,(
-            binding["follower_task_id"],
-            binding["leader_task_id"],
-            binding["shared_state_id"],
-            binding["leader_consumer_id"],
-            fixed_w,now,now,
-        ))
-        binding=binding_info(
-            con,task["task_id"])
-        source_state.register_consumer(
-            con,task["consumer_id"],fixed_w,
-            owner="aggregate-shared:"+task["task_id"],
-            metadata=_follower_metadata(
-                task,binding))
-        aggregate_outbox.ensure_stream(
-            con,task["consumer_id"],leader["state_id"],
-            task["plan_version"],generation["generation_id"],
-            fixed_w)
-        if reuse["mode"]=="exact":
-            aggregate_outbox.seed_bootstrap(
+            generation=task_generation.import_existing(
+                con,task["sink_key"],task["plan_version"],
+                task["source_relation"],"history_staged")
+            now=time.time()
+            con.execute("""
+                INSERT INTO aggregate_shared_followers(
+                    follower_task_id,leader_task_id,shared_state_id,
+                    leader_consumer_id,fixed_w,created,updated)
+                VALUES(?,?,?,?,?,?,?)
+            """,(
+                task["task_id"],leader["task_id"],
+                leader["state_id"],leader["consumer_id"],
+                fixed_w,now,now,
+            ))
+            existing=binding_info(
+                con,task["task_id"])
+            source_state.register_consumer(
+                con,task["consumer_id"],fixed_w,
+                owner="aggregate-shared:"+task["task_id"],
+                metadata=_follower_metadata(
+                    task,existing))
+            aggregate_outbox.ensure_stream(
                 con,task["consumer_id"],leader["state_id"],
                 task["plan_version"],generation["generation_id"],
                 fixed_w)
-        else:
-            aggregate_outbox.seed_bootstrap_projected(
-                con,task["consumer_id"],leader["state_id"],
-                task["plan_version"],generation["generation_id"],
-                fixed_w,aggregate_ir.state_spec(task["ir"]))
-        physical_state_catalog.retain_state(
-            con,physical["instance_id"],
-            task["task_id"],"dependency")
+            aggregate_frozen.pin(
+                con,aggregate_frozen.seed_owner(task["consumer_id"]),
+                leader["state_id"],fixed_w)
+            physical_state_catalog.retain_state(
+                con,physical["instance_id"],
+                task["task_id"],"dependency")
+    _finish_follower_bootstrap(con,task,existing)
     return binding_info(
         con,task["task_id"])
+
+
+def _finish_follower_bootstrap(con,task,binding):
+    """Seed the fixed-W journal outside the binding transaction.
+
+    Each page commits on its own. A crash resumes from the last durable key.
+    """
+    if aggregate_outbox.bootstrap_sealed(
+        con,task["consumer_id"],binding["fixed_w"]
+    ):
+        return
+    leader=aggregate_task_catalog.task_info(
+        con,binding["leader_task_id"])
+    reuse=aggregate_ir.reuse_plan(leader["ir"],task["ir"])
+    if reuse is None:
+        raise RuntimeError(
+            "aggregate shared leader no longer covers follower semantics")
+    if reuse["mode"]=="exact":
+        aggregate_outbox.seed_bootstrap(
+            con,task["consumer_id"],leader["state_id"],
+            task["plan_version"],task["generation_id"],
+            binding["fixed_w"])
+    else:
+        aggregate_outbox.seed_bootstrap_projected(
+            con,task["consumer_id"],leader["state_id"],
+            task["plan_version"],task["generation_id"],
+            binding["fixed_w"],aggregate_ir.state_spec(task["ir"]))
 
 
 def _validate_binding(con,task,binding):
@@ -304,6 +317,27 @@ def _validate_binding(con,task,binding):
 
 def step(con,task,mapping,cfg):
     """Advance one follower using the leader's already-computed output journal."""
+    binding=binding_info(con,task["task_id"])
+    if not aggregate_outbox.bootstrap_sealed(
+        con,task["consumer_id"],binding["fixed_w"]
+    ):
+        _finish_follower_bootstrap(con,task,binding)
+        if not aggregate_outbox.bootstrap_sealed(
+            con,task["consumer_id"],binding["fixed_w"]
+        ):
+            return dict(
+                generation=task_generation.info(
+                    con,task["sink_key"],task["plan_version"]),
+                consumer=source_state.consumer_info(
+                    con,task["consumer_id"]),
+                source_applied=source_state.base_applied_seq(con),
+                visible_frontier=None,
+                phase="bootstrap",
+                shared_physical=True,
+                shared_leader_task_id=binding["leader_task_id"],
+                shared_state_id=binding["shared_state_id"],
+                shared_reuse_mode=None,
+            )
     with source_state.read_snapshot(con):
         binding=binding_info(
             con,task["task_id"])
@@ -534,6 +568,7 @@ def release_binding(con,task_id):
 
 def gc_retired_followers(con,limit=64):
     """Delete detached follower outboxes after retirement and writer drain."""
+    aggregate_frozen.gc_step(con)
     limit=max(1,int(limit))
     rows=con.execute("""
         SELECT f.follower_task_id
