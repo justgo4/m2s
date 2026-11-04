@@ -1108,4 +1108,15 @@ PR 61 merged at `0675d056cce79d97514a796412554f7e1bd1b2d9`. That merge commit is
 
 ## 2026-11-04 milestone 1 started: stable shared registry sync is a read snapshot
 
-Base `60069ff81ca1fca69e3e020bcf7fa4936343b814` (docs on merge `0675d05`). On the traced strict-small, `stateful_physical_registry:sync_runtime_result` took 3736 writer transactions and 10.4s of acquire time while the shared-follower path only reads. A consistent follower now uses `physical_state_catalog.read_snapshot` (`BEGIN`, not `BEGIN IMMEDIATE`). Promotion still rechecks under the writer lock before `sync_ready`. Files: `physical_state_catalog.py`, `stateful_physical_registry.py`, `tools/join_shared_runtime_test.py`. Local tests passed: join/aggregate shared runtime, registry, physical catalog, idle worker, join subview. Competing-writer test: a stable follower sync issues no `BEGIN IMMEDIATE`. Same-machine A/B/B/A against `60069ff` with trace off is required before merge. Not merged.
+Base `60069ff81ca1fca69e3e020bcf7fa4936343b814` (docs on merge `0675d05`). On the traced strict-small, `stateful_physical_registry:sync_runtime_result` took 3736 writer transactions and 10.4s of acquire time while the shared-follower path only reads. A consistent follower now uses `physical_state_catalog.read_snapshot` (`BEGIN`, not `BEGIN IMMEDIATE`). Promotion still rechecks under the writer lock before `sync_ready`. Files: `physical_state_catalog.py`, `stateful_physical_registry.py`, `tools/join_shared_runtime_test.py`. Local tests passed: join/aggregate shared runtime, registry, physical catalog, idle worker, join subview. Competing-writer test: a stable follower sync issues no `BEGIN IMMEDIATE`. Implementation commit `3859f2f4e9385f4807202dff16413f4c57a05024`.
+
+Same caps, trace off, 90s settle, new directory each round. A is `60069ff` (main, observation code present but trace off). B is `3859f2f`. All four strict-small gates passed. Oracles true, pending=0, deliveries=0. No round failed. Slow samples kept.
+
+| Round | SHA | n | P50 | P95 | P99 | max | >5s | >10s | CPU s | RSS | write bytes | load1 | sync writer acquires |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| M1A1 | 60069ff | 275 | 1.618 | 4.983 | 7.026 | 10.005 | 12 | 1 | 234.17 | 393281536 | 7272443904 | 0.56 | 3035 / 2.791s |
+| M1B1 | 3859f2f | 281 | 1.606 | 4.001 | 4.999 | 6.999 | 3 | 0 | 234.23 | 405786624 | 7085961216 | 0.81 | 0 |
+| M1B2 | 3859f2f | 273 | 1.614 | 4.027 | 6.986 | 9.005 | 7 | 0 | 231.81 | 403075072 | 7150870528 | 0.62 | 0 |
+| M1A2 | 60069ff | 270 | 1.647 | 4.025 | 4.984 | 6.983 | 3 | 0 | 230.71 | 417157120 | 7223676928 | 1.27 | 3438 / 7.198s |
+
+P95 for B is 4.001-4.027s, inside A's 4.025-4.983s. P99 overlaps (A 4.984-7.026, B 4.999-6.986). CPU matches. The empty `sync_runtime_result` writer transactions are gone (3035 and 3438 versus 0). `retain_state` is still a writer transaction and is not claimed as removed. Not a latency win beyond noise. Eligible to merge because the gate passed on every round and the tail is not worse.
