@@ -124,6 +124,64 @@ def _shared_identity(kind,state_id):
         +str(kind))
 
 
+def _observe_shared_runtime(con,kind,task):
+    """Coherent view of a shared follower. 'stable' needs no writer lock."""
+    current=_task_info(con,kind,task["task_id"])
+    if current["status"] in {"retired","failed"}:
+        return "stable",None
+    binding=_shared_binding(con,kind,current["task_id"])
+    stream_state=_stream_state_id(con,kind,current["consumer_id"])
+    if binding is None:
+        return "mutate",current
+    shared_state=str(binding["shared_state_id"])
+    if stream_state!=shared_state:
+        raise RuntimeError(
+            "shared follower durable binding and output "
+            "stream state disagree")
+    identity=_shared_identity(kind,shared_state)
+    state=physical_state_catalog.state_info(con,identity)
+    refs=physical_state_catalog.state_refs(con,identity)
+    if not any(
+        row["owner_id"]==current["task_id"]
+        and row["role"]=="dependency"
+        for row in refs
+    ):
+        raise RuntimeError(
+            "shared follower physical dependency ref is missing")
+    return "stable",state
+
+
+def _sync_promoted_shared_runtime(con,kind,current,result):
+    # No binding means a concurrent owner retirement may have promoted
+    # this follower to its private backing state. Promotion updates the
+    # stream and removes the binding in the same transaction, so any
+    # other shape is a real durable lifecycle inconsistency.
+    stream_state=_stream_state_id(con,kind,current["consumer_id"])
+    if stream_state!=str(current["state_id"]):
+        raise RuntimeError(
+            "shared follower binding disappeared without "
+            "private output stream promotion")
+    durable_generation=task_generation.maybe_info(
+        con,current["sink_key"],current["plan_version"])
+    if durable_generation is None:
+        raise RuntimeError(
+            "promoted stateful follower is missing its generation")
+    if durable_generation["generation_id"]!=current["generation_id"]:
+        raise RuntimeError(
+            "promoted stateful follower generation identity changed")
+    if (
+        current["status"]=="active"
+        and durable_generation["status"]!="ready"
+    ):
+        raise RuntimeError(
+            "promoted active stateful follower is not ready")
+    if durable_generation["status"]=="ready":
+        return sync_ready(
+            con,kind,current,
+            watermark=result.get("visible_frontier"))
+    return None
+
+
 def sync_runtime_result(con,item,result):
     task=result.get("task") or item["task"]
     generation=result.get("generation") or {}
@@ -134,77 +192,20 @@ def sync_runtime_result(con,item,result):
             raise RuntimeError(
                 "shared stateful runtime omitted physical state identity")
 
-        # runner.step() and registry sync are separate calls. Owner retirement
-        # can legally promote a follower between them. Re-resolve durable
-        # ownership under one SQLite write lock instead of trusting the stale
-        # state id returned by the earlier step.
+        # A stable follower is only read. Promotion still rechecks under the
+        # writer lock before any catalog mutation, because runner.step() and
+        # this sync are separate calls.
+        if not con.in_transaction:
+            with physical_state_catalog.read_snapshot(con):
+                action,value=_observe_shared_runtime(con,kind,task)
+            if action=="stable":
+                return value
         with physical_state_catalog.transaction(con):
-            current=_task_info(
-                con,kind,task["task_id"])
-            if current["status"] in {
-                "retired","failed"
-            }:
-                return None
-
-            binding=_shared_binding(
-                con,kind,current["task_id"])
-            stream_state=_stream_state_id(
-                con,kind,current["consumer_id"])
-
-            if binding is not None:
-                shared_state=str(
-                    binding["shared_state_id"])
-                if stream_state!=shared_state:
-                    raise RuntimeError(
-                        "shared follower durable binding and output "
-                        "stream state disagree")
-                identity=_shared_identity(
-                    kind,shared_state)
-                state=physical_state_catalog.state_info(
-                    con,identity)
-                refs=physical_state_catalog.state_refs(
-                    con,identity)
-                if not any(
-                    row["owner_id"]==current["task_id"]
-                    and row["role"]=="dependency"
-                    for row in refs
-                ):
-                    raise RuntimeError(
-                        "shared follower physical dependency ref is missing")
-                return state
-
-            # No binding means a concurrent owner retirement may have promoted
-            # this follower to its private backing state. Promotion updates the
-            # stream and removes the binding in the same transaction, so any
-            # other shape is a real durable lifecycle inconsistency.
-            if stream_state!=str(current["state_id"]):
-                raise RuntimeError(
-                    "shared follower binding disappeared without "
-                    "private output stream promotion")
-            durable_generation=task_generation.maybe_info(
-                con,current["sink_key"],
-                current["plan_version"])
-            if durable_generation is None:
-                raise RuntimeError(
-                    "promoted stateful follower is missing its generation")
-            if (
-                durable_generation["generation_id"]
-                !=current["generation_id"]
-            ):
-                raise RuntimeError(
-                    "promoted stateful follower generation identity changed")
-            if (
-                current["status"]=="active"
-                and durable_generation["status"]!="ready"
-            ):
-                raise RuntimeError(
-                    "promoted active stateful follower is not ready")
-            if durable_generation["status"]=="ready":
-                return sync_ready(
-                    con,kind,current,
-                    watermark=result.get(
-                        "visible_frontier"))
-            return None
+            action,value=_observe_shared_runtime(con,kind,task)
+            if action=="stable":
+                return value
+            return _sync_promoted_shared_runtime(
+                con,kind,value,result)
 
     if (
         str(task.get("status"))=="active"

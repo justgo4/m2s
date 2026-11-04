@@ -235,6 +235,30 @@ def main():
             join_outbox.commit_info(
                 con,leader["consumer_id"],1)["digest"])
 
+        # A stable shared follower is a coherent read. It must not take the
+        # writer lock, including while another connection already holds it.
+        blocker=j4.open_state(state_path)
+        try:
+            blocker.execute("BEGIN IMMEDIATE")
+            con.execute("PRAGMA busy_timeout=0")
+            writes=[]
+            con.set_trace_callback(
+                lambda sql: writes.append(sql)
+                if sql.upper().startswith("BEGIN IMMEDIATE")
+                or sql.upper().startswith("BEGIN EXCLUSIVE")
+                else None)
+            stable=stateful_physical_registry.sync_runtime_result(
+                con,dict(kind="inner_join",task=follower),second)
+            assert writes==[]
+            assert not con.in_transaction
+            assert stable["instance_id"]==stateful_physical_registry.instance_id(
+                "inner_join",leader)
+        finally:
+            blocker.execute("ROLLBACK")
+            blocker.close()
+            con.execute("PRAGMA busy_timeout=30000")
+            con.set_trace_callback(None)
+
         promoted=join_shared_runtime.promote_followers(
             con,leader)
         assert promoted==[
