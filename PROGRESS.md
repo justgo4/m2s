@@ -1143,3 +1143,20 @@ Same caps (MySQL `--cpus=0.5 --memory=1g`, StarRocks `--cpus=2 --memory=8g`), tr
 P95 for B is 4.005-4.028s, inside A's 4.029-4.031s. P99 for B is 4.802-5.003s, below A's 5.963-6.037s. That P99 gap is inside the noise already seen on this VM (milestone 1 P99 spanned 4.984-7.026s) and is not claimed as a latency win. CPU on B is about 5-13s higher. Writes are not higher. Strict-small aggregate writer holds stay under 0.04s on both sides (`aggregate_log_consumer:process_next`, `aggregate_outbox:copy_commit`); this profile does not contain a large seed, so the series does not measure the chunking benefit. It shows the hot path is not worse. Eligible to merge. Formal `p11-50m-50rps-72h-v4` was not run. No persistent isolated host.
 
 PR 63 merged at `23dcf348fc88095dcf23a91a9205f305b715739b`. Actions was not required; mergeable state was UNSTABLE because checks had not finished. Local A/B is the evidence.
+
+## 2026-11-04 milestone 3: shorter missing-transaction poll, not merged
+
+Base `e96e2e6d30a4b1d8a7acbee5ea633f6bbb2f4f44`. Branch `cursor/visible-wait-b3f1`, exact `c3210d9ecc7cf1bc5d66dfd9a93838bdcb170b81`. `wait_visible` still treats a missing `SHOW TRANSACTION` row as not VISIBLE and not an abort, and still reads history on every poll. The missing-row sleep changed from 5s to 0.2s. After `load_timeout` the overdue floor stays 5s. The pipeline retry changed from 0.2s to 0.1s. Strict-small runs with `CDC_MERGE_VISIBILITY_PIPELINE=1`, so the scored path does not sleep the old 5s. `python3 -c 'import cdc_selftest; cdc_selftest.selftest()'` passed 37 offline groups, including a `load_timeout=600` assertion that the missing-row waits are 0.2s. `python3 tools/merge_visibility_pipeline_test.py` passed.
+
+An earlier A attempt on the old containers did not finish. At 676s, `starrocks.join_002` was quarantined (`MERGE QUARANTINED` at 17:06:06Z, one `merge_uncertain` row) and all 788 active jobs belonged to that table. StarRocks `/data` was 3.1G. The drain was killed before the 1800s timeout. That round has no latency gate result. MySQL and StarRocks were recreated with the same caps and empty data, then one unscored warmup passed (P95/P99=4.048/6.043s, CPU 237.41s).
+
+Scored A/B/B/A after that warmup. A is `e96e2e6`. B is `c3210d9`. Trace off, 90s settle, new directory. All four gates passed. Oracles true, pending=0, deliveries=0. No scored round failed.
+
+| Round | SHA | n | P50 | P95 | P99 | max | >5s | >10s | CPU s | RSS | write bytes | load1 | events visible p95 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| M3A1 | e96e2e6 | 278 | 1.656 | 4.029 | 5.001 | 5.998 | 4 | 0 | 245.56 | 414461952 | 7120695296 | 1.08 | 1.034 |
+| M3B1 | c3210d9 | 283 | 1.619 | 3.028 | 4.026 | 5.000 | 0 | 0 | 266.71 | 407601152 | 7134519296 | 0.75 | 1.022 |
+| M3B2 | c3210d9 | 277 | 1.658 | 4.023 | 4.997 | 6.763 | 3 | 0 | 274.17 | 391757824 | 7240564736 | 0.77 | 0.974 |
+| M3A2 | e96e2e6 | 279 | 1.818 | 4.027 | 4.834 | 5.826 | 1 | 0 | 243.31 | 421548032 | 7216320512 | 1.09 | 1.006 |
+
+Events-table `visible_seconds` p95 stays about 1.0s on both sides (0.974-1.034). B1's P95 3.028s did not repeat; B2 is 4.023s, next to A 4.027-4.029s. P99 is not worse. CPU on B is 21-31s higher. Not merged. The branch is pushed and left open. Formal 50M/72h was not run.
