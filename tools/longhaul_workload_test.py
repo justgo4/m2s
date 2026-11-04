@@ -70,6 +70,26 @@ def main():
             longhaul_workload.signal.SIGTERM, longhaul_workload.cancellation_signal)
         assert signals.call_args_list[1].args == (
             longhaul_workload.signal.SIGTERM, "previous")
+    clock={"now":0.0}
+    sequence={"value":0}
+    def mono():
+        return clock["now"]
+    def sleep(seconds):
+        clock["now"]+=float(seconds)
+    def pump(now):
+        if float(now)>=0.2 and sequence["value"]==0:
+            sequence["value"]=50
+    assert longhaul_workload.hold_fault_until_source_commit(
+        pump,lambda: sequence["value"],0,5.0,sleep,mono)
+    assert sequence["value"]==50
+    assert clock["now"]>=0.2
+    assert longhaul_workload.hold_fault_until_source_commit(
+        pump,lambda: sequence["value"],0,5.0,sleep,mono)
+    clock["now"]=10.0
+    sequence["value"]=0
+    assert not longhaul_workload.hold_fault_until_source_commit(
+        lambda now: None,lambda: sequence["value"],0,10.0,sleep,mono)
+    assert sequence["value"]==0
     assert longhaul_workload.percentile([],0.95) is None
     assert longhaul_workload.percentile(
         [5,1,3,2,4],0.50)==3

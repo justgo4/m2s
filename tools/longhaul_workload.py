@@ -1453,6 +1453,31 @@ def copy_evidence(directory,output):
     return copied
 
 
+def hold_fault_until_source_commit(
+        pump,read_sequence,sequence_before,deadline,
+        sleep,monotonic):
+    """Keep the fault open until the one-second source schedule commits.
+
+    Restart and catch-up can both finish before the next tick. The source
+    writer is still on its clock; it has not been asked to insert yet. The
+    window stays open until that scheduled batch commits or the deadline
+    passes. The gate still requires the recorded row count to be positive.
+    """
+    sequence_before=int(sequence_before)
+    while int(read_sequence())==sequence_before:
+        now=float(monotonic())
+        if now>=float(deadline):
+            return False
+        pump(now)
+        if int(read_sequence())!=sequence_before:
+            return True
+        remaining=float(deadline)-float(monotonic())
+        if remaining<=0:
+            return False
+        sleep(min(0.05,remaining))
+    return True
+
+
 def run(args):
     cfg=configuration()
     cfg["sr"]["database"]=DATABASE
@@ -1807,6 +1832,19 @@ def run(args):
                     wait_started(
                         proc,log,state_path,
                         progress=fault_progress)
+                    # The source emits one 1s batch. A sub-second restart
+                    # must not close the fault before that batch is asked for.
+                    hold_fault_until_source_commit(
+                        pump_source,
+                        lambda: sequence,
+                        before,
+                        min(
+                            deadline,
+                            time.monotonic()+float(
+                                args.fault_recovery_timeout_seconds),
+                        ),
+                        time.sleep,
+                        time.monotonic)
                     sample_daemon_resources(force=True)
                     restart_seconds=(
                         time.monotonic()-fault_started)
