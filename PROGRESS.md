@@ -1122,3 +1122,22 @@ Same caps, trace off, 90s settle, new directory each round. A is `60069ff` (main
 P95 for B is 4.001-4.027s, inside A's 4.025-4.983s. P99 overlaps (A 4.984-7.026, B 4.999-6.986). CPU matches. The empty `sync_runtime_result` writer transactions are gone (3035 and 3438 versus 0). `retain_state` is still a writer transaction and is not claimed as removed. Not a latency win beyond noise. Eligible to merge because the gate passed on every round and the tail is not worse.
 
 PR 62 merged at `241d156bf49e9d171015df3ccbd296bc7db18a6d`.
+
+## 2026-11-04 milestone 2: bounded resumable aggregate bootstrap pages
+
+Base `217e5415e6cdb5e8455a71daf3a56e6bf968d2b3` (docs on merge `241d156`). JOIN follower copy and output build were already chunked on the daemon path. Aggregate `try_bind` and `activate_catchup` still seeded the whole GROUP BY journal inside one `BEGIN IMMEDIATE`. Branch `cursor/aggregate-seed-chunks-b3f1`, implementation `a5fb31893ba7dbb4a51c684bc9523bc8644f6e54`.
+
+Pages are at most 1000 rows or 16MiB. An `aggregate_output_seeds` row hides the commit from `pending_commits`, `mark_visible`, and `copy_commit` until the digest is written. The scan cursor is durable, so keys absent at the cut cannot stall the scan. The digest hash uses a read snapshot; the writer transaction only stores the digest and deletes the seed. A pin at the fixed watermark makes `apply_transaction` store before-images, so an owner apply between pages cannot tear the cut. Consumer registration and fixed-W pin release stay one transaction. Before-images are written only while a pin exists.
+
+Files: `aggregate_frozen.py`, `aggregate_outbox.py`, `aggregate_state.py`, `aggregate_generation.py`, `aggregate_log_consumer.py`, `aggregate_shared_runtime.py`, `tools/aggregate_seed_chunk_test.py`, `.github/workflows/ci.yml`. Local commands that passed on this tree before the A/B: `python3 tools/aggregate_seed_chunk_test.py` (digest match, hidden until sealed, cut survives a later apply), `python3 tools/aggregate_generation_test.py`, `python3 tools/aggregate_shared_runtime_test.py`, `python3 tools/aggregate_log_consumer_test.py`, `python3 tools/aggregate_state_test.py`, `python3 tools/aggregate_state_oracle.py` (seed=20261001, 1500 transactions), `python3 tools/aggregate_runtime_test.py`, `python3 tools/aggregate_job_bridge_test.py`, `python3 tools/aggregate_bootstrap_test.py`, `python3 tools/aggregate_subview_shared_runtime_test.py`, `python3 tools/shared_state_scale_test.py`, `python3 tools/shared_follower_gc_scale_test.py`, `python3 tools/stateful_physical_registry_test.py`, `python3 tools/privacy_check.py` (PASS files=234). `read_rows` keeps `float(sum/count)` so the full oracle did not move.
+
+Same caps (MySQL `--cpus=0.5 --memory=1g`, StarRocks `--cpus=2 --memory=8g`), trace off, 90s settle, new directory each round. A is `/tmp/m2s-main` at `217e541`. B is `/workspace` at `a5fb318`. Command: `/tmp/run-small.sh <label> unused <repo> off`. All four gates passed. Oracles true, pending=0, deliveries=0. No round failed. Slow samples kept.
+
+| Round | SHA | n | P50 | P95 | P99 | max | >5s | >10s | CPU s | RSS | write bytes | load1 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| M2A1 | 217e541 | 275 | 1.655 | 4.029 | 5.963 | 7.962 | 6 | 0 | 230.52 | 404496384 | 7148982272 | 0.10 |
+| M2B1 | a5fb318 | 275 | 1.664 | 4.028 | 4.802 | 5.994 | 1 | 0 | 239.22 | 424398848 | 7114842112 | 0.77 |
+| M2B2 | a5fb318 | 266 | 1.629 | 4.005 | 5.003 | 7.990 | 4 | 0 | 243.63 | 389435392 | 7044030464 | 0.65 |
+| M2A2 | 217e541 | 268 | 1.631 | 4.031 | 6.037 | 7.684 | 7 | 0 | 237.75 | 397537280 | 7108284416 | 0.60 |
+
+P95 for B is 4.005-4.028s, inside A's 4.029-4.031s. P99 for B is 4.802-5.003s, below A's 5.963-6.037s. That P99 gap is inside the noise already seen on this VM (milestone 1 P99 spanned 4.984-7.026s) and is not claimed as a latency win. CPU on B is about 5-13s higher. Writes are not higher. Strict-small aggregate writer holds stay under 0.04s on both sides (`aggregate_log_consumer:process_next`, `aggregate_outbox:copy_commit`); this profile does not contain a large seed, so the series does not measure the chunking benefit. It shows the hot path is not worse. Eligible to merge. Formal `p11-50m-50rps-72h-v4` was not run. No persistent isolated host.
