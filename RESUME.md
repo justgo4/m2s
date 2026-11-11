@@ -52,8 +52,7 @@
 
 ## 正在做
 
-里程碑 4 已合併，PR [#69](https://github.com/justgo4/m2s/pull/69)，合併提交 `8c3ccdb3434c563b4677dcc275be9037d4072cea`。
-里程碑 5 的 checkpoint 測試已通過。正在開 PR。
+里程碑 5 的 checkpoint 測試已通過。workflow 檔已退回串流工作開始前的內容，不再往 GitHub Actions 加步驟。測試只在本機 VM 跑。
 
 ## 里程碑 3 程式
 

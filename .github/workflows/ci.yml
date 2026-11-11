@@ -58,7 +58,7 @@ jobs:
         run: python -m pip install -r requirements.txt
       - name: Syntax and CLI
         run: |
-          python -m compileall -q aggregate_task_catalog.py aggregate_task_runner.py aggregate_target_mapping.py aggregate_runtime.py aggregate_job_bridge.py aggregate_outbox.py aggregate_shared_runtime.py aggregate_generation.py aggregate_physical_state.py aggregate_bootstrap.py aggregate_ir.py aggregate_log_consumer.py aggregate_state.py join_bootstrap.py join_generation.py join_ir.py join_job_bridge.py join_log_consumer.py join_outbox.py join_shared_runtime.py join_physical_state.py join_runtime.py join_state.py join_target_mapping.py join_task_catalog.py join_task_runner.py source_log_consumer.py j4.py catalog_explain.py cdc_catalog.py cdc_selftest.py incremental_contract.py incremental_ir.py adaptive_batch.py state_backend.py stream_checkpoint.py stream_eval.py stream_hot.py stream_ir.py stream_mv.py stream_sql.py stream_time.py stream_zset.py physical_state_catalog.py relational_ir.py source_state.py stateful_catalog_runtime.py stateful_physical_registry.py stateful_admission.py stateful_rebuild.py stateful_rebuild_cohort.py stateful_share_policy.py stateful_task_plan.py task_generation.py native tools
+          python -m compileall -q aggregate_task_catalog.py aggregate_task_runner.py aggregate_target_mapping.py aggregate_runtime.py aggregate_job_bridge.py aggregate_outbox.py aggregate_shared_runtime.py aggregate_generation.py aggregate_physical_state.py aggregate_bootstrap.py aggregate_ir.py aggregate_log_consumer.py aggregate_state.py join_bootstrap.py join_generation.py join_ir.py join_job_bridge.py join_log_consumer.py join_outbox.py join_shared_runtime.py join_physical_state.py join_runtime.py join_state.py join_target_mapping.py join_task_catalog.py join_task_runner.py source_log_consumer.py j4.py catalog_explain.py cdc_catalog.py cdc_selftest.py incremental_contract.py incremental_ir.py physical_state_catalog.py relational_ir.py source_state.py stateful_catalog_runtime.py stateful_physical_registry.py stateful_admission.py stateful_rebuild.py stateful_rebuild_cohort.py stateful_share_policy.py stateful_task_plan.py task_generation.py native tools
           python j4.py --help
           python tools/aggregate_bootstrap_test.py
           python tools/aggregate_generation_test.py
@@ -111,11 +111,6 @@ jobs:
           python tools/shared_join_subview_scale_test.py
           python tools/incremental_contract_test.py
           python tools/incremental_ir_test.py
-          python tools/stream_zset_test.py
-          python tools/stream_sql_test.py
-          python tools/stream_time_test.py
-          python tools/state_backend_test.py
-          python tools/stream_checkpoint_test.py
           python tools/join_bootstrap_test.py
           python tools/join_generation_test.py
           python tools/join_ir_test.py
@@ -155,7 +150,6 @@ jobs:
           python tools/task_generation_test.py
           python tools/resource_startup_test.py
           python tools/merge_quarantine_test.py
-          python tools/merge_reconcile_test.py
           python tools/merge_commit_identity_test.py
           python tools/cold_build_admission_test.py
           python tools/cdc_bundle_test.py
