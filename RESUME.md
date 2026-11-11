@@ -53,7 +53,7 @@
 
 ## 正在做
 
-對帳已在本機通過 strict-small。正在把 SHA `96501dcd0d7bf3c7b84b7d2ac17aaed7d759a9d0` 的門檻結果寫進 PROGRESS.md 並開 PR。
+沒有進行中的編輯。Merge Commit 對帳已合併。PR [#68](https://github.com/justgo4/m2s/pull/68)，合併提交 `ce94b7aac303cb83422f5cedb72b109edb28572f`。strict-small 執行期 SHA `96501dcd0d7bf3c7b84b7d2ac17aaed7d759a9d0`。
 
 ## 里程碑 3 程式
 
@@ -95,7 +95,7 @@
 
 ## 下一步
 
-對帳 PR 合併後做里程碑 4。里程碑 5 的 barrier、checkpoint、savepoint 仍排在里程碑 4 之後。strict-small 門檻維持 P95≤5s、P99≤10s。無法確認的 Merge Commit 不得重放。
+從 `main` `ce94b7aac303cb83422f5cedb72b109edb28572f` 做里程碑 4：狀態後端介面（SQLite 預設、RocksDB 第二實作）、只在量過的熱點上用 Rust，以及自適應批次。沒有小剖面對照之前不換原生熱路徑。里程碑 5 的 barrier、checkpoint、savepoint 仍排在里程碑 4 之後。strict-small 門檻維持 P95≤5s、P99≤10s。無法確認的 Merge Commit 不得重放。
 
 ## 未解決
 
