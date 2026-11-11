@@ -25,7 +25,15 @@ SEMANTICS = dict(
     bag=True,
 )
 FILTER_SCOPES = {"source", "query", "predicate"}
-AGGREGATE_FUNCTIONS = {"count", "sum", "avg"}
+AGGREGATE_FUNCTIONS = {
+    "count", "sum", "avg", "min", "max", "count_distinct", "string_agg",
+}
+SET_MODES = {
+    "union_all", "union", "intersect_all", "intersect",
+    "except_all", "except",
+}
+JOIN_KINDS = {"left", "right", "full", "semi", "anti"}
+THETA_KINDS = {"inner", "left", "right", "full", "semi", "anti"}
 
 
 def canonical_bytes(value):
@@ -59,14 +67,19 @@ def _node_inputs(node):
     op = node.get("op")
     if op == "input":
         return []
-    if op in {"filter", "project", "aggregate"}:
+    if op in {"filter", "project", "aggregate", "distinct"}:
         return [_text(node.get("input"), op + " input")]
-    if op == "equi_join":
-        left = _text(node.get("left"), "equi-join left")
-        right = _text(node.get("right"), "equi-join right")
+    if op in {"equi_join", "keyed_join", "theta_join", "set_op"}:
+        left = _text(node.get("left"), op + " left")
+        right = _text(node.get("right"), op + " right")
         if left == right:
-            raise ValueError("equi-join inputs must be distinct nodes")
+            raise ValueError(op + " inputs must be distinct nodes")
         return [left, right]
+    if op == "recompute":
+        sources = node.get("sources")
+        if not isinstance(sources, list) or not sources:
+            raise ValueError("recompute sources cannot be empty")
+        return [_text(item, "recompute source") for item in sources]
     raise ValueError("unsupported stream operator: " + str(op))
 
 
@@ -107,28 +120,174 @@ def _validate_aggregate(node):
     if set(node) != {"id", "op", "input", "group_keys", "aggregates"}:
         raise ValueError("aggregate node fields differ from stream plan v1")
     group_keys = _names(node["group_keys"], "group key")
-    if list(node["group_keys"]) != group_keys or not group_keys:
-        raise ValueError("aggregate group keys are empty or not canonical")
+    if list(node["group_keys"]) != group_keys:
+        raise ValueError("aggregate group keys are not canonical")
     aggregates = node["aggregates"]
     if not isinstance(aggregates, list) or not aggregates:
         raise ValueError("aggregate outputs cannot be empty")
     seen = set(group_keys)
     for item in aggregates:
+        _validate_aggregate_item(item, seen)
+        seen.add(item["output"])
+
+
+def _validate_aggregate_item(item, seen):
+    if not isinstance(item, dict):
+        raise ValueError("invalid aggregate output")
+    function = _text(item.get("function"), "aggregate function")
+    if function not in AGGREGATE_FUNCTIONS:
+        raise ValueError("unsupported aggregate function: " + function)
+    output = _text(item.get("output"), "aggregate output")
+    source = _text(item.get("input"), "aggregate input")
+    if output in seen or output == "_m2s_z_weight":
+        raise ValueError("aggregate output is reserved or duplicate")
+    if function == "string_agg":
+        if set(item) != {
+            "output", "function", "input", "separator", "order_by",
+        }:
+            raise ValueError("string_agg fields differ from stream plan v1")
+        if not isinstance(item["separator"], str):
+            raise ValueError("string_agg separator must be a string")
+        order_by = item["order_by"]
+        if not isinstance(order_by, list) or not order_by:
+            raise ValueError(
+                "string_agg requires ORDER BY; unordered aggregation is rejected")
+        for spec in order_by:
+            if (
+                not isinstance(spec, dict)
+                or set(spec) != {"column", "desc", "nulls_first"}
+            ):
+                raise ValueError("invalid string_agg order key")
+            _text(spec["column"], "string_agg order column")
+            if not isinstance(spec["desc"], bool) or not isinstance(
+                spec["nulls_first"], bool
+            ):
+                raise ValueError("string_agg order flags must be booleans")
+    else:
+        if set(item) != {"output", "function", "input"}:
+            raise ValueError("invalid aggregate output")
+        if source == "*" and function != "count":
+            raise ValueError(function + "(*) is unsupported")
+    return output
+
+
+def _validate_projection_list(projections, label):
+    if not isinstance(projections, list) or not projections:
+        raise ValueError(label + " projections cannot be empty")
+    seen = set()
+    for item in projections:
         if (
             not isinstance(item, dict)
-            or set(item) != {"output", "function", "input"}
+            or set(item) != {"output", "source", "column"}
         ):
-            raise ValueError("invalid aggregate output")
-        output = _text(item["output"], "aggregate output")
-        function = _text(item["function"], "aggregate function")
-        source = _text(item["input"], "aggregate input")
-        if function not in AGGREGATE_FUNCTIONS:
-            raise ValueError("unsupported aggregate function: " + function)
-        if function != "count" and source == "*":
-            raise ValueError(function + "(*) is unsupported")
+            raise ValueError("invalid " + label + " projection")
+        output = _text(item["output"], label + " output")
+        source = str(item["source"])
+        _text(item["column"], label + " projection column")
+        if source not in {"left", "right"}:
+            raise ValueError(label + " projection source is invalid")
         if output in seen or output == "_m2s_z_weight":
-            raise ValueError("aggregate output is reserved or duplicate")
+            raise ValueError(label + " output is reserved or duplicate")
         seen.add(output)
+    return projections
+
+
+def _validate_join_pairs(pairs, label):
+    if not isinstance(pairs, list) or not pairs:
+        raise ValueError(label + " requires join pairs")
+    seen_left = set()
+    seen_right = set()
+    normalized = []
+    for item in pairs:
+        if not isinstance(item, dict) or set(item) != {"left", "right"}:
+            raise ValueError("invalid " + label + " pair")
+        left = _text(item["left"], label + " left key")
+        right = _text(item["right"], label + " right key")
+        if left in seen_left or right in seen_right:
+            raise ValueError(label + " key repeats a source column")
+        seen_left.add(left)
+        seen_right.add(right)
+        normalized.append(dict(left=left, right=right))
+    if pairs != normalized:
+        raise ValueError(label + " pairs are not canonical")
+    return pairs
+
+
+def _validate_keyed_join(node):
+    if set(node) != {
+        "id", "op", "left", "right", "kind", "join_pairs", "projections",
+    }:
+        raise ValueError("keyed join fields differ from stream plan v1")
+    if node["kind"] not in JOIN_KINDS:
+        raise ValueError("unsupported keyed join kind")
+    _validate_join_pairs(node["join_pairs"], "keyed join")
+    projections = _validate_projection_list(
+        node["projections"], "keyed join")
+    if node["kind"] in {"semi", "anti"} and any(
+        item["source"] != "left" for item in projections
+    ):
+        raise ValueError("semi/anti join projections must come from the left")
+
+
+def _validate_theta_join(node):
+    if set(node) != {
+        "id", "op", "left", "right", "kind", "sql", "strategy",
+        "left_columns", "right_columns",
+    }:
+        raise ValueError("theta join fields differ from stream plan v1")
+    if node["kind"] not in THETA_KINDS:
+        raise ValueError("unsupported theta join kind")
+    if node["strategy"] != "full_input_recompute":
+        raise ValueError("theta join must be marked full_input_recompute")
+    sql = node["sql"]
+    if not isinstance(sql, str) or not sql.strip() or sql != sql.strip():
+        raise ValueError("theta join sql is not canonical")
+    for name in ("left_columns", "right_columns"):
+        columns = node[name]
+        if not isinstance(columns, list) or not columns:
+            raise ValueError("theta join columns cannot be empty")
+        _names(columns, name)
+
+
+def _validate_set_op(node):
+    if set(node) != {"id", "op", "left", "right", "mode"}:
+        raise ValueError("set operator fields differ from stream plan v1")
+    if node["mode"] not in SET_MODES:
+        raise ValueError("unsupported set operator mode")
+
+
+def _validate_distinct(node):
+    if set(node) != {"id", "op", "input"}:
+        raise ValueError("distinct node fields differ from stream plan v1")
+
+
+def _validate_recompute(node):
+    if set(node) != {
+        "id", "op", "sources", "tables", "input_columns", "sql", "strategy",
+    }:
+        raise ValueError("recompute fields differ from stream plan v1")
+    if node["strategy"] != "full_input_recompute":
+        raise ValueError("recompute must be marked full_input_recompute")
+    sql = node["sql"]
+    if not isinstance(sql, str) or not sql.strip() or sql != sql.strip():
+        raise ValueError("recompute sql is not canonical")
+    sources = node["sources"]
+    tables = node["tables"]
+    if (
+        not isinstance(sources, list) or not sources
+        or not isinstance(tables, list)
+        or len(tables) != len(sources)
+    ):
+        raise ValueError("recompute sources and tables must align")
+    for name in tables:
+        _text(name, "recompute table")
+    columns = node["input_columns"]
+    if not isinstance(columns, dict) or set(columns) != set(sources):
+        raise ValueError("recompute input columns must cover every source")
+    for name, fields in columns.items():
+        if not isinstance(fields, list) or not fields:
+            raise ValueError("recompute input columns cannot be empty")
+        _names(fields, "recompute column")
 
 
 def _validate_join(node):
@@ -210,8 +369,6 @@ def validate_plan(plan):
             if set(node) != {"id", "op", "input"}:
                 raise ValueError("input node fields differ from stream plan v1")
             name = _text(node["input"], "stream input")
-            if name in declared:
-                raise ValueError("duplicate stream input " + name)
             declared.append(name)
         elif op == "filter":
             _validate_filter(node)
@@ -219,12 +376,26 @@ def validate_plan(plan):
             _validate_project(node)
         elif op == "aggregate":
             _validate_aggregate(node)
+        elif op == "distinct":
+            _validate_distinct(node)
         elif op == "equi_join":
             _validate_join(node)
+        elif op == "keyed_join":
+            _validate_keyed_join(node)
+        elif op == "theta_join":
+            _validate_theta_join(node)
+        elif op == "set_op":
+            _validate_set_op(node)
+        elif op == "recompute":
+            _validate_recompute(node)
         else:
             raise ValueError("unsupported stream operator: " + str(op))
         seen.add(node_id)
-    if declared != list(inputs):
+    unique = []
+    for name in declared:
+        if name not in unique:
+            unique.append(name)
+    if unique != list(inputs):
         raise ValueError("stream inputs do not match input nodes")
     output = _text(plan["output"], "stream output")
     if output not in seen:
@@ -257,6 +428,23 @@ def explain(plan):
                 "aggregate " + node["id"] + " <- " + node["input"]
                 + " group=" + ",".join(node["group_keys"])
                 + " " + funcs)
+        elif op == "distinct":
+            lines.append("distinct " + node["id"] + " <- " + node["input"])
+        elif op == "set_op":
+            lines.append(
+                "set_op " + node["mode"] + " " + node["id"]
+                + " " + node["left"] + " " + node["right"])
+        elif op == "keyed_join":
+            lines.append(
+                "keyed_join " + node["kind"] + " " + node["id"]
+                + " " + node["left"] + " " + node["right"])
+        elif op == "theta_join":
+            lines.append(
+                "theta_join " + node["kind"] + " " + node["id"]
+                + " strategy=" + node["strategy"])
+        elif op == "recompute":
+            lines.append(
+                "recompute " + node["id"] + " strategy=" + node["strategy"])
         else:
             pairs = ",".join(
                 item["left"] + "=" + item["right"]

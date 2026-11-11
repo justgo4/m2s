@@ -4,12 +4,13 @@
 
 ## 當前里程碑
 
-里程碑 1 已合併。PR [#65](https://github.com/justgo4/m2s/pull/65)，合併提交
-`7c6662709e9a5cf2243ca22dad6052b8e62c3f66`。下一步是里程碑 2，不要重做 Z-set DAG。
+里程碑 2 的 SQL 前端與新運算子已在本分支實作並通過本地差分。
+里程碑 1 已在 `main`（PR #65，`7c6662709e9a5cf2243ca22dad6052b8e62c3f66`）。
+不要重做 Z-set DAG，也不要改既有 v1 plan semantic id。
 
 ## 倉庫位置
 
-- 分支：`cursor/stream-zset-ir-23fa`
+- 分支：`cursor/stream-sql-m2-23fa`
 - 基線：`adba11f117915818ad5d299651a00783062d43e3`（開始時 `origin/main` 同一 SHA）
 - 方案提交：`5f3cabef404d8b536dfa112aefc68224fffcaf13`
 - 實作提交：`bef1ed2c397144821a9bb2b29b587d93f6d05989`
@@ -51,23 +52,42 @@
 
 ## 正在做
 
-里程碑 2，分支 `cursor/stream-sql-m2-23fa`，從 `main` `44cd2b8ea7d20ba826933eb1ede5e1f5df75ed72` 切開。
-正在加 SQL 前端與新運算子。MySQL 8.0.46 已用 apt 安裝並在本機啟動（GTID ON）。
-StarRocks 4.1.1 官方包已下載到 `/tmp/sr/StarRocks-4.1.1-ubuntu-amd64.tar.gz`（1.7G），尚未解壓啟動。
+準備開里程碑 2 的 PR 並合併。程式與差分測試已完成。
+
+## 里程碑 2 已完成的程式
+
+分支 `cursor/stream-sql-m2-23fa`，從 `main` `44cd2b8ea7d20ba826933eb1ede5e1f5df75ed72` 切開。
+起點提交 `46db647229eba47d8597bcfdca8f26c1c7cdb9ba`。
+
+- `stream_sql.compile_sql(sql, sources, read="duckdb")`。預設 duckdb，與現有 mapping SQL 相同。`read="mysql"` 才接受反引號與 `GROUP_CONCAT`。`j4` 熱路徑解析沒有改。
+- 參考引擎新增：MIN／MAX、COUNT DISTINCT、有 `ORDER BY` 的 STRING_AGG、DISTINCT、UNION／UNION ALL／INTERSECT／EXCEPT（含 ALL）、INNER 以外的 equi JOIN（LEFT／RIGHT／FULL／SEMI／ANTI）、多表 JOIN。
+- 非等值 JOIN 與去不掉的 `NOT IN` 標成 `full_input_recompute`，用 DuckDB 對該運算子的輸入重算後做權重差。無 `ORDER BY` 的 STRING_AGG 與 LIMIT／OFFSET 直接拒絕。
+- GROUP BY ROLLUP／CUBE／GROUPING SETS 展開成多個聚合再 `union_all`。
+- `stream_mv.MaterializedView` 把上游 delta 送進下游。watermark 必須每次加一，下游不能超前或倒退。
+- 既有三個 v1 plan semantic id 仍是  
+  stateless `1283fb55eb3b4b4408aa8095e8e9c66255383bb60fa630d38d6f401b109fc8ef`、  
+  aggregate `8ff37078393ac336c586fa6ef3138bcedfb99c1add01c914c298b9f93fd2b9ef`、  
+  join `573cac45023a5f0717b085c4b5f0027196774508357723da29b7e103d0ea4990`。
+- `aggregate_state` 仍只接受 COUNT／SUM／AVG。
+
+測試（Python 3.12.3，DuckDB 1.5.5）：
+
+| 命令 | 結果 |
+|---|---|
+| `python3 tools/stream_sql_test.py` | `stream_sql_test ok` |
+| `python3 tools/stream_zset_test.py` | `stream_zset_test ok` |
+| `python3 tools/privacy_check.py` | `PRIVACY PASS files=240 findings=0` |
+
+`stream_sql_test.py` 含腳本化與種子 `20261111` 的隨機增刪改，每批結束與 DuckDB 全量重算逐列一致。也含方言、MV watermark 與 v1 semantic id。
 
 ## 下一步
 
-從目前的 `main` 開里程碑 2 分支（含本檔；程式合併點仍是 `7c6662709e9a5cf2243ca22dad6052b8e62c3f66`）。先做這幾項，每項都要能對 DuckDB 全量重算，並且既有 stream plan semantic id 保持不變：
-
-1. 新的 SQL 入口使用 sqlglot，`read` 可設定，預設 `duckdb`，與現有 `j4` 解析相容。`read=mysql` 只在明確設定時啟用。
-2. 在參考引擎加上 MIN／MAX、COUNT DISTINCT。不要把這些函式送進現有 `aggregate_state`，那個引擎仍只接受 COUNT／SUM／AVG。
-3. 接著才是 LEFT／RIGHT／FULL／SEMI／ANTI、多表與非等值 JOIN、DISTINCT、UNION／INTERSECT／EXCEPT、子查詢去關聯化、GROUPING SETS／ROLLUP／CUBE、MV on MV。
-4. 沒有增量索引的運算子標成受影響鍵的 DuckDB 局部重算，不要假裝是增量。
-5. 舊的 projection／filter、COUNT／SUM／AVG、INNER JOIN 差分要再跑一次。strict-small 仍然沒有 Docker，沒有新數據就寫無數據。
+1. 開 PR、合併到 `main`。合併 SHA 寫回本檔。
+2. 從合併後的 `main` 做里程碑 3：事件時間、watermark、遲到、視窗、Top-N、遞迴 CTE、時態／區間 JOIN、狀態 TTL。非確定性函式繼續拒絕或明示定時重算。
 
 ## 未解決
 
-- strict-small、真實 daemon E2E、故障注入：無數據。這台 VM 沒有 Docker（`docker version` 失敗，沒有 `/var/run/docker.sock`），也沒有 MySQL／StarRocks 服務。`j4.py selftest` 的線上檢查因此跳過。本里程碑沒有改每筆 CDC 的 SQL 或 SQLite 狀態機，延遲數字不能從這次測試外推。
+- strict-small：無數據。E2E 有試跑但沒有完成，見下方。新 SQL 不在 CDC 熱路徑上，這次沒有新的延遲數字。
 - 正式 `p11-50m-50rps-72h-v4`：無數據。沒有持久隔離主機。
 - 參考引擎是語意對照，不是熱路徑。里程碑 4 之前不要用它替換 SQLite／原生熱點。
 - GitHub Actions 不跑。提交訊息帶 `[skip ci]`。
@@ -77,10 +97,11 @@ StarRocks 4.1.1 官方包已下載到 `/tmp/sr/StarRocks-4.1.1-ubuntu-amd64.tar.
 工作目錄 `/workspace`。系統 Python 3.12.3。沒有虛擬環境。
 
 ```bash
-git fetch origin main
-git checkout main
+git fetch origin cursor/stream-sql-m2-23fa
+git checkout cursor/stream-sql-m2-23fa
 python3 -m pip install -r requirements.txt
 
+python3 tools/stream_sql_test.py
 python3 tools/stream_zset_test.py
 python3 tools/incremental_ir_test.py
 python3 tools/aggregate_ir_test.py
@@ -93,18 +114,16 @@ python3 tools/privacy_check.py
 python3 j4.py selftest
 ```
 
-strict-small 需要新的空資料目錄，以及 MySQL 8.4（`--cpus=0.5 --memory=1g`，GTID）和 StarRocks 4.1.1（`--cpus=2 --memory=8g`）。本機目前沒有 Docker，所以上面的服務沒有啟動。映像名稱尚未在本輪核對，不要把未跑的命令寫成已通過。
+本機沒有 Docker。MySQL 與 StarRocks 是直接裝的，帳號留在機器上，不要寫進 Git。
+
+- MySQL：`sudo DEBIAN_FRONTEND=noninteractive apt-get install -y mysql-server` 得到 8.0.46。`policy-rc.d` 會拒絕 service start，所以用 `sudo mysqld --user=mysql --daemonize`。`/etc/mysql/mysql.conf.d/m2s-local.cnf` 打開 GTID、`server-id=1`、binlog。實測 `binlog_format=ROW`、`binlog_row_image=FULL`。root 只能走 socket；TCP 要用另外的帳號。
+- StarRocks：`https://releases.starrocks.io/starrocks/StarRocks-4.1.1-ubuntu-amd64.tar.gz` 解到 `/tmp/sr`。FE `JAVA_OPTS` 從 `-Xmx8192m` 改成 `-Xmx1536m`，BE `mem_limit=2147483648`，`priority_networks=127.0.0.1/32`。`sudo sysctl -w vm.max_map_count=2000000` 成功。`bin/start_fe.sh --daemon` 與 `bin/start_be.sh --daemon` 之後，`ALTER SYSTEM ADD BACKEND "127.0.0.1:9050"`。`current_version()` 是 `4.1.1-14b7e3f`。預設 `replication_num=3`，單節點要設成 1。煙霧查詢 `INSERT` 1、2 後 `SELECT` 回了這兩列。
+- `python3 tools/e2e_contract.py --isolated --load-mode merge_async --rows 1024 --transactions 40` 跑了約 246 秒後失敗：reader 已連上，但 `snapshot_pause=1`、`memory_pressure=1`（當時 `memory_available_mb=3628`，FE+BE 已佔住記憶體），`source_base` 停在 0。這不是新 SQL 編譯器的路徑。strict-small 因此沒有跑。無數據。
 
 ```bash
-docker run -d --name m2s-mysql --cpus=0.5 --memory=1g \
-  -e MYSQL_ROOT_PASSWORD=CHANGE_ME_LOCAL -e MYSQL_DATABASE=m2s \
-  -p 3306:3306 mysql:8.4 \
-  --gtid-mode=ON --enforce-gtid-consistency=ON \
-  --server-id=1 --log-bin=mysql-bin
-# StarRocks 使用官方 4.1.1 allin1。本輪沒有拉過映像。
-docker run -d --name m2s-starrocks --cpus=2 --memory=8g \
-  -p 9030:9030 -p 8030:8030 -p 8040:8040 \
-  starrocks/allin1-ubuntu:4.1.1
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y mysql-server
+sudo sysctl -w vm.max_map_count=2000000
+# 下載並啟動 StarRocks 4.1.1 ubuntu amd64 官方包，FE heap 與 BE mem_limit 要按本機可用記憶體下調。
 ```
 
 `CDC_EVENT_TRACE` 保持關閉。不要把 workload 初始化到舊 run 目錄或生產庫。

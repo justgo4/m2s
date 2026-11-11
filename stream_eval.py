@@ -12,7 +12,9 @@ A failed push leaves the graph as it was before that batch.
 """
 import contextlib
 import copy
+import datetime
 import decimal
+import functools
 import math
 
 import duckdb
@@ -96,10 +98,13 @@ def _eval_project(con, delta, expressions):
 def _initial(aggregates):
     result = {}
     for item in aggregates:
-        if item["function"] == "count":
+        function = item["function"]
+        if function == "count":
             result[item["output"]] = dict(count=0)
-        else:
+        elif function in {"sum", "avg"}:
             result[item["output"]] = dict(nonnull=0, sum=None)
+        else:
+            result[item["output"]] = dict(values={})
     return result
 
 
@@ -148,6 +153,25 @@ def _accumulate(slot, row, value, aggregates):
                 raise RuntimeError(
                     "count(*) diverged from group cardinality")
             continue
+        if function in {"min", "max", "count_distinct"}:
+            if raw is not None:
+                _bump_value(state["values"], stream_zset.tag(raw), raw, value)
+            continue
+        if function == "string_agg":
+            if raw is not None:
+                try:
+                    order_values = tuple(
+                        row[spec["column"]] for spec in item["order_by"])
+                except KeyError as exc:
+                    raise ValueError(
+                        "string_agg input lacks order column "
+                        + str(exc.args[0])) from None
+                identity = tuple(
+                    stream_zset.tag(part)
+                    for part in order_values + (raw,))
+                _bump_value(
+                    state["values"], identity, (order_values, raw), value)
+            continue
         if raw is None:
             continue
         number = _numeric(raw, output)
@@ -166,13 +190,18 @@ def _accumulate(slot, row, value, aggregates):
     if next_rows == 0:
         for item in aggregates:
             state = slot["accum"][item["output"]]
-            if item["function"] == "count":
+            function = item["function"]
+            if function == "count":
                 if int(state["count"]) != 0:
                     raise RuntimeError(
                         "empty aggregate group retains COUNT state")
-            elif int(state["nonnull"]) != 0 or state["sum"] is not None:
+            elif function in {"sum", "avg"}:
+                if int(state["nonnull"]) != 0 or state["sum"] is not None:
+                    raise RuntimeError(
+                        "empty aggregate group retains SUM/AVG state")
+            elif state["values"]:
                 raise RuntimeError(
-                    "empty aggregate group retains SUM/AVG state")
+                    "empty aggregate group retains " + function + " state")
     slot["rows"] = next_rows
 
 
@@ -188,10 +217,20 @@ def _render(group_keys, key, aggregates, slot):
             row[output] = int(state["count"])
         elif function == "sum":
             row[output] = state["sum"]
-        else:
+        elif function == "avg":
             row[output] = (
                 None if int(state["nonnull"]) == 0
                 else float(state["sum"] / int(state["nonnull"])))
+        elif function == "count_distinct":
+            row[output] = len(state["values"])
+        elif function == "min":
+            row[output] = _pick_extreme(state["values"], False)
+        elif function == "max":
+            row[output] = _pick_extreme(state["values"], True)
+        elif function == "string_agg":
+            row[output] = _render_string_agg(state["values"], item)
+        else:
+            raise ValueError("unsupported aggregate function: " + function)
     return row
 
 
@@ -331,6 +370,412 @@ def _eval_join(state, left_delta, right_delta, node):
     return stream_zset.consolidate(out)
 
 
+def _bump_value(values, identity, raw, weight):
+    current = values.get(identity)
+    count = 0 if current is None else int(current[1])
+    count += weight
+    if count < 0:
+        raise RuntimeError("aggregate value count became negative")
+    if count == 0:
+        values.pop(identity, None)
+    else:
+        values[identity] = [raw, count]
+
+
+def _cmp_key(value):
+    if isinstance(value, bool):
+        raise TypeError("boolean aggregate order is unsupported")
+    if isinstance(value, (int, decimal.Decimal)):
+        return (0, decimal.Decimal(value))
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("non-finite aggregate values are unsupported")
+        return (1, value)
+    if isinstance(value, str):
+        return (2, value)
+    if isinstance(value, datetime.datetime):
+        return (3, value.isoformat())
+    if isinstance(value, datetime.date):
+        return (4, value.isoformat())
+    if isinstance(value, datetime.time):
+        return (5, value.isoformat())
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return (6, bytes(value))
+    raise TypeError(
+        "unsupported aggregate order type: " + type(value).__name__)
+
+
+def _pick_extreme(values, want_max):
+    chosen = None
+    chosen_key = None
+    family = None
+    for raw, _count in values.values():
+        key = _cmp_key(raw)
+        if family is None:
+            family = key[0]
+        elif key[0] != family:
+            raise RuntimeError("MIN/MAX cannot order mixed value types")
+        if (
+            chosen is None
+            or (want_max and key > chosen_key)
+            or (not want_max and key < chosen_key)
+        ):
+            chosen = raw
+            chosen_key = key
+    return chosen
+
+
+def _render_string_agg(values, item):
+    rows = []
+    for raw, count in values.values():
+        order_values, text = raw
+        if text is None:
+            continue
+        rows.append((order_values, str(text), int(count)))
+    specs = item["order_by"]
+
+    def compare(left, right):
+        for index, spec in enumerate(specs):
+            outcome = _cmp_ordered(
+                left[0][index], right[0][index], spec)
+            if outcome:
+                return outcome
+        return 0
+
+    rows.sort(key=functools.cmp_to_key(compare))
+    parts = []
+    for _order, text, count in rows:
+        parts.extend([text] * count)
+    if not parts:
+        return None
+    return item["separator"].join(parts)
+
+
+def _cmp_ordered(left, right, spec):
+    if left is None and right is None:
+        return 0
+    if left is None:
+        return -1 if spec["nulls_first"] else 1
+    if right is None:
+        return 1 if spec["nulls_first"] else -1
+    left_key = _cmp_key(left)
+    right_key = _cmp_key(right)
+    if left_key[0] != right_key[0]:
+        raise RuntimeError("STRING_AGG cannot order mixed value types")
+    if left_key < right_key:
+        outcome = -1
+    elif left_key > right_key:
+        outcome = 1
+    else:
+        outcome = 0
+    if spec["desc"]:
+        outcome = -outcome
+    return outcome
+
+
+def _reject_negative(collection):
+    for weight in collection.weights.values():
+        if weight < 0:
+            raise RuntimeError("z-set weight became negative")
+
+
+def _zset_diff(previous, current):
+    pairs = []
+    for key in set(previous.weights) | set(current.weights):
+        delta = current.weights.get(key, 0) - previous.weights.get(key, 0)
+        if delta:
+            row = current.rows.get(key)
+            if row is None:
+                row = previous.rows[key]
+            pairs.append((dict(row), delta))
+    return stream_zset.consolidate(pairs)
+
+
+def _register_weighted(con, name, collection, columns):
+    payload = []
+    for row, weight in collection.items():
+        item = {}
+        for column in columns:
+            item[column] = row.get(column)
+        item["_m2s_z_weight"] = int(weight)
+        payload.append(item)
+    if payload:
+        table = pa.Table.from_pylist(payload)
+    else:
+        fields = [pa.field(column, pa.null()) for column in columns]
+        fields.append(pa.field("_m2s_z_weight", pa.int64()))
+        table = pa.schema(fields).empty_table()
+    with contextlib.suppress(Exception):
+        con.unregister(name)
+    con.register(name, table)
+
+
+def _eval_distinct(state, delta):
+    emitted = []
+    for row, weight in stream_zset.consolidate(delta):
+        key = stream_zset.row_key(row)
+        previous = state["weights"].get(key, 0)
+        nxt = previous + weight
+        if nxt < 0:
+            raise RuntimeError("distinct weight became negative")
+        if previous <= 0 < nxt:
+            emitted.append((dict(row), 1))
+        elif previous > 0 >= nxt:
+            emitted.append((dict(row), -1))
+        if nxt == 0:
+            state["weights"].pop(key, None)
+            state["rows"].pop(key, None)
+        else:
+            state["weights"][key] = nxt
+            state["rows"][key] = dict(row)
+    return stream_zset.consolidate(emitted)
+
+
+def _set_weight(mode, left, right):
+    if mode == "union_all":
+        return left + right
+    if mode == "union":
+        return 1 if left + right > 0 else 0
+    if mode == "intersect_all":
+        if left > 0 and right > 0:
+            return min(left, right)
+        return 0
+    if mode == "intersect":
+        return 1 if left > 0 and right > 0 else 0
+    if mode == "except_all":
+        return max(0, left - right)
+    if mode == "except":
+        return 1 if left > 0 and right <= 0 else 0
+    raise ValueError("unsupported set operator mode: " + mode)
+
+
+def _apply_side(collection, delta):
+    touched = {}
+    for row, weight in stream_zset.consolidate(delta):
+        key = stream_zset.row_key(row)
+        previous = collection.weights.get(key, 0)
+        stored = collection.rows.get(key, row)
+        if key not in touched:
+            touched[key] = (previous, dict(stored))
+        collection.add(row, weight)
+        if collection.weights.get(key, 0) < 0:
+            raise RuntimeError("set operator weight became negative")
+    return touched
+
+
+def _eval_set(state, left_delta, right_delta, mode):
+    before = _apply_side(state["left"], left_delta)
+    right_before = _apply_side(state["right"], right_delta)
+    emitted = []
+    for key in set(before) | set(right_before):
+        if key in before:
+            old_left, row = before[key]
+        else:
+            old_left = state["left"].weights.get(key, 0)
+            row = None
+        if key in right_before:
+            old_right, right_row = right_before[key]
+            if row is None:
+                row = right_row
+        else:
+            old_right = state["right"].weights.get(key, 0)
+        new_left = state["left"].weights.get(key, 0)
+        new_right = state["right"].weights.get(key, 0)
+        old_weight = _set_weight(mode, old_left, old_right)
+        new_weight = _set_weight(mode, new_left, new_right)
+        if old_weight != new_weight:
+            if row is None:
+                row = (
+                    state["left"].rows.get(key)
+                    or state["right"].rows.get(key))
+            emitted.append((dict(row), new_weight - old_weight))
+    return stream_zset.consolidate(emitted)
+
+
+def _project_outer(node, left_row, right_row):
+    projected = {}
+    for item in node["projections"]:
+        source = left_row if item["source"] == "left" else right_row
+        if source is None:
+            projected[item["output"]] = None
+        else:
+            try:
+                projected[item["output"]] = source[item["column"]]
+            except KeyError as exc:
+                raise ValueError(
+                    "keyed join projection lacks column "
+                    + str(exc.args[0])) from None
+    return projected
+
+
+def _bucket_weight(index, join_key):
+    if join_key is None:
+        return 0
+    bucket = index["by_join"].get(join_key)
+    if not bucket:
+        return 0
+    return sum(bucket.values())
+
+
+def _join_identity(row, columns):
+    values = _join_values(row, columns)
+    if any(item is None for item in values):
+        return None
+    return tuple(stream_zset.tag(item) for item in values)
+
+
+def _apply_keyed_left(state, row, weight, node, out):
+    kind = node["kind"]
+    columns = [item["left"] for item in node["join_pairs"]]
+    join_key = _join_identity(row, columns)
+    right_match = _bucket_weight(state["right"], join_key)
+    left_before = _bucket_weight(state["left"], join_key)
+    if right_match and kind in {"left", "right", "full"}:
+        bucket = state["right"]["by_join"][join_key]
+        for other_key, other_weight in bucket.items():
+            out.append((
+                _project_outer(
+                    node, row, state["right"]["rows"][other_key]),
+                weight * other_weight))
+    elif right_match and kind == "semi":
+        out.append((_project_outer(node, row, None), weight))
+    elif not right_match and kind in {"left", "full", "anti"}:
+        out.append((_project_outer(node, row, None), weight))
+    if (
+        join_key is not None and right_match
+        and kind in {"right", "full"}
+    ):
+        after = left_before + weight
+        if (left_before == 0 and after > 0) or (left_before > 0 and after == 0):
+            sign = -1 if after > 0 else 1
+            bucket = state["right"]["by_join"][join_key]
+            for other_key, other_weight in bucket.items():
+                out.append((
+                    _project_outer(
+                        node, None, state["right"]["rows"][other_key]),
+                    sign * other_weight))
+    _index_add(state["left"], row, weight, columns)
+
+
+def _apply_keyed_right(state, row, weight, node, out):
+    kind = node["kind"]
+    columns = [item["right"] for item in node["join_pairs"]]
+    join_key = _join_identity(row, columns)
+    left_match = _bucket_weight(state["left"], join_key)
+    right_before = _bucket_weight(state["right"], join_key)
+    if left_match and kind in {"left", "right", "full"}:
+        bucket = state["left"]["by_join"][join_key]
+        for other_key, other_weight in bucket.items():
+            out.append((
+                _project_outer(
+                    node, state["left"]["rows"][other_key], row),
+                other_weight * weight))
+    if join_key is not None and left_match and kind in {
+        "left", "full", "semi", "anti",
+    }:
+        after = right_before + weight
+        if (right_before == 0 and after > 0) or (
+            right_before > 0 and after == 0
+        ):
+            bucket = state["left"]["by_join"][join_key]
+            for other_key, other_weight in bucket.items():
+                left_row = state["left"]["rows"][other_key]
+                if kind in {"left", "full"}:
+                    sign = -1 if after > 0 else 1
+                    out.append((
+                        _project_outer(node, left_row, None),
+                        sign * other_weight))
+                if kind == "semi":
+                    sign = 1 if after > 0 else -1
+                    out.append((
+                        _project_outer(node, left_row, None),
+                        sign * other_weight))
+                if kind == "anti":
+                    sign = -1 if after > 0 else 1
+                    out.append((
+                        _project_outer(node, left_row, None),
+                        sign * other_weight))
+    if not left_match and kind in {"right", "full"}:
+        out.append((_project_outer(node, None, row), weight))
+    _index_add(state["right"], row, weight, columns)
+
+
+def _eval_keyed_join(state, left_delta, right_delta, node):
+    out = []
+    for row, weight in stream_zset.consolidate(left_delta):
+        _apply_keyed_left(state, row, weight, node, out)
+    for row, weight in stream_zset.consolidate(right_delta):
+        _apply_keyed_right(state, row, weight, node, out)
+    return stream_zset.consolidate(out)
+
+
+def _eval_theta(state, left_delta, right_delta, node, con):
+    state["left"].add_all(left_delta)
+    state["right"].add_all(right_delta)
+    _reject_negative(state["left"])
+    _reject_negative(state["right"])
+    _register_weighted(
+        con, "_left", state["left"], node["left_columns"])
+    _register_weighted(
+        con, "_right", state["right"], node["right_columns"])
+    try:
+        cursor = con.execute(node["sql"])
+        produced = stream_zset.ZSet()
+        produced.add_all(_rows_from_cursor(cursor))
+    finally:
+        with contextlib.suppress(Exception):
+            con.unregister("_left")
+            con.unregister("_right")
+    delta = _zset_diff(state["output"], produced)
+    state["output"] = produced
+    return delta
+
+
+def _bag_rows(collection):
+    rows = []
+    for row, weight in collection.items():
+        if weight < 0:
+            raise RuntimeError("recompute input weight became negative")
+        if weight > 100000:
+            raise RuntimeError("recompute weight is too large")
+        for _count in range(weight):
+            rows.append(dict(row))
+    return rows
+
+
+def _eval_recompute(state, current, node, con):
+    for source_id, table_name in zip(node["sources"], node["tables"]):
+        collection = state["inputs"].setdefault(source_id, stream_zset.ZSet())
+        collection.add_all(current[source_id])
+        _reject_negative(collection)
+        rows = _bag_rows(collection)
+        columns = node["input_columns"][source_id]
+        payload = []
+        for row in rows:
+            payload.append({column: row.get(column) for column in columns})
+        if payload:
+            table = pa.Table.from_pylist(payload)
+        else:
+            fields = [pa.field(column, pa.null()) for column in columns]
+            table = pa.schema(fields).empty_table()
+        with contextlib.suppress(Exception):
+            con.unregister(table_name)
+        con.register(table_name, table)
+    try:
+        cursor = con.execute(node["sql"])
+        names = [item[0] for item in cursor.description]
+        produced = stream_zset.ZSet()
+        for record in cursor.fetchall():
+            produced.add(dict(zip(names, record)), 1)
+    finally:
+        for table_name in node["tables"]:
+            with contextlib.suppress(Exception):
+                con.unregister(table_name)
+    delta = _zset_diff(state["output"], produced)
+    state["output"] = produced
+    return delta
+
+
 class StreamGraph:
     def __init__(self, plan):
         self.plan = stream_ir.validate_plan(plan)
@@ -341,6 +786,7 @@ class StreamGraph:
         self.con = duckdb.connect(":memory:")
         self.agg_state = {}
         self.join_state = {}
+        self.extra = {}
         self.output = stream_zset.ZSet()
 
     def close(self):
@@ -355,20 +801,22 @@ class StreamGraph:
                 "unknown stream input: " + ",".join(unknown))
         agg = copy.deepcopy(self.agg_state)
         joins = copy.deepcopy(self.join_state)
+        extra = copy.deepcopy(self.extra)
         output = self.output.copy()
         current = {}
         for node_id in self.order:
             node = self.nodes[node_id]
             current[node_id] = self._eval(
-                node, current, deltas, agg, joins)
+                node, current, deltas, agg, joins, extra)
         produced = current[self.plan["output"]]
         output.add_all(produced)
         self.agg_state = agg
         self.join_state = joins
+        self.extra = extra
         self.output = output
         return produced
 
-    def _eval(self, node, current, deltas, agg, joins):
+    def _eval(self, node, current, deltas, agg, joins, extra):
         op = node["op"]
         if op == "input":
             return stream_zset.consolidate(deltas.get(node["input"], ()))
@@ -382,6 +830,10 @@ class StreamGraph:
             return _eval_aggregate(
                 agg.setdefault(node["id"], {}),
                 current[node["input"]], node)
+        if op == "distinct":
+            state = extra.setdefault(
+                node["id"], dict(weights={}, rows={}))
+            return _eval_distinct(state, current[node["input"]])
         if op == "equi_join":
             state = joins.setdefault(
                 node["id"],
@@ -389,4 +841,33 @@ class StreamGraph:
             return _eval_join(
                 state, current[node["left"]], current[node["right"]],
                 node)
+        if op == "keyed_join":
+            state = joins.setdefault(
+                node["id"],
+                dict(left=_new_index(), right=_new_index()))
+            return _eval_keyed_join(
+                state, current[node["left"]], current[node["right"]],
+                node)
+        if op == "set_op":
+            state = extra.setdefault(
+                node["id"],
+                dict(left=stream_zset.ZSet(), right=stream_zset.ZSet()))
+            return _eval_set(
+                state, current[node["left"]], current[node["right"]],
+                node["mode"])
+        if op == "theta_join":
+            state = extra.setdefault(
+                node["id"],
+                dict(
+                    left=stream_zset.ZSet(),
+                    right=stream_zset.ZSet(),
+                    output=stream_zset.ZSet()))
+            return _eval_theta(
+                state, current[node["left"]], current[node["right"]],
+                node, self.con)
+        if op == "recompute":
+            state = extra.setdefault(
+                node["id"],
+                dict(inputs={}, output=stream_zset.ZSet()))
+            return _eval_recompute(state, current, node, self.con)
         raise ValueError("unsupported stream operator: " + str(op))
