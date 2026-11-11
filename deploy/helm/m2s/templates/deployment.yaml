@@ -1,0 +1,22 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: m2s
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: m2s
+  template:
+    metadata:
+      labels:
+        app: m2s
+    spec:
+      containers:
+        - name: m2s
+          image: {{ .Values.image | quote }}
+          env:
+            - name: CDC_EXAMPLE
+              value: synthetic
+            - name: M2S_EXAMPLE_ONLY
+              value: {{ .Values.exampleOnly | quote }}
