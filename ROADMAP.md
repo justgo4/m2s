@@ -8,6 +8,30 @@
 Materialize、Bytewax、Proton、Pathway、Arroyo 對照的通用增量／串流 SQL。
 比較對象的能力只作為驗收範圍，不複製它們的程式。
 
+## 第二輪
+
+第一輪 PR #69–#75 有多項只是單機或最小切片。`VERIFICATION.md` 列出它們沒有達標的地方。
+第二輪要把那些項目做出可量測的行為。每一項獨立 PR，附命令、SHA 與數字。
+不能把「未納入」寫成完成。只有正式 50M／72h 可以維持阻塞，原因是這台 VM
+沒有可連續 72 小時的隔離主機。
+
+1. 分散執行：多個 worker 行程用 Arrow Flight 交換批次。擴縮之後總和不變。
+   殺掉一個 worker，量接管時間，總和仍與擴縮前一致。
+2. exactly-once：行程在 checkpoint 提交前被 `SIGKILL`。重啟載入上一份已提交
+   的切面，同一輸出 epoch 不套用第二次。
+3. MinIO：新行程只從物件儲存恢復狀態，記錄物件數、位元組與耗時。
+4. PostgreSQL CDC：邏輯複寫的插入、更新、刪除與來源表逐列一致。
+5. Kafka：broker 上的生產與消費與送出的記錄一致，並寫明量到的語意等級。
+6. 結構演進：在真實 PostgreSQL 上加可空欄位會出現在後續變更裡；
+   刪除欄位不會靜默丟列，而是標成需要重建。
+7. Prometheus 與 Web UI：本機埠的 `/metrics` 與 HTML 頁面由 HTTP 客戶端讀到。
+8. Docker／Helm／離線包：盡力在 VM 上建映像、渲染 chart、打離線包。
+   工具無法安裝時寫明命令與錯誤，不把空檔案當映像。
+9. TPC-H Q1–Q22：DuckDB 產生器提供資料與查詢文字，不把官方原文另存進 Git。
+   每一題與獨立的 DuckDB 執行逐列一致。失敗的題目保留錯誤。
+10. Nexmark：合成 person／auction／bid，查詢與 DuckDB 全量重算逐列一致。
+11. 重跑 strict-small。門檻不改。數字只屬於該次 SHA。
+
 ## 實作順序
 
 里程碑 1、2、3 已完成。strict-small 卡在未知 Merge Commit 的
