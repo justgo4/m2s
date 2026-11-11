@@ -4,9 +4,8 @@
 
 ## 當前里程碑
 
-里程碑 1 的程式與本地契約測試已經在 `bef1ed2c397144821a9bb2b29b587d93f6d05989`。
-下一步是開 PR、依本地證據合併到 `main`，然後從 ROADMAP 里程碑 2 開始
-（SQL 前端方言與完整 JOIN／聚合／集合運算）。
+里程碑 1 已合併。PR [#65](https://github.com/justgo4/m2s/pull/65)，合併提交
+`7c6662709e9a5cf2243ca22dad6052b8e62c3f66`。下一步是里程碑 2，不要重做 Z-set DAG。
 
 ## 倉庫位置
 
@@ -14,6 +13,7 @@
 - 基線：`adba11f117915818ad5d299651a00783062d43e3`（開始時 `origin/main` 同一 SHA）
 - 方案提交：`5f3cabef404d8b536dfa112aefc68224fffcaf13`
 - 實作提交：`bef1ed2c397144821a9bb2b29b587d93f6d05989`
+- 合併到 `main`：`7c6662709e9a5cf2243ca22dad6052b8e62c3f66`（PR #65，已合併）
 - 遠端：`justgo4/m2s`
 - 開放中的舊 PR 不要合併。
 
@@ -51,14 +51,17 @@
 
 ## 正在做
 
-把實作 SHA 與上面的結果寫進 PROGRESS.md，推分支，開里程碑 1 的 PR。
+沒有進行中的編輯。里程碑 1 已在 `main`。
 
 ## 下一步
 
-1. 確認本檔與 PROGRESS.md 已推上 `cursor/stream-zset-ir-23fa`。
-2. 開 PR，基底 `main`。描述寫明驗證命令與 `bef1ed2c397144821a9bb2b29b587d93f6d05989`。不要跑 GitHub Actions。
-3. 依擁有者既有授權，在本地證據下合併到 `main`。若權限不允許合併，把 PR 網址留在本檔，不要重做實作。
-4. 合併後從里程碑 2 起新分支：sqlglot `read=mysql` 可設定、預設維持現有相容；JOIN 家族；MIN／MAX、COUNT DISTINCT、STRING_AGG；DISTINCT；UNION／INTERSECT／EXCEPT；子查詢去關聯化；GROUPING SETS／ROLLUP／CUBE；MV on MV。每個新運算子都要有對 DuckDB 的差分，並且舊子集的 stream semantic id 不能無故改變。
+從 `main` 的 `7c6662709e9a5cf2243ca22dad6052b8e62c3f66` 開里程碑 2 分支。先做這幾項，每項都要能對 DuckDB 全量重算，並且既有 stream plan semantic id 保持不變：
+
+1. 新的 SQL 入口使用 sqlglot，`read` 可設定，預設 `duckdb`，與現有 `j4` 解析相容。`read=mysql` 只在明確設定時啟用。
+2. 在參考引擎加上 MIN／MAX、COUNT DISTINCT。不要把這些函式送進現有 `aggregate_state`，那個引擎仍只接受 COUNT／SUM／AVG。
+3. 接著才是 LEFT／RIGHT／FULL／SEMI／ANTI、多表與非等值 JOIN、DISTINCT、UNION／INTERSECT／EXCEPT、子查詢去關聯化、GROUPING SETS／ROLLUP／CUBE、MV on MV。
+4. 沒有增量索引的運算子標成受影響鍵的 DuckDB 局部重算，不要假裝是增量。
+5. 舊的 projection／filter、COUNT／SUM／AVG、INNER JOIN 差分要再跑一次。strict-small 仍然沒有 Docker，沒有新數據就寫無數據。
 
 ## 未解決
 
@@ -108,3 +111,4 @@ docker run -d --name m2s-starrocks --cpus=2 --memory=8g \
 
 - `5f3cabef404d8b536dfa112aefc68224fffcaf13` 方案與第一個斷點
 - `bef1ed2c397144821a9bb2b29b587d93f6d05989` 里程碑 1 實作，測試見上表
+- `7c6662709e9a5cf2243ca22dad6052b8e62c3f66` 合併 PR #65 到 `main`
