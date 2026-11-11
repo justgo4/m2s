@@ -51,7 +51,9 @@
 
 ## 正在做
 
-沒有進行中的編輯。里程碑 1 已在 `main`。
+里程碑 2，分支 `cursor/stream-sql-m2-23fa`，從 `main` `44cd2b8ea7d20ba826933eb1ede5e1f5df75ed72` 切開。
+正在加 SQL 前端與新運算子。MySQL 8.0.46 已用 apt 安裝並在本機啟動（GTID ON）。
+StarRocks 4.1.1 官方包已下載到 `/tmp/sr/StarRocks-4.1.1-ubuntu-amd64.tar.gz`（1.7G），尚未解壓啟動。
 
 ## 下一步
 
