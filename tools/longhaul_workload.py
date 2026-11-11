@@ -562,7 +562,8 @@ def setup_databases(source,cfg,rows,seed_chunk):
 
 def setup_catalog(
         directory,cfg,source,mode,
-        snapshot_rows,memory_mb,share_mode
+        snapshot_rows,memory_mb,share_mode,
+        certification=False
 ):
     values=dict(
         CDC_MYSQL_HOST=source["host"],
@@ -607,6 +608,10 @@ def setup_catalog(
         CDC_STATEFUL_SHARE_MODE=share_mode,
         CDC_STATEFUL_SHARE_MAX_FOLLOWERS=1000,
     )
+    if not certification:
+        # Shared test VM: the host-wide quarter reserve pauses snapshots
+        # while MySQL and StarRocks are co-located. Formal profile omits this.
+        values["CDC_RESOURCE_MEMORY_RESERVE_MB"]=1024
     catalog=directory/"catalog.sqlite3"
     commands=[
         "SET VARIABLE "+key+" = "+literal(value)
@@ -1535,7 +1540,9 @@ def run(args):
             catalog,env=setup_catalog(
                 directory,cfg,opts,args.load_mode,
                 args.snapshot_rows,args.memory_mb,
-                args.share_mode)
+                args.share_mode,
+                certification=bool(getattr(
+                    args,"certification_profile",False)))
             state_path=directory/"state.sqlite3"
             resource_tracker=process_resource_probe.new_tracker()
             next_resource_sample=0.0

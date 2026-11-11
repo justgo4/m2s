@@ -24,6 +24,7 @@ class _Frame:
     def __init__(self):
         self.nodes = []
         self.inputs = []
+        self.ctes = {}
         self._seq = 0
         self._col = 0
 
@@ -75,14 +76,17 @@ def _sources(sources):
     return result
 
 
-def compile_sql(sql, sources, read="duckdb"):
+def compile_sql(sql, sources, read="duckdb", nondeterministic="reject"):
     """Compile one statement to a stream plan.
 
     Returns plan, output column names, and the read dialect. The default
-    dialect is duckdb.
+    dialect is duckdb. Nondeterministic functions are rejected unless
+    nondeterministic="timed_recompute", which marks the plan explicitly.
     """
     if read not in READ_DIALECTS:
         raise ValueError("sql read dialect must be duckdb or mysql")
+    if nondeterministic not in {"reject", "timed_recompute"}:
+        raise ValueError("nondeterministic mode must be reject or timed_recompute")
     sources = _sources(sources)
     text = str(sql or "").strip()
     if not text:
@@ -91,6 +95,16 @@ def compile_sql(sql, sources, read="duckdb"):
         tree = sqlglot.parse_one(text, read=read)
     except Exception as exc:
         raise ValueError("invalid SQL: " + str(exc)) from exc
+    if _nondeterministic(tree):
+        if nondeterministic != "timed_recompute":
+            raise ValueError(
+                "nondeterministic function is rejected; "
+                "pass nondeterministic='timed_recompute' to recompute on a schedule")
+        frame = _Frame()
+        node, outputs = _compile_recompute(
+            text, sources, frame, read, strategy="timed_recompute")
+        plan = stream_ir._plan(frame.inputs, frame.nodes, node)
+        return dict(plan=plan, outputs=list(outputs), read=read)
     frame = _Frame()
     try:
         node, outputs = _compile_query(tree, sources, frame, read)
@@ -99,6 +113,21 @@ def compile_sql(sql, sources, read="duckdb"):
         node, outputs = _compile_recompute(text, sources, frame, read)
     plan = stream_ir._plan(frame.inputs, frame.nodes, node)
     return dict(plan=plan, outputs=list(outputs), read=read)
+
+
+def _nondeterministic(tree):
+    names = {
+        "random", "rand", "uuid", "now",
+        "current_timestamp", "current_date", "current_time",
+    }
+    for node in tree.walk():
+        if type(node).__name__ in {
+            "Rand", "Uuid", "CurrentTimestamp", "CurrentDate", "CurrentTime",
+        }:
+            return True
+        if isinstance(node, exp.Anonymous) and str(node.name).lower() in names:
+            return True
+    return False
 
 
 def _compile_query(tree, sources, frame, read):
@@ -139,7 +168,7 @@ def _compile_set(tree, sources, frame, read):
     return node, list(left_out)
 
 
-def _compile_recompute(sql, sources, frame, read):
+def _compile_recompute(sql, sources, frame, read, strategy="full_input_recompute"):
     tree = sqlglot.parse_one(sql, read=read)
     if any(isinstance(node, exp.Window) for node in tree.walk()):
         raise ValueError("window functions are not in this SQL subset")
@@ -167,7 +196,7 @@ def _compile_recompute(sql, sources, frame, read):
         tables=list(tables),
         input_columns=columns,
         sql=duck_sql,
-        strategy="full_input_recompute",
+        strategy=strategy,
     ))
     outputs = _output_names(tree) if isinstance(tree, exp.Select) else []
     if not outputs:
@@ -186,17 +215,25 @@ def _output_names(tree):
 
 
 def _compile_select(tree, sources, frame, read):
-    if tree.args.get("limit") is not None or tree.args.get("offset") is not None:
-        raise ValueError("LIMIT/OFFSET are not part of this relational subset")
+    if tree.args.get("offset") is not None:
+        raise ValueError("OFFSET is not part of this relational subset")
+    if tree.args.get("with_") is not None:
+        _bind_ctes(tree.args["with_"], sources, frame, read)
     if any(isinstance(node, exp.Window) for node in tree.walk()):
-        raise ValueError("window functions are not in this SQL subset")
-    if tree.args.get("with") is not None:
-        raise _Fallback()
+        scope = _compile_from(tree, sources, frame, read)
+        scope = _apply_where(
+            scope, tree.args.get("where"), sources, frame, read)
+        return _compile_over(scope, tree, frame)
     scope = _compile_from(tree, sources, frame, read)
     scope = _apply_where(scope, tree.args.get("where"), sources, frame, read)
     grouped = _compile_aggregate(scope, tree, frame)
     if grouped is not None:
         scope = grouped
+    if tree.args.get("limit") is not None:
+        if tree.args.get("order") is None:
+            raise ValueError("LIMIT without ORDER BY is rejected")
+        scope = _compile_projection(scope, tree, frame)
+        return _compile_topn(scope, tree, frame)
     scope = _compile_projection(scope, tree, frame)
     if tree.args.get("distinct") is not None:
         node = frame.add(dict(
@@ -224,6 +261,8 @@ def _compile_from_item(item, sources, frame, read):
         node, outputs = _compile_query(item.this, sources, frame, read)
         return _rename_scope(frame, node, outputs, alias, outputs)
     if isinstance(item, exp.Table):
+        if item.name in frame.ctes:
+            return frame.ctes[item.name]
         return _compile_table(item, sources, frame)
     raise ValueError("unsupported FROM item")
 
@@ -501,6 +540,8 @@ def _apply_where(scope, where, sources, frame, read):
 
 
 def _peel_term(scope, term, sources, frame, read):
+    if isinstance(term, exp.Anonymous) and str(term.name).lower() == "m2s_watermark":
+        return _insert_watermark(scope, term, frame)
     if isinstance(term, exp.Exists):
         return _exists_join(scope, term, sources, frame, read, anti=False)
     if isinstance(term, exp.Not) and isinstance(term.this, exp.Exists):
@@ -630,6 +671,9 @@ def _compile_aggregate(scope, tree, frame):
     having = tree.args.get("having")
     if group is None and not select_has_agg and having is None:
         return None
+    window_call = _find_m2s_window(tree)
+    if window_call is not None:
+        return _compile_window_agg(scope, tree, frame, window_call)
     sets = _grouping_sets(group, scope)
     if sets is None:
         sets = [[]]
@@ -942,3 +986,282 @@ def _lookup(column, scope):
     if name not in scope.by_name or scope.by_name[name] is None:
         raise ValueError("ambiguous or unknown column " + name)
     return scope.by_name[name]
+
+
+def _bind_ctes(with_, sources, frame, read):
+    recursive = bool(with_.args.get("recursive"))
+    for cte in with_.expressions:
+        alias = str(cte.alias)
+        body = cte.this
+        if recursive and isinstance(body, exp.Union):
+            scope = _compile_recursive_cte(body, alias, sources, frame, read)
+        else:
+            node, outputs = _compile_query(body, sources, frame, read)
+            scope = _rename_scope(frame, node, outputs, alias, outputs)
+        frame.ctes[alias] = scope
+
+
+def _compile_recursive_cte(body, alias, sources, frame, read):
+    if not isinstance(body, exp.Union):
+        raise ValueError("recursive CTE requires UNION")
+    distinct = bool(body.args.get("distinct"))
+    seed_sql = body.this.sql(dialect="duckdb").strip()
+    step = body.expression.copy()
+    for table in step.find_all(exp.Table):
+        if table.name == alias:
+            table.set("this", exp.to_identifier("_delta"))
+    step_sql = step.sql(dialect="duckdb").strip()
+    tables = []
+    for table in body.find_all(exp.Table):
+        if table.name in sources and table.name not in tables:
+            tables.append(table.name)
+    ids = []
+    columns = {}
+    for name in tables:
+        frame.touch(name)
+        node = frame.add(dict(
+            id=frame.nid("in"), op="input", input=name))
+        ids.append(node)
+        columns[node] = list(sources[name])
+    outputs = _output_names(body.this) or ["expr"]
+    node = frame.add(dict(
+        id=frame.nid("rec"),
+        op="recursive_cte",
+        sources=ids,
+        tables=list(tables),
+        input_columns=columns,
+        columns=list(outputs),
+        seed_sql=seed_sql,
+        step_sql=step_sql,
+        max_iterations=32,
+        set_mode="union" if distinct else "union_all",
+        strategy="semi_naive",
+    ))
+    by_alias = {(alias, name): name for name in outputs}
+    by_name = {name: name for name in outputs}
+    return _Scope(node, outputs, by_alias, by_name)
+
+
+def _insert_watermark(scope, term, frame):
+    args = list(term.expressions or ())
+    if len(args) < 3:
+        raise ValueError(
+            "m2s_watermark(time, lateness, policy) is incomplete")
+    node = frame.add(dict(
+        id=frame.nid("wm"),
+        op="watermark",
+        input=scope.node,
+        time=_lookup(args[0], scope),
+        lateness=int(args[1].this),
+        policy=str(args[2].this),
+    ))
+    outputs = list(scope.outputs)
+    by_alias = dict(scope.by_alias)
+    by_name = dict(scope.by_name)
+    if node and str(args[2].this) == "side":
+        outputs.append("_late")
+        by_name["_late"] = "_late"
+    return _Scope(node, outputs, by_alias, by_name)
+
+
+def _find_m2s_window(tree):
+    group = tree.args.get("group")
+    if group is None:
+        return None
+    for item in group.expressions:
+        if isinstance(item, exp.Anonymous) and str(item.name).lower().startswith(
+            "m2s_"
+        ):
+            return item
+    return None
+
+
+def _compile_window_agg(scope, tree, frame, call):
+    name = str(call.name).lower()
+    args = list(call.expressions)
+    time_name = _lookup(args[0], scope)
+    kind = {
+        "m2s_tumble": "tumble",
+        "m2s_hop": "hop",
+        "m2s_session": "session",
+        "m2s_cumulate": "cumulate",
+    }.get(name)
+    if kind is None:
+        raise ValueError("unsupported window function " + name)
+    size = slide = step = gap = None
+    if kind == "tumble":
+        size = int(args[1].this)
+    elif kind == "hop":
+        size = int(args[1].this)
+        slide = int(args[2].this)
+    elif kind == "session":
+        gap = int(args[1].this)
+        size = gap
+    else:
+        step = int(args[1].this)
+        size = int(args[2].this)
+    keys = []
+    for item in tree.args["group"].expressions:
+        if item is call or (
+            isinstance(item, exp.Anonymous)
+            and str(item.name).lower() == name
+        ):
+            continue
+        keys.append(_lookup(item, scope))
+    aggregates = []
+    if kind != "session":
+        for item in tree.expressions:
+            target = item.this if isinstance(item, exp.Alias) else item
+            if isinstance(target, exp.Anonymous):
+                continue
+            if isinstance(target, exp.Column):
+                continue
+            if not _is_agg(target):
+                raise ValueError("window select list is not an aggregate")
+            spec = _agg_spec(target, scope, frame)
+            public = str(item.alias_or_name or spec["output"])
+            spec = dict(spec)
+            spec["output"] = public
+            aggregates.append(spec)
+    else:
+        aggregates = [dict(output="n", function="count", input="*")]
+    lateness = 0
+    late_policy = "recompute"
+    ttl = None
+    node = frame.add(dict(
+        id=frame.nid("win"),
+        op="window_agg",
+        input=scope.node,
+        kind=kind,
+        time=time_name,
+        size=int(size),
+        slide=slide,
+        step=step,
+        gap=gap,
+        lateness=lateness,
+        late_policy=late_policy,
+        ttl=ttl,
+        keys=keys,
+        aggregates=aggregates,
+    ))
+    outputs = []
+    expressions = []
+    for item in tree.expressions:
+        target = item.this if isinstance(item, exp.Alias) else item
+        public = str(item.alias_or_name or "").strip()
+        if isinstance(target, exp.Column):
+            internal = _lookup(target, scope)
+            if not public:
+                public = target.name
+            expressions.append(dict(
+                output=public,
+                expression=_q(internal) + " AS " + _q(public)))
+            outputs.append(public)
+            continue
+        if isinstance(target, exp.Anonymous):
+            expressions.append(dict(
+                output="w_start",
+                expression='"w_start" AS "w_start"'))
+            expressions.append(dict(
+                output="w_end",
+                expression='"w_end" AS "w_end"'))
+            outputs.extend(["w_start", "w_end"])
+            continue
+        if _is_agg(target):
+            if not public:
+                public = "n"
+            expressions.append(dict(
+                output=public,
+                expression=_q(public) + " AS " + _q(public)))
+            outputs.append(public)
+    if kind == "session" and "n" not in outputs:
+        expressions.append(dict(
+            output="n", expression='"n" AS "n"'))
+        outputs.append("n")
+    if "w_start" not in outputs:
+        expressions.extend([
+            dict(output="w_start", expression='"w_start" AS "w_start"'),
+            dict(output="w_end", expression='"w_end" AS "w_end"'),
+        ])
+        outputs.extend(["w_start", "w_end"])
+    projected = frame.add(dict(
+        id=frame.nid("p"), op="project", input=node, expressions=expressions))
+    return _Scope(
+        projected, outputs,
+        {("", name): name for name in outputs},
+        {name: name for name in outputs})
+
+
+def _compile_over(scope, tree, frame):
+    cloned = tree.copy()
+    cloned.set("with_", None)
+    cloned.set("where", None)
+    cloned.set("joins", None)
+    cloned.set(
+        "from_",
+        exp.From(this=exp.Table(this=exp.to_identifier("_input"))))
+    aliased = []
+    for item in cloned.expressions:
+        public = str(item.alias_or_name or "").strip()
+        target = item.this if isinstance(item, exp.Alias) else item
+        aliased.append(exp.alias_(target, public, quoted=True))
+    cloned.set("expressions", aliased)
+
+    def transform(node):
+        if isinstance(node, exp.Column):
+            return exp.Column(this=exp.to_identifier(
+                _lookup(node, scope), quoted=True))
+        return node
+
+    cloned = cloned.transform(transform)
+    partitions = None
+    for window in tree.find_all(exp.Window):
+        parts = [
+            _lookup(column, scope)
+            for column in (window.args.get("partition_by") or [])
+        ]
+        if partitions is None:
+            partitions = parts
+        elif partitions != parts:
+            partitions = []
+            break
+    if partitions is None:
+        partitions = []
+    node = frame.add(dict(
+        id=frame.nid("over"),
+        op="over",
+        input=scope.node,
+        partition=list(partitions),
+        columns=list(scope.outputs),
+        sql=cloned.sql(dialect="duckdb").strip(),
+        strategy="affected_partition_recompute",
+    ))
+    outputs = []
+    for item in tree.expressions:
+        public = str(item.alias_or_name or "").strip()
+        if not public:
+            raise ValueError("OVER output requires a name")
+        outputs.append(public)
+    return node, outputs
+
+
+def _compile_topn(scope, tree, frame):
+    limit = int(tree.args["limit"].expression.this)
+    order = []
+    for item in tree.args["order"].expressions:
+        order.append(dict(
+            column=_lookup(item.this, scope),
+            desc=bool(item.args.get("desc")),
+            nulls_first=bool(item.args.get("nulls_first")),
+        ))
+    node = frame.add(dict(
+        id=frame.nid("top"),
+        op="topn",
+        input=scope.node,
+        partition=[],
+        columns=list(scope.outputs),
+        order=order,
+        limit=limit,
+        strategy="affected_partition_recompute",
+    ))
+    return node, list(scope.outputs)

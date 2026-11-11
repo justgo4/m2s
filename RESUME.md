@@ -4,9 +4,8 @@
 
 ## 當前里程碑
 
-里程碑 2 的 SQL 前端與新運算子已在本分支實作並通過本地差分。
-里程碑 1 已在 `main`（PR #65，`7c6662709e9a5cf2243ca22dad6052b8e62c3f66`）。
-不要重做 Z-set DAG，也不要改既有 v1 plan semantic id。
+里程碑 3 在 `cursor/stream-time-m3-23fa`。事件時間、視窗、OVER、Top-N、CTE／遞迴、
+區間 JOIN 與測試管線的記憶體保留覆寫已寫入。正式 `p11` 剖面與 5s／10s 門檻沒改。
 
 ## 倉庫位置
 
@@ -52,7 +51,21 @@
 
 ## 正在做
 
-沒有進行中的編輯。里程碑 2 已合併。PR [#66](https://github.com/justgo4/m2s/pull/66)，合併提交 `7805cbcaa0dbad9965dbe05468764aaee73028b7`。實作提交 `82a931f560880228c216c79ef4a3b205a87e2996`。
+本地差分已通過。接著用縮小後的 StarRocks（FE `-Xmx512m`，BE `mem_limit=1073741824`，
+`disable_storage_page_cache` 與 `datacache_enable=false`）重跑 e2e 與 strict-small。
+測試管線設 `CDC_RESOURCE_MEMORY_RESERVE_MB=1024`；未設定時仍是 `max(2048, 總記憶體/4)`。
+
+## 里程碑 3 程式
+
+- `m2s_tumble`／`m2s_hop`／`m2s_session`／`m2s_cumulate` 視窗聚合。
+- `m2s_watermark(time, lateness, policy)`：`drop` 丟掉遲到列。`side` 加 `_late`。`recompute` 仍收進狀態。
+- `OVER` 只重算受影響分區。`ORDER BY ... LIMIT n` 是 Top-N。
+- 非遞迴 CTE，以及 `WITH RECURSIVE` 的半樸素固定點，上限 32 次，超過就失敗。
+- 區間包含（`contains_point`）按 equi-key 重算。
+- `random`／`now`／`uuid` 預設拒絕。`nondeterministic="timed_recompute"` 才把計畫標成 `timed_recompute`。
+- v1 stateless plan id 仍是 `1283fb55eb3b4b4408aa8095e8e9c66255383bb60fa630d38d6f401b109fc8ef`。
+
+`python3 tools/stream_time_test.py`、`python3 tools/stream_sql_test.py`、`python3 tools/privacy_check.py`（files=243）已通過。
 
 ## 里程碑 2 已完成的程式
 
