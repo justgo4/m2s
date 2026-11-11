@@ -1224,3 +1224,11 @@ Eligible to merge both commits. Formal 50M/72h was not run.
 
 PR 64 merged at `728fcb74ab25cf0280dae30f53805ce2b86f1e36`. Actions was not required; mergeable state was CLEAN. Local A/B and the 1804.5s run are the evidence.
 
+## 2026-11-11 stream SQL program started
+
+Owner asked to close the gap versus Flink, RisingWave, Materialize, Bytewax, Proton, Pathway and Arroyo and to make m2s a general incremental/streaming SQL system. Authorization in AGENTS.md still covers code, docs, tests, branches, PRs and validated merges. Do not use GitHub Actions for this program (storage quota). Develop, build and test on the local VM. Formal profile `p11-50m-50rps-72h-v4` stays unchanged. P95≤5s / P99≤10s stays. Do not drop slow samples, move the timing start, or treat HTTP accepted as VISIBLE.
+
+Reconciled before editing: local `main` and `origin/main` are `adba11f117915818ad5d299651a00783062d43e3` (docs on PR 64 merge `728fcb74ab25cf0280dae30f53805ce2b86f1e36`). Open PRs 1, 2, 3, 12, 19, 29, 31, 33, 34, 36–40, 42–54, 56 are older unmerged experiments or drafts. Do not merge them as part of this program and do not rewind `main`.
+
+Branch `cursor/stream-zset-ir-23fa` from `adba11f117915818ad5d299651a00783062d43e3`. The ordered plan is ROADMAP.md. The handoff is RESUME.md. Milestone 1 is the unified Z-set IR and operator DAG, lowering the existing projection/filter, COUNT/SUM/AVG and restricted INNER JOIN plans into that DAG. Production SQLite state, fixed-W, generation and unknown-output behavior stay on the existing engines until a measured replacement exists. 无数据 for a new strict-small on this branch yet. Formal 50M/72h was not run. No persistent isolated 72h host.
+
