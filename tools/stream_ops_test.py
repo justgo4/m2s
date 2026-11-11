@@ -6,6 +6,8 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+import urllib.request
+
 import stream_ops
 import stream_sql
 
@@ -72,9 +74,23 @@ def test_explain_metrics_quota():
         raise AssertionError("helm values are not marked synthetic")
 
 
+def test_http():
+    server = stream_ops.serve_status({"m2s_rows": 3})
+    try:
+        base = "http://127.0.0.1:%d" % server.server_address[1]
+        metrics = urllib.request.urlopen(base + "/metrics", timeout=5).read().decode()
+        page = urllib.request.urlopen(base + "/", timeout=5).read().decode()
+        if "m2s_rows 3" not in metrics or "<pre>" not in page or "m2s_rows 3" not in page:
+            raise AssertionError(dict(metrics=metrics, page=page))
+        print("metrics_ui port=%d" % server.server_address[1], flush=True)
+    finally:
+        server.shutdown()
+
+
 def main():
     test_identity_and_sandbox()
     test_explain_metrics_quota()
+    test_http()
     print("stream_ops_test ok", flush=True)
 
 
