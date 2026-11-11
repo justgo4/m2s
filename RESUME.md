@@ -4,8 +4,8 @@
 
 ## 當前里程碑
 
-第二輪第 3 項：新行程只從 MinIO 恢復。
-分支 `cursor/minio-restart-23fa`。不修改 workflow。門檻不改。
+第二輪第 4 項：PostgreSQL 邏輯複寫。
+分支 `cursor/postgres-cdc-23fa`。不修改 workflow。門檻不改。
 
 ## 倉庫位置
 
@@ -51,8 +51,8 @@
 
 ## 正在做
 
-SIGKILL 測試已合併，PR [#78](https://github.com/justgo4/m2s/pull/78)。
-新行程從 MinIO 讀回 5 個物件、99 位元組，耗時 0.116387 秒，鍵是 `b=9`。正在開 PR。
+MinIO 新行程恢復已合併，PR [#79](https://github.com/justgo4/m2s/pull/79)。
+PostgreSQL 16 邏輯複寫：插入、更新、刪除後 WAL 影像是 `{1: 9}`，與來源表一致，10 行解碼輸出。正在開 PR。
 
 ## 里程碑 3 程式
 
@@ -94,7 +94,7 @@ SIGKILL 測試已合併，PR [#78](https://github.com/justgo4/m2s/pull/78)。
 
 ## 下一步
 
-合併 MinIO 恢復後做 PostgreSQL 邏輯複寫 CDC，再做 Kafka、結構演進、
+合併 PostgreSQL CDC 後做 Kafka，再做真實資料庫上的結構演進、
 Prometheus／Web UI、Docker／Helm／離線包、TPC-H Q1–Q22、Nexmark、重跑 strict-small。
 舊 strict-small SHA `96501dcd0d7bf3c7b84b7d2ac17aaed7d759a9d0` 不能算到新 SHA。
 正式 72h 仍無數據，阻塞原因是沒有可連續 72 小時的隔離主機。
