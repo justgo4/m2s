@@ -51,9 +51,8 @@
 
 ## 正在做
 
-本地差分已通過。接著用縮小後的 StarRocks（FE `-Xmx512m`，BE `mem_limit=1073741824`，
-`disable_storage_page_cache` 與 `datacache_enable=false`）重跑 e2e 與 strict-small。
-測試管線設 `CDC_RESOURCE_MEMORY_RESERVE_MB=1024`；未設定時仍是 `max(2048, 總記憶體/4)`。
+里程碑 3 差分與一次 E2E 已完成。strict-small 的延遲樣本在門檻內，但 drain 因既有
+`merge_uncertain` 隔離而逾時，門檻沒有通過。正在把這些數字寫進 PROGRESS.md 並開 PR。
 
 ## 里程碑 3 程式
 
@@ -95,11 +94,12 @@
 
 ## 下一步
 
-從目前的 `main`（合併點 `7805cbcaa0dbad9965dbe05468764aaee73028b7`）做里程碑 3：事件時間、watermark、遲到策略、滾動／滑動／會話／累積視窗、`OVER`、Top-N、含遞迴的 CTE、時態 JOIN、區間 JOIN、狀態 TTL。沒有增量形式的運算子繼續標成受影響輸入的 DuckDB 重算。非確定性函式繼續拒絕，或必須在計畫裡寫明定時重算。
+開里程碑 3 的 PR 並合併。合併後從 `main` 做里程碑 4：狀態後端介面（SQLite 預設、RocksDB 第二實作）、只在量過的熱點上用 Rust，以及自適應批次。沒有小剖面對照之前不換原生熱路徑。正式 profile 與 5s／10s 門檻保持不變。
 
 ## 未解決
 
-- strict-small：無數據。E2E 有試跑但沒有完成，見下方。新 SQL 不在 CDC 熱路徑上，這次沒有新的延遲數字。
+- strict-small 門檻沒有通過。SHA `490c74dae268e3d9f5f076ad5d03851266507c88`，profile `small`，目錄 `/tmp/m2s-validation-small-m3`。`memory_pressure=0`（可用記憶體約 3526MB，測試保留 1024MB）。健康樣本 n=293，P50/P95/P99/max=1.029/2.033/2.078/3.034s，超過 5s 與 10s 的都是 0。恢復樣本 n=7，P95/P99/max=2.095/2.095/2.095s。workload 退出碼 1：第二次故障後 `starrocks.agg_000` 因未解的 Merge Commit 被隔離，drain 1800s 時 pending 仍是 887。這是既有 fail-closed，不是快照暫停。
+- E2E 通過。同一 SHA，MySQL 8.0.46、StarRocks `4.1.1-14b7e3f`，`--rows 1024 --transactions 40`。`exact_final_result=true`。延遲 P50/P95/P99/max=1.068/1.692/1.798/1.807s。這是短功能探針，不是 5s/10s 認證。
 - 正式 `p11-50m-50rps-72h-v4`：無數據。沒有持久隔離主機。
 - 參考引擎是語意對照，不是熱路徑。里程碑 4 之前不要用它替換 SQLite／原生熱點。
 - GitHub Actions 不跑。提交訊息帶 `[skip ci]`。
