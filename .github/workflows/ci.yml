@@ -153,6 +153,7 @@ jobs:
           python tools/task_generation_test.py
           python tools/resource_startup_test.py
           python tools/merge_quarantine_test.py
+          python tools/merge_reconcile_test.py
           python tools/merge_commit_identity_test.py
           python tools/cold_build_admission_test.py
           python tools/cdc_bundle_test.py

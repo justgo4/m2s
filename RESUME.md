@@ -4,8 +4,10 @@
 
 ## 當前里程碑
 
-里程碑 3 在 `cursor/stream-time-m3-23fa`。事件時間、視窗、OVER、Top-N、CTE／遞迴、
-區間 JOIN 與測試管線的記憶體保留覆寫已寫入。正式 `p11` 剖面與 5s／10s 門檻沒改。
+先做里程碑 5 的 Merge Commit 自動對帳，再做里程碑 4。
+分支 `cursor/merge-reconcile-m5-23fa`，從 `main`
+`d352bbc7c420e01dd2c066019533484fb14f9b0d` 切開。
+正式 profile 與 5s／10s 門檻不改。
 
 ## 倉庫位置
 
@@ -51,7 +53,7 @@
 
 ## 正在做
 
-沒有進行中的編輯。里程碑 3 已合併。PR [#67](https://github.com/justgo4/m2s/pull/67)，合併提交 `d051855e3f80212b64314e63485e384729ced327`。執行期 SHA `490c74dae268e3d9f5f076ad5d03851266507c88`。
+對帳已在本機通過 strict-small。正在把 SHA `96501dcd0d7bf3c7b84b7d2ac17aaed7d759a9d0` 的門檻結果寫進 PROGRESS.md 並開 PR。
 
 ## 里程碑 3 程式
 
@@ -93,11 +95,11 @@
 
 ## 下一步
 
-從目前的 `main`（合併點 `d051855e3f80212b64314e63485e384729ced327`）做里程碑 4：狀態後端介面（SQLite 預設、RocksDB 第二實作）、只在量過的熱點上用 Rust，以及自適應批次。沒有小剖面對照之前不換原生熱路徑。正式 profile 與 5s／10s 門檻保持不變。strict-small 的 drain 逾時是既有 `merge_uncertain` 隔離，不要為了讓門檻通過而自動重送。
+對帳 PR 合併後做里程碑 4。里程碑 5 的 barrier、checkpoint、savepoint 仍排在里程碑 4 之後。strict-small 門檻維持 P95≤5s、P99≤10s。無法確認的 Merge Commit 不得重放。
 
 ## 未解決
 
-- strict-small 門檻沒有通過。SHA `490c74dae268e3d9f5f076ad5d03851266507c88`，profile `small`，目錄 `/tmp/m2s-validation-small-m3`。`memory_pressure=0`（可用記憶體約 3526MB，測試保留 1024MB）。健康樣本 n=293，P50/P95/P99/max=1.029/2.033/2.078/3.034s，超過 5s 與 10s 的都是 0。恢復樣本 n=7，P95/P99/max=2.095/2.095/2.095s。workload 退出碼 1：第二次故障後 `starrocks.agg_000` 因未解的 Merge Commit 被隔離，drain 1800s 時 pending 仍是 887。這是既有 fail-closed，不是快照暫停。
+- strict-small 在對帳之前的 SHA `490c74dae268e3d9f5f076ad5d03851266507c88` 沒有通過：`agg_000` 被隔離，pending 停在 887。對帳之後的 SHA `96501dcd0d7bf3c7b84b7d2ac17aaed7d759a9d0` 通過。目錄 `/tmp/m2s-validation-small-m5`。健康樣本 n=293，P95/P99=2.028/2.038s，超過 5s 與 10s 的都是 0。恢復樣本 n=7，P95/P99/max=1.620/1.620/2.264s。事件、三個聚合、三個 JOIN 的全列摘要一致。pending=0。門檻仍是 5s／10s。
 - E2E 通過。同一 SHA，MySQL 8.0.46、StarRocks `4.1.1-14b7e3f`，`--rows 1024 --transactions 40`。`exact_final_result=true`。延遲 P50/P95/P99/max=1.068/1.692/1.798/1.807s。這是短功能探針，不是 5s/10s 認證。
 - 正式 `p11-50m-50rps-72h-v4`：無數據。沒有持久隔離主機。
 - 參考引擎是語意對照，不是熱路徑。里程碑 4 之前不要用它替換 SQLite／原生熱點。

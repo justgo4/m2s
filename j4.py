@@ -1889,6 +1889,12 @@ def init_state(path):
             created REAL NOT NULL,
             updated REAL NOT NULL,
             PRIMARY KEY(delivery_id,part));
+        CREATE TABLE IF NOT EXISTS merge_fence(
+            txn_id INTEGER PRIMARY KEY,
+            delivery_id TEXT NOT NULL,
+            part INTEGER NOT NULL,
+            outcome TEXT NOT NULL,
+            created REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS field_overflow(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             delivery_id TEXT NOT NULL,
@@ -7819,6 +7825,350 @@ def quarantine_pending_merges(con, runtime):
                 "replay=0 delete_resurrection_fence=required")
     return len(tables)
 
+
+def merge_accept_journal_path(cfg):
+    return str(cfg["state"]) + ".merge_accept"
+
+
+def append_merge_accept_journal(cfg, delivery, part, txn_id, server_label, payload):
+    record = dict(
+        delivery_id=str(delivery),
+        part=int(part),
+        txn_id=int(txn_id),
+        server_label=str(server_label or ""),
+        payload_sha256=hashlib.sha256(payload).hexdigest(),
+    )
+    line = orjson.dumps(record) + b"\n"
+    fd = os.open(
+        merge_accept_journal_path(cfg),
+        os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o600)
+    try:
+        os.write(fd, line)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def apply_merge_accept_journal(con, cfg, stop):
+    path = merge_accept_journal_path(cfg)
+    if not os.path.exists(path):
+        return 0
+    applied = 0
+    with open(path, "rb") as handle:
+        for raw in handle:
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                record = orjson.loads(raw)
+                delivery = str(record["delivery_id"])
+                part = int(record["part"])
+                txn_id = int(record["txn_id"])
+                digest = str(record["payload_sha256"])
+            except (KeyError, TypeError, ValueError, orjson.JSONDecodeError):
+                continue
+            row = con.execute(
+                "SELECT payload,txn_id,visible FROM load_parts "
+                "WHERE delivery_id=? AND part=?",
+                (delivery, part)).fetchone()
+            if row is None:
+                continue
+            if hashlib.sha256(row[0]).hexdigest() != digest:
+                log("MERGE JOURNAL SKIP delivery=%s part=%s reason=payload_mismatch"
+                    % (delivery, part))
+                continue
+            if row[1] is not None and int(row[1]) != txn_id:
+                log("MERGE JOURNAL SKIP delivery=%s part=%s reason=txn_mismatch"
+                    % (delivery, part))
+                continue
+            if row[2] and row[1] is not None:
+                continue
+            try:
+                record_merge_acceptance(con, delivery, part, txn_id, stop)
+            except RuntimeError as exc:
+                log("MERGE JOURNAL SKIP delivery=%s part=%s reason=%s"
+                    % (delivery, part, exc))
+                continue
+            applied += 1
+            log("MERGE JOURNAL APPLIED delivery=%s part=%s txn=%s"
+                % (delivery, part, txn_id))
+    return applied
+
+
+def merge_physical_table(table_name):
+    text = str(table_name)
+    prefix = "starrocks."
+    if text.startswith(prefix) and len(text) > len(prefix):
+        return text[len(prefix):]
+    return text
+
+
+def _utc_epoch(value):
+    if isinstance(value, datetime.datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=datetime.timezone.utc)
+        return float(value.timestamp())
+    if isinstance(value, datetime.date) and not isinstance(value, datetime.datetime):
+        return datetime.datetime(
+            value.year, value.month, value.day,
+            tzinfo=datetime.timezone.utc).timestamp()
+    return None
+
+
+def _merge_load_outcome(state):
+    text = str(state or "").strip().upper()
+    if text in {"FINISHED", "VISIBLE"}:
+        return "visible"
+    if text in {"CANCELLED", "CANCELED", "ABORTED"}:
+        return "aborted"
+    return "pending"
+
+
+def _combine_outcome(left, right):
+    if left == right:
+        return left
+    return "pending"
+
+
+def query_merge_stream_loads(cfg, table_name):
+    """Remote merge-commit loads for one physical table.
+
+    The client request id is not the StarRocks label. Rows are keyed by the
+    server txn id from stream_loads and loads.
+    """
+    if "sr" not in cfg:
+        raise RuntimeError("StarRocks connection is not configured")
+    sr_table = merge_physical_table(table_name)
+    database = cfg["sr"]["database"]
+    found = {}
+    con = mysql_connect(cfg, target=True)
+    try:
+        with con.cursor() as cur:
+            cur.execute(
+                "SELECT LABEL, TXN_ID, STATE, CREATE_TIME_MS "
+                "FROM information_schema.stream_loads "
+                "WHERE DB_NAME=%s AND TABLE_NAME=%s",
+                (database, sr_table))
+            for label, txn_id, state, created in cur.fetchall():
+                if txn_id is None:
+                    continue
+                txn_id = int(txn_id)
+                found[txn_id] = dict(
+                    label=str(label or ""),
+                    txn_id=txn_id,
+                    outcome=_merge_load_outcome(state),
+                    created=_utc_epoch(created),
+                )
+            cur.execute(
+                "SELECT LABEL, STATE, RUNTIME_DETAILS, CREATE_TIME "
+                "FROM information_schema.loads "
+                "WHERE DB_NAME=%s AND TABLE_NAME=%s",
+                (database, sr_table))
+            for label, state, details, created in cur.fetchall():
+                txn_id = None
+                try:
+                    meta = details if isinstance(details, dict) else orjson.loads(details or b"{}")
+                    if meta.get("txn_id") is not None:
+                        txn_id = int(meta["txn_id"])
+                except (TypeError, ValueError):
+                    txn_id = None
+                if txn_id is None:
+                    continue
+                item = dict(
+                    label=str(label or ""),
+                    txn_id=txn_id,
+                    outcome=_merge_load_outcome(state),
+                    created=_utc_epoch(created),
+                )
+                current = found.get(txn_id)
+                if current is None:
+                    found[txn_id] = item
+                else:
+                    current["outcome"] = _combine_outcome(
+                        current["outcome"], item["outcome"])
+                    if current["created"] is None:
+                        current["created"] = item["created"]
+    finally:
+        con.close()
+    return list(found.values())
+
+
+def _table_has_uncertain(con, table):
+    return con.execute(
+        "SELECT 1 FROM merge_uncertain WHERE table_name=? LIMIT 1",
+        (table,)).fetchone() is not None
+
+
+def _fence_merge_txn(con, txn_id, delivery, part, outcome):
+    con.execute(
+        "INSERT INTO merge_fence(txn_id,delivery_id,part,outcome,created) "
+        "VALUES(?,?,?,?,?) ON CONFLICT(txn_id) DO NOTHING",
+        (int(txn_id), str(delivery), int(part), str(outcome), time.time()))
+
+
+def _adopt_visible_merge(con, delivery, part, txn_id, stop):
+    record_merge_acceptance(con, delivery, part, int(txn_id), stop)
+    mark_merge_transaction_visible(con, delivery, int(txn_id), stop)
+
+
+def _release_aborted_merge(con, delivery, part, txn_id, reason):
+    now = time.time()
+    with state_transaction(con):
+        row = con.execute(
+            "SELECT label,txn_id,visible FROM load_parts "
+            "WHERE delivery_id=? AND part=?",
+            (delivery, part)).fetchone()
+        uncertain = con.execute(
+            "SELECT 1 FROM merge_uncertain WHERE delivery_id=? AND part=?",
+            (delivery, part)).fetchone()
+        if row is None or uncertain is None or int(row[2]):
+            return False
+        if row[1] is not None:
+            return False
+        _fence_merge_txn(con, txn_id, delivery, part, "aborted")
+        label = str(row[0]) + "_r_" + uuid.uuid4().hex[:12]
+        updated = con.execute(
+            "UPDATE load_parts SET label=?,txn_id=NULL "
+            "WHERE delivery_id=? AND part=? AND txn_id IS NULL AND visible=0",
+            (label, delivery, part))
+        if updated.rowcount != 1:
+            raise RuntimeError("aborted merge replay lost its local part")
+        con.execute(
+            "DELETE FROM merge_uncertain WHERE delivery_id=? AND part=?",
+            (delivery, part))
+    log("MERGE REPLAY delivery=%s part=%s fenced_txn=%s reason=%s"
+        % (delivery, part, txn_id, str(reason)[:300]))
+    return True
+
+
+def reconcile_merge_uncertain(con, cfg, runtime, table=None, loads=None, confirm=None):
+    """Resolve unknown Merge Commit requests from remote txn status.
+
+    A missing or still-running load stays unknown. Deletes are replayed only
+    after the original txn is proven aborted.
+    """
+    stop = runtime.get("stop") or threading.Event()
+    if confirm is None:
+        def confirm(txn_id):
+            return wait_visible(cfg, int(txn_id), stop, once=True)
+    rows = con.execute(
+        """
+        SELECT u.delivery_id,u.part,u.table_name,u.label,u.created,
+               p.txn_id,p.visible
+        FROM merge_uncertain u
+        JOIN load_parts p
+          ON p.delivery_id=u.delivery_id AND p.part=u.part
+        ORDER BY u.created,u.delivery_id,u.part
+        """).fetchall()
+    grouped = {}
+    for row in rows:
+        if table is not None and row[2] != table:
+            continue
+        grouped.setdefault(row[2], []).append(row)
+    for table_name, group in grouped.items():
+        try:
+            _reconcile_merge_table(
+                con, cfg, runtime, table_name, group, loads, confirm, stop)
+        except Exception as exc:
+            log("MERGE RECONCILE table=%s outcome=unconfirmed reason=%s"
+                % (table_name, exc))
+
+
+def _reconcile_merge_table(con, cfg, runtime, table_name, group, loads, confirm, stop):
+    for delivery, part, _table, _label, _created, txn_id, visible in group:
+        if visible or txn_id is None:
+            continue
+        state, _detail = confirm(int(txn_id))
+        if state == "visible":
+            mark_merge_transaction_visible(con, delivery, int(txn_id), stop)
+            with state_transaction(con):
+                con.execute(
+                    "DELETE FROM merge_uncertain WHERE delivery_id=? AND part=?",
+                    (delivery, part))
+            log("MERGE RECONCILE table=%s outcome=visible txn=%s"
+                % (table_name, txn_id))
+        elif state == "aborted":
+            with state_transaction(con):
+                _fence_merge_txn(con, txn_id, delivery, part, "aborted")
+                renewed = con.execute(
+                    "SELECT label FROM load_parts WHERE delivery_id=? AND part=?",
+                    (delivery, part)).fetchone()
+            if renewed is not None:
+                renew_load_label(
+                    con, delivery, part, renewed[0],
+                    "fenced aborted txn %s" % txn_id)
+            with state_transaction(con):
+                con.execute(
+                    "DELETE FROM merge_uncertain WHERE delivery_id=? AND part=?",
+                    (delivery, part))
+            log("MERGE RECONCILE table=%s outcome=replay txn=%s"
+                % (table_name, txn_id))
+    remaining = con.execute(
+        """
+        SELECT u.delivery_id,u.part,u.created,p.txn_id,p.visible
+        FROM merge_uncertain u
+        JOIN load_parts p
+          ON p.delivery_id=u.delivery_id AND p.part=u.part
+        WHERE u.table_name=? AND p.visible=0 AND p.txn_id IS NULL
+        ORDER BY u.created
+        """,
+        (table_name,)).fetchall()
+    if len(remaining) != 1:
+        if remaining:
+            log("MERGE RECONCILE table=%s outcome=unconfirmed reason=ambiguous_local count=%s"
+                % (table_name, len(remaining)))
+        return
+    delivery, part, created, _txn, _visible = remaining[0]
+    remote = loads(cfg, table_name) if loads is not None else query_merge_stream_loads(cfg, table_name)
+    local_ids = {
+        int(row[0]) for row in con.execute(
+            """
+            SELECT p.txn_id FROM load_parts p
+            JOIN deliveries d ON d.id=p.delivery_id
+            WHERE d.table_name=? AND p.txn_id IS NOT NULL
+            """,
+            (table_name,)).fetchall()
+    }
+    fenced = {
+        int(row[0]) for row in con.execute(
+            "SELECT txn_id FROM merge_fence").fetchall()
+    }
+    window = float(created) - 30.0
+    pending, visible_loads, aborted_loads = [], [], []
+    for item in remote:
+        txn_id = int(item["txn_id"])
+        if txn_id in local_ids or txn_id in fenced:
+            continue
+        item_created = item.get("created")
+        if item_created is None or float(item_created) < window:
+            continue
+        outcome = item["outcome"]
+        if outcome == "pending":
+            pending.append(item)
+        elif outcome == "visible":
+            visible_loads.append(item)
+        elif outcome == "aborted":
+            aborted_loads.append(item)
+    if pending or len(visible_loads) + len(aborted_loads) != 1:
+        log("MERGE RECONCILE table=%s outcome=unconfirmed "
+            "pending=%s visible=%s aborted=%s"
+            % (table_name, len(pending), len(visible_loads), len(aborted_loads)))
+        return
+    chosen = (visible_loads or aborted_loads)[0]
+    state, _detail = confirm(int(chosen["txn_id"]))
+    if state == "visible":
+        _adopt_visible_merge(con, delivery, part, int(chosen["txn_id"]), stop)
+        log("MERGE RECONCILE table=%s outcome=visible txn=%s"
+            % (table_name, chosen["txn_id"]))
+        return
+    if state == "aborted":
+        _release_aborted_merge(
+            con, delivery, part, int(chosen["txn_id"]), "confirmed_aborted")
+        return
+    log("MERGE RECONCILE table=%s outcome=unconfirmed txn=%s state=%s"
+        % (table_name, chosen["txn_id"], state))
+
+
 def curl_error_before_request(exc):
     code = int(exc.args[0]) if getattr(exc,"args",None) else -1
     return code in {
@@ -8076,6 +8426,15 @@ def submit_merge_async(handle, con, mapping, delivery, part, cfg, stop, runtime)
                            f"{last_error}; journal retained")
     remote_txn,result=accepted
     # Once accepted, local persistence never returns to HTTP retry handling.
+    # The append journal survives a kill between the response and the SQLite
+    # commit. It stores the server txn, not the client request id.
+    try:
+        append_merge_accept_journal(
+            cfg,delivery,part,remote_txn,
+            result.get("Label") or "",payload)
+    except OSError as exc:
+        log("MERGE JOURNAL WRITE FAILED delivery=%s part=%s txn=%s reason=%s"
+            % (delivery,part,remote_txn,exc))
     record_merge_acceptance(con,delivery,part,remote_txn,stop)
     cdc_event_trace.record("acceptance_saved",part=part)
     left_merge_ms=int(result.get("LeftMergeTimeMs",0) or 0)
@@ -8935,6 +9294,15 @@ def merge_delivery_worker(mapping, worker_id, cfg, runtime):
                 wake.clear()
                 continue
             if merge_table_quarantined(runtime,table):
+                reconcile_merge_uncertain(
+                    con,cfg,runtime,table=table)
+                if not _table_has_uncertain(con,table):
+                    with runtime["control_lock"]:
+                        runtime.get(
+                            "quarantined_tables",{}).pop(table,None)
+                    log("MERGE RELEASED table=%s reason=remote_status_confirmed"
+                        % table)
+                    continue
                 if engines:
                     close_plan_engines(engines)
                 wake.wait(1)
@@ -8967,7 +9335,18 @@ def merge_delivery_worker(mapping, worker_id, cfg, runtime):
                             worked = True
                             break
                     except (RuntimeError,pycurl.error,pymysql.err.OperationalError) as exc:
-                        if not quarantine_merge_table(con,table,runtime,exc):
+                        had_uncertain=_table_has_uncertain(con,table)
+                        if had_uncertain:
+                            reconcile_merge_uncertain(
+                                con,cfg,runtime,table=table)
+                        if _table_has_uncertain(con,table):
+                            if not quarantine_merge_table(
+                                    con,table,runtime,exc):
+                                raise
+                        elif had_uncertain:
+                            worked=True
+                            break
+                        else:
                             raise
                 finally:
                     lock.release()
@@ -12238,6 +12617,8 @@ def run_cdc(
                            for key in startup_retiring},
                        worker_threads=[],thread_lock=threading.Lock(),
                        snapshot_executor=None)
+        apply_merge_accept_journal(con,cfg,runtime["stop"])
+        reconcile_merge_uncertain(con,cfg,runtime)
         quarantine_pending_merges(con,runtime)
         runtime["plan_loader"] = lambda version: prepare_runtime_catalog_plan(
             cfg,cdc_catalog.load_plan_version(cfg["catalog"],version))
