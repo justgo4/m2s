@@ -1,67 +1,80 @@
 # 斷點
 
-更新：2026-11-11。新會話先讀本檔，再讀 [ROADMAP.md](ROADMAP.md)、[AGENTS.md](AGENTS.md)、[README.md](README.md)、[PROGRESS.md](PROGRESS.md)。不要重做已完成步驟。
+更新：2026-11-11。新會話先讀本檔，再讀 [ROADMAP.md](ROADMAP.md)。不要重做里程碑 1 的降下與差分測試。
 
 ## 當前里程碑
 
-里程碑 1：統一 IR + Z-set（權重 +1／-1）+ 可組合運算子 DAG。把現有 projection／filter、COUNT／SUM／AVG、受限 INNER JOIN 降下到這張 DAG，並證明整合結果不偏離 DuckDB 與既有引擎。
-
-尚未開始寫程式。本檔與 ROADMAP.md、PROGRESS.md、README.md 的指標是第一個斷點。
+里程碑 1 的程式與本地契約測試已經在 `bef1ed2c397144821a9bb2b29b587d93f6d05989`。
+下一步是開 PR、依本地證據合併到 `main`，然後從 ROADMAP 里程碑 2 開始
+（SQL 前端方言與完整 JOIN／聚合／集合運算）。
 
 ## 倉庫位置
 
 - 分支：`cursor/stream-zset-ir-23fa`
-- 基線：`adba11f117915818ad5d299651a00783062d43e3`（`origin/main` 同一 SHA）
+- 基線：`adba11f117915818ad5d299651a00783062d43e3`（開始時 `origin/main` 同一 SHA）
+- 方案提交：`5f3cabef404d8b536dfa112aefc68224fffcaf13`
+- 實作提交：`bef1ed2c397144821a9bb2b29b587d93f6d05989`
 - 遠端：`justgo4/m2s`
-- 開放 PR 是舊實驗，不要合併，也不要重寫 main。
+- 開放中的舊 PR 不要合併。
 
 ## 已完成
 
-- 對過 `origin/main` 與開放 PR。main 就是 `adba11f117915818ad5d299651a00783062d43e3`。
-- 寫下 ROADMAP.md 與本檔。PROGRESS.md 已記下本輪起點。README.md 加了兩份文件的入口。
+- Z-set（`stream_zset.py`）：整數權重、零權重刪除、主鍵鏡像。delete 是 `-1`，upsert 既有鍵先撤回舊列。錯誤的 before image、缺鍵刪除、非整數權重都 fail-closed。
+- DAG（`stream_ir.py`）：`input`／`filter`／`project`／`aggregate`／`equi_join`。`lower_stateless`、`lower_aggregate`、`lower_join`。既有 IR 的 canonical bytes 沒改。
+- 參考引擎（`stream_eval.py`）：filter／project 只吃 delta；COUNT／SUM／AVG 用群組累加器發 `+1`／`-1`；INNER equi-join 權重相乘，NULL 鍵不匹配。同一批先套用全部左側再套用右側。失敗的一批會回到該批之前的狀態。
+- 接線：`j4.runtime_plan_entry` 寫入 `_stream_plan_id`，熱更新不一致就拒絕。`stateful_task_plan.compile_ir`／`compile_task` 帶 stream plan id，不放進既有 descriptor hash。
+- 熱路徑仍是原來的 DuckDB SQL 與 SQLite 聚合／JOIN 引擎。參考引擎沒有放上每筆 CDC。
 
-尚無實作 commit。無測試數據。
+測試在建立 `bef1ed2` 之前、於同一棵原始碼上跑過。Python 3.12.3，依賴為 `requirements.txt`（DuckDB 1.5.5、PyArrow 25.0.1、sqlglot 30.18.0）。
+
+| 命令 | 結果 |
+|---|---|
+| `python3 tools/stream_zset_test.py` | `stream_zset_test ok` |
+| `python3 tools/incremental_ir_test.py` | ok |
+| `python3 tools/relational_ir_test.py` | ok |
+| `python3 tools/aggregate_ir_test.py` | ok |
+| `python3 tools/join_ir_test.py` | ok |
+| `python3 tools/incremental_ir_state_oracle.py` | ok，seed=20261001，operations=5000，final_rows=35 |
+| `python3 tools/aggregate_state_oracle.py` | ok，seed=20261001，transactions=1500，rows=104 |
+| `python3 tools/join_state_oracle.py` | ok，seed=20261001，transactions=2000，left=78，right=34，pairs=17 |
+| `python3 tools/aggregate_state_test.py` | ok |
+| `python3 tools/join_state_test.py` | ok |
+| `python3 tools/join_incremental_delta_test.py` | ok |
+| `python3 tools/source_log_consumer_test.py` | ok |
+| `python3 tools/stateful_task_plan_test.py` | ok |
+| `python3 tools/incremental_contract_test.py` | ok |
+| `python3 tools/p11_profile_test.py` | ok，`p11-50m-50rps-72h-v4` 身份未改 |
+| `python3 tools/privacy_check.py` | `PRIVACY PASS files=236 findings=0` |
+| `python3 j4.py selftest` | `SELFTEST OK: 37 offline regression groups`。線上檢查跳過：沒有資料庫設定 |
+
+`stream_zset_test.py` 的差分是：無狀態 projection／filter 對 DuckDB；COUNT／SUM／AVG 對 DuckDB 與 `aggregate_state`；受限 INNER JOIN 對 DuckDB 與 `join_state`；另有 filter→project→aggregate 與 join→aggregate 兩條組合 DAG。隨機種子 `20261111`。
 
 ## 正在做
 
-把方案與斷點推上 `cursor/stream-zset-ir-23fa`。
+把實作 SHA 與上面的結果寫進 PROGRESS.md，推分支，開里程碑 1 的 PR。
 
 ## 下一步
 
-1. 新增 `stream_zset.py`：Z-set、權重合併、列身份、主鍵 changelog 鏡像（delete=`-1`，upsert 先撤回舊列）。權重只接受整數；負權重或撤回不存在的鍵要 fail-closed。
-2. 新增 `stream_ir.py`：DAG 驗證與 semantic id。`lower_stateless`、`lower_aggregate`、`lower_join`。既有 IR 的 canonical bytes 不要改。
-3. 新增 `stream_eval.py`：線性 filter／project（DuckDB 算表達式）、聚合累加器、雙線性 equi-join。`push` 失敗要還原本批之前的狀態。NULL join 鍵不匹配。
-4. 接線：`j4.runtime_plan_entry` 寫入 `_stream_plan_id`，熱更新比對時納入；`stateful_task_plan.compile_ir`／`compile_task` 帶上 stream plan，但不要放進既有 descriptor hash。
-5. `tools/stream_zset_test.py`：腳本案例 + 隨機增刪改。對 DuckDB 全量；聚合再對 `aggregate_state`；JOIN 再對 `join_state`；另測 filter→project→aggregate 與 join→aggregate 兩條組合 DAG。
-6. 把新測試掛進 `.github/workflows/ci.yml` 的本地對應清單（本程式不跑 Actions）。
-7. 本地跑：`python3 tools/stream_zset_test.py`、既有 IR／state oracle、`python3 tools/privacy_check.py`、`python3 j4.py selftest`。熱路徑 SQL 若未改，strict-small 能跑就跑一輪；跑不了就在本檔寫原因。
-8. 更新本檔與 PROGRESS.md 的精確 SHA 與命令結果，推分支，開里程碑 1 的 PR。驗證通過再合併 main。
+1. 確認本檔與 PROGRESS.md 已推上 `cursor/stream-zset-ir-23fa`。
+2. 開 PR，基底 `main`。描述寫明驗證命令與 `bef1ed2c397144821a9bb2b29b587d93f6d05989`。不要跑 GitHub Actions。
+3. 依擁有者既有授權，在本地證據下合併到 `main`。若權限不允許合併，把 PR 網址留在本檔，不要重做實作。
+4. 合併後從里程碑 2 起新分支：sqlglot `read=mysql` 可設定、預設維持現有相容；JOIN 家族；MIN／MAX、COUNT DISTINCT、STRING_AGG；DISTINCT；UNION／INTERSECT／EXCEPT；子查詢去關聯化；GROUPING SETS／ROLLUP／CUBE；MV on MV。每個新運算子都要有對 DuckDB 的差分，並且舊子集的 stream semantic id 不能無故改變。
 
 ## 未解決
 
-- 正式 `p11-50m-50rps-72h-v4` 沒有持久隔離主機。無數據。不要用 strict-small 代替。
-- 里程碑 1 不替換 SQLite 熱狀態，也不把參考引擎放上每筆 CDC。原因寫在 ROADMAP：還沒有同機延遲證據之前不能換熱路徑。
-- GitHub Actions 有儲存額度限制，本程式不跑、不依賴它。commit 訊息加 `[skip ci]`，避免 push／PR 觸發 workflow。
+- strict-small、真實 daemon E2E、故障注入：無數據。這台 VM 沒有 Docker（`docker version` 失敗，沒有 `/var/run/docker.sock`），也沒有 MySQL／StarRocks 服務。`j4.py selftest` 的線上檢查因此跳過。本里程碑沒有改每筆 CDC 的 SQL 或 SQLite 狀態機，延遲數字不能從這次測試外推。
+- 正式 `p11-50m-50rps-72h-v4`：無數據。沒有持久隔離主機。
+- 參考引擎是語意對照，不是熱路徑。里程碑 4 之前不要用它替換 SQLite／原生熱點。
+- GitHub Actions 不跑。提交訊息帶 `[skip ci]`。
 
 ## 本地環境如何重建
 
-工作目錄：`/workspace`。目前檢查到的解釋器是系統 Python。下列服務指令尚未在本輪執行，機器上若還沒有容器就先安裝 Docker 再跑。
+工作目錄 `/workspace`。系統 Python 3.12.3。沒有虛擬環境。
 
 ```bash
-git fetch origin main
+git fetch origin cursor/stream-zset-ir-23fa
 git checkout cursor/stream-zset-ir-23fa
 python3 -m pip install -r requirements.txt
-
-# 對照用的服務上限與 2026-11-04 記錄相同。資料目錄用新的空目錄。
-docker run -d --name m2s-mysql --cpus=0.5 --memory=1g \
-  -e MYSQL_ROOT_PASSWORD=CHANGE_ME_LOCAL -e MYSQL_DATABASE=m2s \
-  -p 3306:3306 mysql:8.4 \
-  --gtid-mode=ON --enforce-gtid-consistency=ON \
-  --server-id=1 --log-bin=mysql-bin
-# StarRocks 映像名稱尚未在本輪核對。用官方 4.1.1 allin1，資源上限保持：
-docker run -d --name m2s-starrocks --cpus=2 --memory=8g \
-  -p 9030:9030 -p 8030:8030 -p 8040:8040 \
-  starrocks/allin1-ubuntu:4.1.1
 
 python3 tools/stream_zset_test.py
 python3 tools/incremental_ir_test.py
@@ -70,12 +83,28 @@ python3 tools/join_ir_test.py
 python3 tools/aggregate_state_oracle.py
 python3 tools/join_state_oracle.py
 python3 tools/incremental_ir_state_oracle.py
+python3 tools/stateful_task_plan_test.py
 python3 tools/privacy_check.py
 python3 j4.py selftest
 ```
 
-strict-small 沿用 `python3 tools/validation_run.py run --isolated --profile small --run-directory <新目錄>`。不要指向舊 run 目錄或生產庫。`CDC_EVENT_TRACE` 保持關閉，除非要測的就是 trace。
+strict-small 需要新的空資料目錄，以及 MySQL 8.4（`--cpus=0.5 --memory=1g`，GTID）和 StarRocks 4.1.1（`--cpus=2 --memory=8g`）。本機目前沒有 Docker，所以上面的服務沒有啟動。映像名稱尚未在本輪核對，不要把未跑的命令寫成已通過。
+
+```bash
+docker run -d --name m2s-mysql --cpus=0.5 --memory=1g \
+  -e MYSQL_ROOT_PASSWORD=CHANGE_ME_LOCAL -e MYSQL_DATABASE=m2s \
+  -p 3306:3306 mysql:8.4 \
+  --gtid-mode=ON --enforce-gtid-consistency=ON \
+  --server-id=1 --log-bin=mysql-bin
+# StarRocks 使用官方 4.1.1 allin1。本輪沒有拉過映像。
+docker run -d --name m2s-starrocks --cpus=2 --memory=8g \
+  -p 9030:9030 -p 8030:8030 -p 8040:8040 \
+  starrocks/allin1-ubuntu:4.1.1
+```
+
+`CDC_EVENT_TRACE` 保持關閉。不要把 workload 初始化到舊 run 目錄或生產庫。
 
 ## 提交
 
-尚無。推上去之後把 SHA 補在這裡。
+- `5f3cabef404d8b536dfa112aefc68224fffcaf13` 方案與第一個斷點
+- `bef1ed2c397144821a9bb2b29b587d93f6d05989` 里程碑 1 實作，測試見上表
