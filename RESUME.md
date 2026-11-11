@@ -4,10 +4,9 @@
 
 ## 當前里程碑
 
-先做里程碑 5 的 Merge Commit 自動對帳，再做里程碑 4。
-分支 `cursor/merge-reconcile-m5-23fa`，從 `main`
-`d352bbc7c420e01dd2c066019533484fb14f9b0d` 切開。
-正式 profile 與 5s／10s 門檻不改。
+里程碑 4：狀態後端。分支 `cursor/state-backend-m4-23fa`。
+SQLite 為預設，RocksDB 為第二實作。Rust consolidate 有 Python fallback。
+CDC 熱路徑沒有換成這兩個後端。正式 profile 與 5s／10s 門檻不改。
 
 ## 倉庫位置
 
@@ -53,7 +52,7 @@
 
 ## 正在做
 
-沒有進行中的編輯。Merge Commit 對帳已合併。PR [#68](https://github.com/justgo4/m2s/pull/68)，合併提交 `ce94b7aac303cb83422f5cedb72b109edb28572f`。strict-small 執行期 SHA `96501dcd0d7bf3c7b84b7d2ac17aaed7d759a9d0`。
+里程碑 4 的後端差分已通過。CDC 預設批次沒有改。正在開 PR。
 
 ## 里程碑 3 程式
 
@@ -95,7 +94,7 @@
 
 ## 下一步
 
-從 `main` `ce94b7aac303cb83422f5cedb72b109edb28572f` 做里程碑 4：狀態後端介面（SQLite 預設、RocksDB 第二實作）、只在量過的熱點上用 Rust，以及自適應批次。沒有小剖面對照之前不換原生熱路徑。里程碑 5 的 barrier、checkpoint、savepoint 仍排在里程碑 4 之後。strict-small 門檻維持 P95≤5s、P99≤10s。無法確認的 Merge Commit 不得重放。
+合併里程碑 4 後做里程碑 5 剩餘部分：barrier、非同步 checkpoint、savepoint、exactly-once。`merge_uncertain` 對帳已在 PR #68。門檻維持 P95≤5s、P99≤10s。
 
 ## 未解決
 
