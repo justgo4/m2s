@@ -13,6 +13,7 @@ import aggregate_task_catalog
 import join_ir
 import join_target_mapping
 import join_task_catalog
+import stream_ir
 
 
 def writer_plan_version(task_version):
@@ -132,10 +133,16 @@ def compile_ir(
             mysql_database+"."+right,
             right_meta["schema_signature"],right_meta["primary_key"],
             _rewrite_join(manifest.get("sql")))
+    if kind=="aggregate":
+        stream_plan=stream_ir.lower_aggregate(ir)
+    else:
+        stream_plan=stream_ir.lower_join(ir)
     return dict(
         kind=kind,
         source_relations=list(sources),
         ir=ir,
+        stream_plan=stream_plan,
+        stream_plan_id=stream_ir.semantic_id(stream_plan),
     )
 
 
@@ -177,4 +184,5 @@ def compile_task(
         source_relations=list(sources),
         task=task,
         mapping=mapping,
+        stream_plan_id=compiled["stream_plan_id"],
     )

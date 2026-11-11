@@ -5,6 +5,7 @@ MySQL → StarRocks 实时同步与受限增量计算项目。
 更新：2026-10-04。
 
 运行与恢复说明见 [OPERATIONS.md](OPERATIONS.md)；详细实验、提交 SHA、失败证据和历史过程见 [PROGRESS.md](PROGRESS.md)。  
+通用 SQL 增量／串流計算的順序方案見 [ROADMAP.md](ROADMAP.md)；中斷後從 [RESUME.md](RESUME.md) 的下一步繼續。  
 精简前 README 保留在历史提交中，需要追溯设计过程时再查看。
 
 ## 1. 最终需求
