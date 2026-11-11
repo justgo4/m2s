@@ -50,6 +50,7 @@ import catalog_explain
 import cdc_catalog
 import incremental_contract
 import incremental_ir
+import stream_ir
 import join_job_bridge
 import join_outbox
 import join_shared_runtime
@@ -5398,6 +5399,8 @@ def runtime_plan_entry(version, prepared, macros=(), udfs=(), fingerprint=""):
             mapping["_relational_ir"])
         mapping["_incremental_ir_id"] = incremental_ir.semantic_id(
             mapping["_incremental_ir"])
+        mapping["_stream_plan_id"] = stream_ir.semantic_id(
+            stream_ir.lower_stateless(mapping["_relational_ir"]))
         key = mapping_key(mapping)
         if key in by_table:
             raise RuntimeError(f"duplicate durable sink identity: {key}")
@@ -5454,6 +5457,10 @@ def runtime_plan_compatible(current, candidate):
         if old.get("_incremental_ir_id") != new.get("_incremental_ir_id"):
             return False,(
                 f"{table}: retained sink incremental semantics changed; "
+                "rebuild/new generation is required")
+        if old.get("_stream_plan_id") != new.get("_stream_plan_id"):
+            return False,(
+                f"{table}: retained sink stream semantics changed; "
                 "rebuild/new generation is required")
     if change["added"]:
         return True,(
