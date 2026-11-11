@@ -4,9 +4,9 @@
 
 ## 當前里程碑
 
-里程碑 6：單機多進程。分支 `cursor/stream-cluster-m6-23fa`。
-這不是分散式 SLO。正式 profile 與 5s／10s 門檻不改。
-不再修改 `.github/workflows`。
+里程碑 7：遠端 checkpoint。分支 `cursor/remote-state-m7-23fa`。
+物件留在本機 MinIO，不進 GitHub。不修改 workflow。
+正式 profile 與 5s／10s 門檻不改。
 
 ## 倉庫位置
 
@@ -52,9 +52,8 @@
 
 ## 正在做
 
-里程碑 5 已合併，PR [#70](https://github.com/justgo4/m2s/pull/70)，合併提交 `299fee56ed86c476224d72ce0d0a5c91391fab6b`。
-`.github/workflows/ci.yml` 已退回串流工作開始前的內容。
-里程碑 6 的本機多進程測試已通過。正在開 PR。
+里程碑 6 已合併，PR [#71](https://github.com/justgo4/m2s/pull/71)。
+里程碑 7 已在本機 MinIO 上把增量 checkpoint 恢復成與本地後端相同的鍵值。正在開 PR。
 
 ## 里程碑 3 程式
 
@@ -96,7 +95,7 @@
 
 ## 下一步
 
-合併里程碑 6 後做里程碑 7：S3 相容儲存上的增量 checkpoint，以及本地熱狀態／遠端冷狀態。物件不進 GitHub。門檻維持 P95≤5s、P99≤10s。不新增 workflow。
+合併里程碑 7 後做里程碑 8：連接器 SDK。已實作的連接器跑合成增量；未實作的拒絕。門檻維持 P95≤5s、P99≤10s。不新增 workflow。
 
 ## 未解決
 
