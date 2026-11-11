@@ -4,8 +4,8 @@
 
 ## 當前里程碑
 
-里程碑 7：遠端 checkpoint。分支 `cursor/remote-state-m7-23fa`。
-物件留在本機 MinIO，不進 GitHub。不修改 workflow。
+里程碑 8：連接器 SDK。分支 `cursor/connectors-m8-23fa`。
+只開放有增量路徑的連接器。不修改 workflow。
 正式 profile 與 5s／10s 門檻不改。
 
 ## 倉庫位置
@@ -52,8 +52,8 @@
 
 ## 正在做
 
-里程碑 6 已合併，PR [#71](https://github.com/justgo4/m2s/pull/71)。
-里程碑 7 已在本機 MinIO 上把增量 checkpoint 恢復成與本地後端相同的鍵值。正在開 PR。
+里程碑 7 已合併，PR [#72](https://github.com/justgo4/m2s/pull/72)。
+里程碑 8 的合成 MySQL→StarRocks 路徑已通過，未實作的連接器會拒絕。正在開 PR。
 
 ## 里程碑 3 程式
 
@@ -95,7 +95,7 @@
 
 ## 下一步
 
-合併里程碑 7 後做里程碑 8：連接器 SDK。已實作的連接器跑合成增量；未實作的拒絕。門檻維持 P95≤5s、P99≤10s。不新增 workflow。
+合併里程碑 8 後做里程碑 9：UDF 確定性進入計畫身份、EXPLAIN、指標與合成設定的安裝檔。門檻維持 P95≤5s、P99≤10s。不新增 workflow。
 
 ## 未解決
 
