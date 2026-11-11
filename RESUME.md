@@ -4,8 +4,8 @@
 
 ## 當前里程碑
 
-第二輪。第一輪的最小切片不算完成。先寫 `VERIFICATION.md` 與 ROADMAP 第二輪，
-接著逐項實作。正式 profile 與 5s／10s 門檻不改。不修改 workflow。
+第二輪第 1 項：Arrow Flight 擴縮與 worker 接管。
+分支 `cursor/flight-cluster-23fa`。不修改 workflow。門檻不改。
 
 ## 倉庫位置
 
@@ -51,8 +51,8 @@
 
 ## 正在做
 
-把第一輪沒有達標的項目寫進 `VERIFICATION.md` 和 ROADMAP 第二輪。
-寫完就做分散執行的 Flight 擴縮與 worker 接管量測。
+第二輪文件已合併，PR [#76](https://github.com/justgo4/m2s/pull/76)，合併提交 `b10cb47`。
+Flight 叢集實測：200 列，2 個 worker 擴到 4 個花 0.413430 秒，殺掉一個 worker 後接管 0.087616 秒，總和仍是 600。正在開 PR。
 
 ## 里程碑 3 程式
 
@@ -94,10 +94,10 @@
 
 ## 下一步
 
-第二輪按 ROADMAP 第 1 項開始：Arrow Flight 交換、動態擴縮、殺掉 worker 後量接管時間。
-然後 exactly-once 強退、MinIO 新行程恢復、PostgreSQL CDC、Kafka、結構演進、
-Prometheus／Web UI、Docker／Helm／離線包、TPC-H Q1–Q22、Nexmark、重跑 strict-small。
-strict-small 的舊通過 SHA `96501dcd0d7bf3c7b84b7d2ac17aaed7d759a9d0` 不能算到新 SHA。
+合併 Flight 量測後做 exactly-once：行程在 checkpoint 提交前被 SIGKILL，重啟不重複套用。
+接著 MinIO 新行程恢復、PostgreSQL CDC、Kafka、結構演進、Prometheus／Web UI、
+Docker／Helm／離線包、TPC-H Q1–Q22、Nexmark、重跑 strict-small。
+舊 strict-small SHA `96501dcd0d7bf3c7b84b7d2ac17aaed7d759a9d0` 不能算到新 SHA。
 正式 72h 仍無數據，阻塞原因是沒有可連續 72 小時的隔離主機。
 
 ## 未解決
