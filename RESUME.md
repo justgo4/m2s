@@ -51,8 +51,7 @@
 
 ## 正在做
 
-里程碑 3 差分與一次 E2E 已完成。strict-small 的延遲樣本在門檻內，但 drain 因既有
-`merge_uncertain` 隔離而逾時，門檻沒有通過。正在把這些數字寫進 PROGRESS.md 並開 PR。
+沒有進行中的編輯。里程碑 3 已合併。PR [#67](https://github.com/justgo4/m2s/pull/67)，合併提交 `d051855e3f80212b64314e63485e384729ced327`。執行期 SHA `490c74dae268e3d9f5f076ad5d03851266507c88`。
 
 ## 里程碑 3 程式
 
@@ -94,7 +93,7 @@
 
 ## 下一步
 
-開里程碑 3 的 PR 並合併。合併後從 `main` 做里程碑 4：狀態後端介面（SQLite 預設、RocksDB 第二實作）、只在量過的熱點上用 Rust，以及自適應批次。沒有小剖面對照之前不換原生熱路徑。正式 profile 與 5s／10s 門檻保持不變。
+從目前的 `main`（合併點 `d051855e3f80212b64314e63485e384729ced327`）做里程碑 4：狀態後端介面（SQLite 預設、RocksDB 第二實作）、只在量過的熱點上用 Rust，以及自適應批次。沒有小剖面對照之前不換原生熱路徑。正式 profile 與 5s／10s 門檻保持不變。strict-small 的 drain 逾時是既有 `merge_uncertain` 隔離，不要為了讓門檻通過而自動重送。
 
 ## 未解決
 
