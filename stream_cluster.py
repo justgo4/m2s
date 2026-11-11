@@ -20,6 +20,13 @@ def shard_of(key, workers):
     return int.from_bytes(digest[:4], "big") % workers
 
 
+def require_complete(parts, workers):
+    """A network partition must not publish a partial shuffle."""
+    if len(parts) != int(workers) or any(part is None for part in parts):
+        raise RuntimeError("network partition: shuffle is incomplete")
+    return parts
+
+
 def preaggregate(rows):
     totals = {}
     for key, weight in rows:

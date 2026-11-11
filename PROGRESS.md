@@ -1270,3 +1270,27 @@ strict-small, same profile and the same fault interval, directory `/tmp/m2s-vali
 
 Milestone 3 reference operators: tumbling/hopping/session/cumulative windows, watermark late drop, OVER affected-partition recompute, top-n, recursive semi-naive CTE, interval contains-point join, and an explicit timed recompute mode for nondeterministic functions. `python3 tools/stream_time_test.py` passed. v1 stateless semantic id remains `1283fb55eb3b4b4408aa8095e8e9c66255383bb60fa630d38d6f401b109fc8ef`.
 
+## 2026-11-11 milestone 10 verification
+
+Local VM only. No workflow file was added. Thresholds were not changed and were not applied to a new strict-small run.
+
+Commands on this tree, before the verification commit:
+
+| Command | Result |
+|---|---|
+| `python3 tools/stream_gap_test.py` | ok. Filter, grouped count, and inner join match DuckDB. A missing shuffle shard raises `network partition`. A full disk raises `OSError` 28. |
+| `python3 tools/stream_sql_test.py` | ok. Randomized DML stays aligned with a full DuckDB recompute. |
+| `python3 tools/stream_cluster_test.py` | ok |
+
+Original queries in the gap test: `SELECT id, v FROM events WHERE v > 3`; `SELECT bucket, COUNT(*) AS n FROM events GROUP BY bucket`; an inner join of `events` to `dimensions` on `bucket`. These are not TPC text.
+
+Gaps, kept on purpose:
+
+- TPC-H Q1–Q22 official text is not vendored.
+- TPC-DS official text is not vendored.
+- Nexmark official queries are not vendored.
+- Formal `p11-50m-50rps-72h-v4`: 无数据.
+- strict-small was not re-run here. The CDC hot path was not replaced. The last pass is SHA `96501dcd0d7bf3c7b84b7d2ac17aaed7d759a9d0`, P95=2.028s, P99=2.038s, thresholds 5s/10s. Do not treat a later SHA as that certification.
+
+Distributed scale and failover in `stream_cluster_test.py` are single-machine process tests, not a distributed SLO.
+
