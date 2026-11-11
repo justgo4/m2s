@@ -52,7 +52,7 @@
 
 ## 正在做
 
-準備開里程碑 2 的 PR 並合併。程式與差分測試已完成。
+沒有進行中的編輯。里程碑 2 已合併。PR [#66](https://github.com/justgo4/m2s/pull/66)，合併提交 `7805cbcaa0dbad9965dbe05468764aaee73028b7`。實作提交 `82a931f560880228c216c79ef4a3b205a87e2996`。
 
 ## 里程碑 2 已完成的程式
 
@@ -82,8 +82,7 @@
 
 ## 下一步
 
-1. 開 PR、合併到 `main`。合併 SHA 寫回本檔。
-2. 從合併後的 `main` 做里程碑 3：事件時間、watermark、遲到、視窗、Top-N、遞迴 CTE、時態／區間 JOIN、狀態 TTL。非確定性函式繼續拒絕或明示定時重算。
+從目前的 `main`（合併點 `7805cbcaa0dbad9965dbe05468764aaee73028b7`）做里程碑 3：事件時間、watermark、遲到策略、滾動／滑動／會話／累積視窗、`OVER`、Top-N、含遞迴的 CTE、時態 JOIN、區間 JOIN、狀態 TTL。沒有增量形式的運算子繼續標成受影響輸入的 DuckDB 重算。非確定性函式繼續拒絕，或必須在計畫裡寫明定時重算。
 
 ## 未解決
 
@@ -97,8 +96,8 @@
 工作目錄 `/workspace`。系統 Python 3.12.3。沒有虛擬環境。
 
 ```bash
-git fetch origin cursor/stream-sql-m2-23fa
-git checkout cursor/stream-sql-m2-23fa
+git fetch origin main
+git checkout main
 python3 -m pip install -r requirements.txt
 
 python3 tools/stream_sql_test.py
@@ -133,3 +132,5 @@ sudo sysctl -w vm.max_map_count=2000000
 - `5f3cabef404d8b536dfa112aefc68224fffcaf13` 方案與第一個斷點
 - `bef1ed2c397144821a9bb2b29b587d93f6d05989` 里程碑 1 實作，測試見上表
 - `7c6662709e9a5cf2243ca22dad6052b8e62c3f66` 合併 PR #65 到 `main`
+- `82a931f560880228c216c79ef4a3b205a87e2996` 里程碑 2 實作
+- `7805cbcaa0dbad9965dbe05468764aaee73028b7` 合併 PR #66 到 `main`
