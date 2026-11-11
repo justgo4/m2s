@@ -53,10 +53,7 @@
 
 ## 正在做
 
-實作 `merge_uncertain` 對帳：接受日誌寫下伺服器 txn，重啟後用
-`information_schema.stream_loads`／`loads` 與 `SHOW TRANSACTION` 確認。
-VISIBLE 才標本地可見；中止才 fence 並重放；對不上就隔離。
-接著用與上次相同的 strict-small 故障注入重跑。
+對帳已在本機通過 strict-small。正在把 SHA `96501dcd0d7bf3c7b84b7d2ac17aaed7d759a9d0` 的門檻結果寫進 PROGRESS.md 並開 PR。
 
 ## 里程碑 3 程式
 
@@ -102,7 +99,7 @@ VISIBLE 才標本地可見；中止才 fence 並重放；對不上就隔離。
 
 ## 未解決
 
-- strict-small 門檻沒有通過。SHA `490c74dae268e3d9f5f076ad5d03851266507c88`，profile `small`，目錄 `/tmp/m2s-validation-small-m3`。`memory_pressure=0`（可用記憶體約 3526MB，測試保留 1024MB）。健康樣本 n=293，P50/P95/P99/max=1.029/2.033/2.078/3.034s，超過 5s 與 10s 的都是 0。恢復樣本 n=7，P95/P99/max=2.095/2.095/2.095s。workload 退出碼 1：第二次故障後 `starrocks.agg_000` 因未解的 Merge Commit 被隔離，drain 1800s 時 pending 仍是 887。這是既有 fail-closed，不是快照暫停。
+- strict-small 在對帳之前的 SHA `490c74dae268e3d9f5f076ad5d03851266507c88` 沒有通過：`agg_000` 被隔離，pending 停在 887。對帳之後的 SHA `96501dcd0d7bf3c7b84b7d2ac17aaed7d759a9d0` 通過。目錄 `/tmp/m2s-validation-small-m5`。健康樣本 n=293，P95/P99=2.028/2.038s，超過 5s 與 10s 的都是 0。恢復樣本 n=7，P95/P99/max=1.620/1.620/2.264s。事件、三個聚合、三個 JOIN 的全列摘要一致。pending=0。門檻仍是 5s／10s。
 - E2E 通過。同一 SHA，MySQL 8.0.46、StarRocks `4.1.1-14b7e3f`，`--rows 1024 --transactions 40`。`exact_final_result=true`。延遲 P50/P95/P99/max=1.068/1.692/1.798/1.807s。這是短功能探針，不是 5s/10s 認證。
 - 正式 `p11-50m-50rps-72h-v4`：無數據。沒有持久隔離主機。
 - 參考引擎是語意對照，不是熱路徑。里程碑 4 之前不要用它替換 SQLite／原生熱點。
