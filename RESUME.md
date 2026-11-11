@@ -4,8 +4,8 @@
 
 ## 當前里程碑
 
-第二輪第 6 項：PostgreSQL 結構演進。
-分支 `cursor/pg-ddl-23fa`。不修改 workflow。門檻不改。
+第二輪第 7 項：Prometheus 與 Web UI。
+分支 `cursor/metrics-ui-23fa`。不修改 workflow。門檻不改。
 
 ## 倉庫位置
 
@@ -51,8 +51,8 @@
 
 ## 正在做
 
-Kafka 已合併，PR [#81](https://github.com/justgo4/m2s/pull/81)。
-PostgreSQL `ALTER TABLE ADD COLUMN note text` 之後，WAL 插入是 `{id:3,v:1,note:east}`。計畫刪除欄位標成重建，表上的列還在。正在開 PR。
+結構演進已合併，PR [#82](https://github.com/justgo4/m2s/pull/82)。
+本機 HTTP 讀到 `/metrics` 的 `m2s_rows 3` 和 HTML 頁面。測試這次綁在埠 37529。正在開 PR。
 
 ## 里程碑 3 程式
 
@@ -94,8 +94,7 @@ PostgreSQL `ALTER TABLE ADD COLUMN note text` 之後，WAL 插入是 `{id:3,v:1,
 
 ## 下一步
 
-合併結構演進後做本機 Prometheus 與 Web UI，再做 Docker／Helm／離線包、
-TPC-H Q1–Q22、Nexmark、重跑 strict-small。
+合併指標頁面後做 Docker／Helm／離線包，再做 TPC-H Q1–Q22、Nexmark、重跑 strict-small。
 舊 strict-small SHA `96501dcd0d7bf3c7b84b7d2ac17aaed7d759a9d0` 不能算到新 SHA。
 正式 72h 仍無數據，阻塞原因是沒有可連續 72 小時的隔離主機。
 

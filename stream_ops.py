@@ -5,10 +5,12 @@ Rust and WASM sources can be recorded, but they are not executed: this VM
 has no WASM runtime wired in, and a Rust UDF is not compiled on the CDC path.
 Non-deterministic functions are rejected unless the plan says timed_recompute.
 """
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import hashlib
 import json
 import subprocess
 import sys
+import threading
 
 import stream_ir
 
@@ -97,6 +99,31 @@ def prometheus_text(samples):
         value = samples[name]
         lines.append("%s %s" % (name, value))
     return "\n".join(lines) + "\n"
+
+
+def serve_status(samples, host="127.0.0.1", port=0):
+    page = status_page(samples).encode("utf-8")
+    metrics = prometheus_text(samples).encode("utf-8")
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path.startswith("/metrics"):
+                body, kind = metrics, "text/plain; version=0.0.4"
+            else:
+                body, kind = page, "text/html; charset=utf-8"
+            self.send_response(200)
+            self.send_header("Content-Type", kind)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, fmt, *args):
+            return
+
+    server = ThreadingHTTPServer((host, int(port)), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server
 
 
 def status_page(samples):
