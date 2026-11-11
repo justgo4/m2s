@@ -4,8 +4,8 @@
 
 ## 當前里程碑
 
-第二輪第 7 項：Prometheus 與 Web UI。
-分支 `cursor/metrics-ui-23fa`。不修改 workflow。門檻不改。
+第二輪第 8 項：Docker、Helm、離線包。
+分支 `cursor/package-23fa`。不修改 workflow。門檻不改。
 
 ## 倉庫位置
 
@@ -51,8 +51,8 @@
 
 ## 正在做
 
-結構演進已合併，PR [#82](https://github.com/justgo4/m2s/pull/82)。
-本機 HTTP 讀到 `/metrics` 的 `m2s_rows 3` 和 HTML 頁面。測試這次綁在埠 37529。正在開 PR。
+指標頁面已合併，PR [#83](https://github.com/justgo4/m2s/pull/83)。
+Helm 渲染 448 位元組，映像 `sha256:4076ba3f69fa` 共 43276576 位元組，離線包 1126 位元組。正在開 PR。
 
 ## 里程碑 3 程式
 
@@ -94,7 +94,7 @@
 
 ## 下一步
 
-合併指標頁面後做 Docker／Helm／離線包，再做 TPC-H Q1–Q22、Nexmark、重跑 strict-small。
+合併包裝後做 TPC-H Q1–Q22 對 DuckDB，再做 Nexmark，然後重跑 strict-small。
 舊 strict-small SHA `96501dcd0d7bf3c7b84b7d2ac17aaed7d759a9d0` 不能算到新 SHA。
 正式 72h 仍無數據，阻塞原因是沒有可連續 72 小時的隔離主機。
 
