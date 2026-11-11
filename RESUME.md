@@ -55,7 +55,7 @@
 
 ## 下一步
 
-從 `main` 的 `7c6662709e9a5cf2243ca22dad6052b8e62c3f66` 開里程碑 2 分支。先做這幾項，每項都要能對 DuckDB 全量重算，並且既有 stream plan semantic id 保持不變：
+從目前的 `main` 開里程碑 2 分支（含本檔；程式合併點仍是 `7c6662709e9a5cf2243ca22dad6052b8e62c3f66`）。先做這幾項，每項都要能對 DuckDB 全量重算，並且既有 stream plan semantic id 保持不變：
 
 1. 新的 SQL 入口使用 sqlglot，`read` 可設定，預設 `duckdb`，與現有 `j4` 解析相容。`read=mysql` 只在明確設定時啟用。
 2. 在參考引擎加上 MIN／MAX、COUNT DISTINCT。不要把這些函式送進現有 `aggregate_state`，那個引擎仍只接受 COUNT／SUM／AVG。
@@ -75,8 +75,8 @@
 工作目錄 `/workspace`。系統 Python 3.12.3。沒有虛擬環境。
 
 ```bash
-git fetch origin cursor/stream-zset-ir-23fa
-git checkout cursor/stream-zset-ir-23fa
+git fetch origin main
+git checkout main
 python3 -m pip install -r requirements.txt
 
 python3 tools/stream_zset_test.py
