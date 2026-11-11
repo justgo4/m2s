@@ -4,9 +4,9 @@
 
 ## 當前里程碑
 
-里程碑 5 剩餘部分：barrier、checkpoint、savepoint。
-分支 `cursor/checkpoint-m5-23fa`。`merge_uncertain` 對帳已在 PR #68。
-正式 profile 與 5s／10s 門檻不改。
+里程碑 6：單機多進程。分支 `cursor/stream-cluster-m6-23fa`。
+這不是分散式 SLO。正式 profile 與 5s／10s 門檻不改。
+不再修改 `.github/workflows`。
 
 ## 倉庫位置
 
@@ -52,7 +52,9 @@
 
 ## 正在做
 
-里程碑 5 的 checkpoint 測試已通過。workflow 檔已退回串流工作開始前的內容，不再往 GitHub Actions 加步驟。測試只在本機 VM 跑。
+里程碑 5 已合併，PR [#70](https://github.com/justgo4/m2s/pull/70)，合併提交 `299fee56ed86c476224d72ce0d0a5c91391fab6b`。
+`.github/workflows/ci.yml` 已退回串流工作開始前的內容。
+里程碑 6 的本機多進程測試已通過。正在開 PR。
 
 ## 里程碑 3 程式
 
@@ -94,7 +96,7 @@
 
 ## 下一步
 
-合併里程碑 5 後做里程碑 6：單機多進程的協調／計算／來源、hash 分片、背壓、重分片、故障轉移、熱點預聚合。不把單機 strict-small 說成分散式 SLO。門檻維持 P95≤5s、P99≤10s。
+合併里程碑 6 後做里程碑 7：S3 相容儲存上的增量 checkpoint，以及本地熱狀態／遠端冷狀態。物件不進 GitHub。門檻維持 P95≤5s、P99≤10s。不新增 workflow。
 
 ## 未解決
 
