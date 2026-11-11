@@ -145,7 +145,7 @@ def test_plan_identity():
             dict(
                 id="agg", op="aggregate", input="in_source",
                 group_keys=["id"],
-                aggregates=[dict(output="m", function="min", input="id")],
+                aggregates=[dict(output="m", function="median", input="id")],
             ),
         ])
     expect_error(lambda: stream_ir.validate_plan(bad_agg), ValueError)
