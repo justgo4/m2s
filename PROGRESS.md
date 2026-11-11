@@ -1292,5 +1292,5 @@ Gaps, kept on purpose:
 - Formal `p11-50m-50rps-72h-v4`: 无数据.
 - strict-small was not re-run here. The CDC hot path was not replaced. The last pass is SHA `96501dcd0d7bf3c7b84b7d2ac17aaed7d759a9d0`, P95=2.028s, P99=2.038s, thresholds 5s/10s. Do not treat a later SHA as that certification.
 
-Distributed scale and failover in `stream_cluster_test.py` are single-machine process tests, not a distributed SLO.
+Distributed scale and failover in `stream_cluster_test.py` are single-machine process tests, not a distributed SLO. PR [#75](https://github.com/justgo4/m2s/pull/75) merged at `fbf951272a4170514edef84feb22d2d4472f42e8`. The workflow file was not changed.
 

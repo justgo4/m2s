@@ -4,8 +4,8 @@
 
 ## 當前里程碑
 
-里程碑 10：驗證報告。分支 `cursor/verify-m10-23fa`。
-不修改 workflow。正式 profile 與 5s／10s 門檻不改，缺口保留在報告裡。
+里程碑 1 到 10 都已合併到 `main`。正式 profile 與 5s／10s 門檻不改。
+不修改 `.github/workflows`。
 
 ## 倉庫位置
 
@@ -51,8 +51,7 @@
 
 ## 正在做
 
-里程碑 9 已合併，PR [#74](https://github.com/justgo4/m2s/pull/74)。
-里程碑 10 的本機差分與故障注入已通過。TPC 原文與 72h 列為缺口。正在開 PR。
+沒有進行中的編輯。里程碑 10 已合併。PR [#75](https://github.com/justgo4/m2s/pull/75)，合併提交 `fbf951272a4170514edef84feb22d2d4472f42e8`。
 
 ## 里程碑 3 程式
 
@@ -94,7 +93,7 @@
 
 ## 下一步
 
-里程碑 1 到 10 的程式切片都已有本機測試。合併里程碑 10 後沒有下一個路線項目。
+路線 1 到 10 的程式切片都已合併。沒有下一個里程碑。
 strict-small 的最近一次通過仍是 SHA `96501dcd0d7bf3c7b84b7d2ac17aaed7d759a9d0`，不要把後來的 SHA 併進那次認證。
 正式 72h 無數據。不新增 workflow。門檻維持 P95≤5s、P99≤10s。
 
