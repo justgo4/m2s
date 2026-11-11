@@ -1,0 +1,5 @@
+apiVersion: v2
+name: m2s
+description: Synthetic local chart. No production endpoints.
+version: 0.1.0
+appVersion: "synthetic"
