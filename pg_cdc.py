@@ -36,6 +36,8 @@ def parse_change(line):
             fields[name] = None
         elif kind == "integer":
             fields[name] = int(value)
+        elif len(value) >= 2 and value[0] == "'" and value[-1] == "'":
+            fields[name] = value[1:-1]
         else:
             fields[name] = value
     return op, fields
