@@ -4,8 +4,8 @@
 
 ## 當前里程碑
 
-里程碑 9：UDF 與運維包裝。分支 `cursor/udf-ops-m9-23fa`。
-不修改 workflow。正式 profile 與 5s／10s 門檻不改。
+里程碑 10：驗證報告。分支 `cursor/verify-m10-23fa`。
+不修改 workflow。正式 profile 與 5s／10s 門檻不改，缺口保留在報告裡。
 
 ## 倉庫位置
 
@@ -51,8 +51,8 @@
 
 ## 正在做
 
-里程碑 8 已合併，PR [#73](https://github.com/justgo4/m2s/pull/73)。
-里程碑 9 的 UDF 沙盒、EXPLAIN、指標與配額測試已通過。正在開 PR。
+里程碑 9 已合併，PR [#74](https://github.com/justgo4/m2s/pull/74)。
+里程碑 10 的本機差分與故障注入已通過。TPC 原文與 72h 列為缺口。正在開 PR。
 
 ## 里程碑 3 程式
 
@@ -94,7 +94,9 @@
 
 ## 下一步
 
-合併里程碑 9 後做里程碑 10：隨機 SQL 差分、自寫查詢子集、故障注入，並寫明沒跑的 TPC 原文與 72h。門檻不刪。不新增 workflow。
+里程碑 1 到 10 的程式切片都已有本機測試。合併里程碑 10 後沒有下一個路線項目。
+strict-small 的最近一次通過仍是 SHA `96501dcd0d7bf3c7b84b7d2ac17aaed7d759a9d0`，不要把後來的 SHA 併進那次認證。
+正式 72h 無數據。不新增 workflow。門檻維持 P95≤5s、P99≤10s。
 
 ## 未解決
 
