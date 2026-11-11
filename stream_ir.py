@@ -67,19 +67,24 @@ def _node_inputs(node):
     op = node.get("op")
     if op == "input":
         return []
-    if op in {"filter", "project", "aggregate", "distinct"}:
+    if op in {
+        "filter", "project", "aggregate", "distinct",
+        "watermark", "window_agg", "over", "topn",
+    }:
         return [_text(node.get("input"), op + " input")]
-    if op in {"equi_join", "keyed_join", "theta_join", "set_op"}:
+    if op in {
+        "equi_join", "keyed_join", "theta_join", "set_op", "interval_join",
+    }:
         left = _text(node.get("left"), op + " left")
         right = _text(node.get("right"), op + " right")
         if left == right:
             raise ValueError(op + " inputs must be distinct nodes")
         return [left, right]
-    if op == "recompute":
+    if op in {"recompute", "recursive_cte"}:
         sources = node.get("sources")
         if not isinstance(sources, list) or not sources:
-            raise ValueError("recompute sources cannot be empty")
-        return [_text(item, "recompute source") for item in sources]
+            raise ValueError(op + " sources cannot be empty")
+        return [_text(item, op + " source") for item in sources]
     raise ValueError("unsupported stream operator: " + str(op))
 
 
@@ -266,8 +271,8 @@ def _validate_recompute(node):
         "id", "op", "sources", "tables", "input_columns", "sql", "strategy",
     }:
         raise ValueError("recompute fields differ from stream plan v1")
-    if node["strategy"] != "full_input_recompute":
-        raise ValueError("recompute must be marked full_input_recompute")
+    if node["strategy"] not in {"full_input_recompute", "timed_recompute"}:
+        raise ValueError("recompute strategy is not recognized")
     sql = node["sql"]
     if not isinstance(sql, str) or not sql.strip() or sql != sql.strip():
         raise ValueError("recompute sql is not canonical")
@@ -288,6 +293,133 @@ def _validate_recompute(node):
         if not isinstance(fields, list) or not fields:
             raise ValueError("recompute input columns cannot be empty")
         _names(fields, "recompute column")
+
+
+def _optional_int(value, name):
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(name + " must be an int or null")
+    return int(value)
+
+
+def _validate_watermark(node):
+    if set(node) != {"id", "op", "input", "time", "lateness", "policy"}:
+        raise ValueError("watermark fields differ from stream plan v1")
+    _text(node["time"], "watermark time")
+    if isinstance(node["lateness"], bool) or int(node["lateness"]) < 0:
+        raise ValueError("watermark lateness cannot be negative")
+    if node["policy"] not in {"drop", "side", "recompute"}:
+        raise ValueError("unsupported late-data policy")
+
+
+def _validate_window(node):
+    if set(node) != {
+        "id", "op", "input", "kind", "time", "size", "slide", "step",
+        "gap", "lateness", "late_policy", "ttl", "keys", "aggregates",
+    }:
+        raise ValueError("window fields differ from stream plan v1")
+    if node["kind"] not in {"tumble", "hop", "session", "cumulate"}:
+        raise ValueError("unsupported window kind")
+    _text(node["time"], "window time")
+    if int(node["size"]) <= 0:
+        raise ValueError("window size must be positive")
+    _optional_int(node["slide"], "window slide")
+    _optional_int(node["step"], "window step")
+    _optional_int(node["gap"], "window gap")
+    _optional_int(node["ttl"], "window ttl")
+    if int(node["lateness"]) < 0:
+        raise ValueError("window lateness cannot be negative")
+    if node["late_policy"] not in {"drop", "side", "recompute"}:
+        raise ValueError("unsupported window late policy")
+    _names(node["keys"], "window key")
+    if not isinstance(node["aggregates"], list) or not node["aggregates"]:
+        raise ValueError("window aggregates cannot be empty")
+    for item in node["aggregates"]:
+        if set(item) != {"output", "function", "input"}:
+            raise ValueError("invalid window aggregate")
+        if item["function"] not in {"count", "sum", "min", "max"}:
+            raise ValueError("unsupported window aggregate")
+
+
+def _validate_over(node):
+    if set(node) != {
+        "id", "op", "input", "partition", "columns", "sql", "strategy",
+    }:
+        raise ValueError("OVER fields differ from stream plan v1")
+    if node["strategy"] != "affected_partition_recompute":
+        raise ValueError("OVER must recompute the affected partition")
+    _names(node["partition"], "OVER partition")
+    columns = _names(node["columns"], "OVER column")
+    if not columns:
+        raise ValueError("OVER columns cannot be empty")
+    if not str(node["sql"]).strip():
+        raise ValueError("OVER sql is empty")
+
+
+def _validate_topn(node):
+    if set(node) != {
+        "id", "op", "input", "partition", "columns", "order", "limit",
+        "strategy",
+    }:
+        raise ValueError("top-n fields differ from stream plan v1")
+    if node["strategy"] != "affected_partition_recompute":
+        raise ValueError("top-n must recompute the affected partition")
+    if int(node["limit"]) <= 0:
+        raise ValueError("top-n limit must be positive")
+    _names(node["partition"], "top-n partition")
+    _names(node["columns"], "top-n column")
+    if not isinstance(node["order"], list) or not node["order"]:
+        raise ValueError("top-n requires ORDER BY")
+    for spec in node["order"]:
+        if set(spec) != {"column", "desc", "nulls_first"}:
+            raise ValueError("invalid top-n order key")
+        _text(spec["column"], "top-n order column")
+        if not isinstance(spec["desc"], bool) or not isinstance(
+            spec["nulls_first"], bool
+        ):
+            raise ValueError("top-n order flags must be booleans")
+
+
+def _validate_interval(node):
+    if set(node) != {
+        "id", "op", "left", "right", "keys", "mode", "projections",
+        "strategy", "point", "left_start", "left_end",
+        "right_start", "right_end",
+    }:
+        raise ValueError("interval join fields differ from stream plan v1")
+    if node["mode"] not in {"overlap", "contains_point"}:
+        raise ValueError("unsupported interval join mode")
+    if node["strategy"] != "affected_key_recompute":
+        raise ValueError("interval join must recompute the affected key")
+    _validate_join_pairs(node["keys"], "interval join")
+    _validate_projection_list(node["projections"], "interval join")
+    for name in (
+        "point", "left_start", "left_end", "right_start", "right_end",
+    ):
+        if not isinstance(node[name], str):
+            raise ValueError("interval join bound must be a string")
+
+
+def _validate_recursive(node):
+    if set(node) != {
+        "id", "op", "sources", "tables", "input_columns", "columns",
+        "seed_sql", "step_sql", "max_iterations", "set_mode", "strategy",
+    }:
+        raise ValueError("recursive CTE fields differ from stream plan v1")
+    if node["strategy"] != "semi_naive":
+        raise ValueError("recursive CTE must be semi-naive")
+    if node["set_mode"] not in {"union", "union_all"}:
+        raise ValueError("unsupported recursive set mode")
+    if int(node["max_iterations"]) < 1:
+        raise ValueError("recursive max_iterations must be positive")
+    _names(node["columns"], "recursive column")
+    if not str(node["seed_sql"]).strip() or not str(node["step_sql"]).strip():
+        raise ValueError("recursive SQL is empty")
+    if len(node["tables"]) != len(node["sources"]):
+        raise ValueError("recursive sources and tables must align")
+    if set(node["input_columns"]) != set(node["sources"]):
+        raise ValueError("recursive input columns must cover every source")
 
 
 def _validate_join(node):
@@ -388,6 +520,18 @@ def validate_plan(plan):
             _validate_set_op(node)
         elif op == "recompute":
             _validate_recompute(node)
+        elif op == "watermark":
+            _validate_watermark(node)
+        elif op == "window_agg":
+            _validate_window(node)
+        elif op == "over":
+            _validate_over(node)
+        elif op == "topn":
+            _validate_topn(node)
+        elif op == "interval_join":
+            _validate_interval(node)
+        elif op == "recursive_cte":
+            _validate_recursive(node)
         else:
             raise ValueError("unsupported stream operator: " + str(op))
         seen.add(node_id)
@@ -445,6 +589,29 @@ def explain(plan):
         elif op == "recompute":
             lines.append(
                 "recompute " + node["id"] + " strategy=" + node["strategy"])
+        elif op == "watermark":
+            lines.append(
+                "watermark " + node["id"] + " " + node["policy"]
+                + " lateness=" + str(node["lateness"]))
+        elif op == "window_agg":
+            lines.append(
+                "window_agg " + node["kind"] + " " + node["id"]
+                + " late=" + node["late_policy"])
+        elif op == "over":
+            lines.append(
+                "over " + node["id"] + " strategy=" + node["strategy"])
+        elif op == "topn":
+            lines.append(
+                "topn " + node["id"] + " limit=" + str(node["limit"]))
+        elif op == "interval_join":
+            lines.append(
+                "interval_join " + node["mode"] + " " + node["id"]
+                + " strategy=" + node["strategy"])
+        elif op == "recursive_cte":
+            lines.append(
+                "recursive_cte " + node["id"]
+                + " strategy=" + node["strategy"]
+                + " max_iterations=" + str(node["max_iterations"]))
         else:
             pairs = ",".join(
                 item["left"] + "=" + item["right"]

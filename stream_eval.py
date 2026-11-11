@@ -21,6 +21,7 @@ import duckdb
 import pyarrow as pa
 
 import stream_ir
+import stream_time
 import stream_zset
 
 
@@ -870,4 +871,28 @@ class StreamGraph:
                 node["id"],
                 dict(inputs={}, output=stream_zset.ZSet()))
             return _eval_recompute(state, current, node, self.con)
+        if op == "watermark":
+            return stream_time.eval_watermark(
+                extra.setdefault(node["id"], {}),
+                current[node["input"]], node)
+        if op == "window_agg":
+            return stream_time.eval_window(
+                extra.setdefault(node["id"], {}),
+                current[node["input"]], node)
+        if op == "over":
+            return stream_time.eval_over(
+                extra.setdefault(node["id"], {}),
+                current[node["input"]], node, self.con)
+        if op == "topn":
+            return stream_time.eval_topn(
+                extra.setdefault(node["id"], {}),
+                current[node["input"]], node)
+        if op == "interval_join":
+            return stream_time.eval_interval(
+                extra.setdefault(node["id"], {}),
+                current[node["left"]], current[node["right"]], node)
+        if op == "recursive_cte":
+            return stream_time.eval_recursive(
+                extra.setdefault(node["id"], {}),
+                current, node, self.con)
         raise ValueError("unsupported stream operator: " + str(op))

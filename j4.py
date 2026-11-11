@@ -907,6 +907,23 @@ def disk_reserve_bytes(path):
     return min(128*1024**3,max(4*1024**3,usage.total//20))
 
 
+def _memory_reserve_mb(env, defaults):
+    """Host reserve that pauses snapshots when free RAM is at or below it.
+
+    Unset CDC_RESOURCE_MEMORY_RESERVE_MB keeps max(2048, total/4). A test
+    pipeline on a shared VM may set a lower reserve. The formal profile does
+    not set it.
+    """
+    raw = str(env("CDC_RESOURCE_MEMORY_RESERVE_MB","")).strip()
+    if not raw:
+        return int(defaults["memory_reserve_mb"])
+    reserve = int(raw)
+    if reserve < 256:
+        raise ValueError(
+            "CDC_RESOURCE_MEMORY_RESERVE_MB must be empty or >= 256")
+    return reserve
+
+
 def read_resource_policy():
     cpu_ids = available_cpu_ids()
     affinity_count = max(1,len(cpu_ids))
@@ -1019,7 +1036,7 @@ def read_resource_policy():
         cpu_source=cpu_source,
         memory_mb=memory_mb,
         memory_cap_mb=defaults["memory_cap_mb"],
-        memory_reserve_mb=defaults["memory_reserve_mb"],
+        memory_reserve_mb=_memory_reserve_mb(env,defaults),
         memory_source=memory_source,
         nice=nice,
         ionice=ionice,

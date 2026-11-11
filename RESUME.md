@@ -4,9 +4,8 @@
 
 ## 當前里程碑
 
-里程碑 2 的 SQL 前端與新運算子已在本分支實作並通過本地差分。
-里程碑 1 已在 `main`（PR #65，`7c6662709e9a5cf2243ca22dad6052b8e62c3f66`）。
-不要重做 Z-set DAG，也不要改既有 v1 plan semantic id。
+里程碑 3 在 `cursor/stream-time-m3-23fa`。事件時間、視窗、OVER、Top-N、CTE／遞迴、
+區間 JOIN 與測試管線的記憶體保留覆寫已寫入。正式 `p11` 剖面與 5s／10s 門檻沒改。
 
 ## 倉庫位置
 
@@ -52,7 +51,20 @@
 
 ## 正在做
 
-沒有進行中的編輯。里程碑 2 已合併。PR [#66](https://github.com/justgo4/m2s/pull/66)，合併提交 `7805cbcaa0dbad9965dbe05468764aaee73028b7`。實作提交 `82a931f560880228c216c79ef4a3b205a87e2996`。
+里程碑 3 差分與一次 E2E 已完成。strict-small 的延遲樣本在門檻內，但 drain 因既有
+`merge_uncertain` 隔離而逾時，門檻沒有通過。正在把這些數字寫進 PROGRESS.md 並開 PR。
+
+## 里程碑 3 程式
+
+- `m2s_tumble`／`m2s_hop`／`m2s_session`／`m2s_cumulate` 視窗聚合。
+- `m2s_watermark(time, lateness, policy)`：`drop` 丟掉遲到列。`side` 加 `_late`。`recompute` 仍收進狀態。
+- `OVER` 只重算受影響分區。`ORDER BY ... LIMIT n` 是 Top-N。
+- 非遞迴 CTE，以及 `WITH RECURSIVE` 的半樸素固定點，上限 32 次，超過就失敗。
+- 區間包含（`contains_point`）按 equi-key 重算。
+- `random`／`now`／`uuid` 預設拒絕。`nondeterministic="timed_recompute"` 才把計畫標成 `timed_recompute`。
+- v1 stateless plan id 仍是 `1283fb55eb3b4b4408aa8095e8e9c66255383bb60fa630d38d6f401b109fc8ef`。
+
+`python3 tools/stream_time_test.py`、`python3 tools/stream_sql_test.py`、`python3 tools/privacy_check.py`（files=243）已通過。
 
 ## 里程碑 2 已完成的程式
 
@@ -82,11 +94,12 @@
 
 ## 下一步
 
-從目前的 `main`（合併點 `7805cbcaa0dbad9965dbe05468764aaee73028b7`）做里程碑 3：事件時間、watermark、遲到策略、滾動／滑動／會話／累積視窗、`OVER`、Top-N、含遞迴的 CTE、時態 JOIN、區間 JOIN、狀態 TTL。沒有增量形式的運算子繼續標成受影響輸入的 DuckDB 重算。非確定性函式繼續拒絕，或必須在計畫裡寫明定時重算。
+開里程碑 3 的 PR 並合併。合併後從 `main` 做里程碑 4：狀態後端介面（SQLite 預設、RocksDB 第二實作）、只在量過的熱點上用 Rust，以及自適應批次。沒有小剖面對照之前不換原生熱路徑。正式 profile 與 5s／10s 門檻保持不變。
 
 ## 未解決
 
-- strict-small：無數據。E2E 有試跑但沒有完成，見下方。新 SQL 不在 CDC 熱路徑上，這次沒有新的延遲數字。
+- strict-small 門檻沒有通過。SHA `490c74dae268e3d9f5f076ad5d03851266507c88`，profile `small`，目錄 `/tmp/m2s-validation-small-m3`。`memory_pressure=0`（可用記憶體約 3526MB，測試保留 1024MB）。健康樣本 n=293，P50/P95/P99/max=1.029/2.033/2.078/3.034s，超過 5s 與 10s 的都是 0。恢復樣本 n=7，P95/P99/max=2.095/2.095/2.095s。workload 退出碼 1：第二次故障後 `starrocks.agg_000` 因未解的 Merge Commit 被隔離，drain 1800s 時 pending 仍是 887。這是既有 fail-closed，不是快照暫停。
+- E2E 通過。同一 SHA，MySQL 8.0.46、StarRocks `4.1.1-14b7e3f`，`--rows 1024 --transactions 40`。`exact_final_result=true`。延遲 P50/P95/P99/max=1.068/1.692/1.798/1.807s。這是短功能探針，不是 5s/10s 認證。
 - 正式 `p11-50m-50rps-72h-v4`：無數據。沒有持久隔離主機。
 - 參考引擎是語意對照，不是熱路徑。里程碑 4 之前不要用它替換 SQLite／原生熱點。
 - GitHub Actions 不跑。提交訊息帶 `[skip ci]`。

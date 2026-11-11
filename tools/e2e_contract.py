@@ -58,7 +58,9 @@ def setup_catalog(directory, cfg, source, mode, group, shared_source_state=False
                      CDC_STATUS_SECONDS=5, CDC_IDLE_STATUS_SECONDS=10,
                      CDC_COMPRESSION='', CDC_DETAIL_LOGS=True,
                      CDC_SHARED_SOURCE_STATE='true' if shared_source_state else 'false',
-                     CDC_RESOURCE_MEMORY_MB=2048, CDC_DUCKDB_MEMORY='64MB')
+                     CDC_RESOURCE_MEMORY_MB=1024,
+                     CDC_RESOURCE_MEMORY_RESERVE_MB=1024,
+                     CDC_DUCKDB_MEMORY='64MB')
     catalog = directory / 'catalog.sqlite3'
     commands = [f'SET VARIABLE {key} = {sql_literal(value)}' for key, value in variables.items()]
     commands.append('CREATE TABLE starrocks.events AS ' + QUERY)
