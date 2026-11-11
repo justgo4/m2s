@@ -4,8 +4,10 @@
 
 ## 當前里程碑
 
-里程碑 3 在 `cursor/stream-time-m3-23fa`。事件時間、視窗、OVER、Top-N、CTE／遞迴、
-區間 JOIN 與測試管線的記憶體保留覆寫已寫入。正式 `p11` 剖面與 5s／10s 門檻沒改。
+先做里程碑 5 的 Merge Commit 自動對帳，再做里程碑 4。
+分支 `cursor/merge-reconcile-m5-23fa`，從 `main`
+`d352bbc7c420e01dd2c066019533484fb14f9b0d` 切開。
+正式 profile 與 5s／10s 門檻不改。
 
 ## 倉庫位置
 
@@ -51,7 +53,10 @@
 
 ## 正在做
 
-沒有進行中的編輯。里程碑 3 已合併。PR [#67](https://github.com/justgo4/m2s/pull/67)，合併提交 `d051855e3f80212b64314e63485e384729ced327`。執行期 SHA `490c74dae268e3d9f5f076ad5d03851266507c88`。
+實作 `merge_uncertain` 對帳：接受日誌寫下伺服器 txn，重啟後用
+`information_schema.stream_loads`／`loads` 與 `SHOW TRANSACTION` 確認。
+VISIBLE 才標本地可見；中止才 fence 並重放；對不上就隔離。
+接著用與上次相同的 strict-small 故障注入重跑。
 
 ## 里程碑 3 程式
 
@@ -93,7 +98,7 @@
 
 ## 下一步
 
-從目前的 `main`（合併點 `d051855e3f80212b64314e63485e384729ced327`）做里程碑 4：狀態後端介面（SQLite 預設、RocksDB 第二實作）、只在量過的熱點上用 Rust，以及自適應批次。沒有小剖面對照之前不換原生熱路徑。正式 profile 與 5s／10s 門檻保持不變。strict-small 的 drain 逾時是既有 `merge_uncertain` 隔離，不要為了讓門檻通過而自動重送。
+對帳 PR 合併後做里程碑 4。里程碑 5 的 barrier、checkpoint、savepoint 仍排在里程碑 4 之後。strict-small 門檻維持 P95≤5s、P99≤10s。無法確認的 Merge Commit 不得重放。
 
 ## 未解決
 

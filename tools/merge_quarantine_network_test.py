@@ -133,6 +133,35 @@ def latest_status(directory):
     return {}
 
 
+def wait_reconciled(proc,directory,source,cfg,outcome,lock):
+    deadline = time.monotonic()+180
+    while time.monotonic()<deadline:
+        e2e.live_process(proc)
+        with lock:
+            dropped = bool(outcome["dropped"] and outcome["txn_id"] is not None)
+            txn = outcome.get("txn_id")
+            payload = outcome.get("dropped_payload")
+            attempts = outcome["request_counts"].get(payload, 0) if payload else 0
+        if not dropped:
+            time.sleep(0.2)
+            continue
+        state,_detail = j4.wait_visible(
+            dict(cfg, load_timeout=5), txn, threading.Event(), once=True)
+        expected,actual = e2e.final_result(source,cfg)
+        con = sqlite3.connect(
+            "file:"+str(directory/"state.sqlite3")+"?mode=ro", uri=True)
+        try:
+            uncertain = con.execute(
+                "SELECT COUNT(*) FROM merge_uncertain").fetchone()[0]
+        finally:
+            con.close()
+        if state=="visible" and actual==expected and uncertain==0 and attempts==1:
+            return len(actual), latest_status(directory), attempts
+        time.sleep(0.5)
+    raise AssertionError(
+        "accepted merge response was not reconciled from remote txn status")
+
+
 def wait_healthy(proc,directory,source,cfg):
     deadline = time.monotonic()+120
     while time.monotonic()<deadline:
@@ -204,11 +233,10 @@ def main():
             for sequence in range(20):
                 e2e.change(source,sequence)
                 time.sleep(.08)
-            before_rows,status = wait_healthy(proc,directory,source,cfg)
+            before_rows,status,attempts = wait_reconciled(
+                proc,directory,source,cfg,outcome,lock)
             with lock:
-                assert outcome['dropped'] and outcome['txn_id'] is not None, outcome
                 txn = outcome['txn_id']
-            # Independent positive proof: accepted dropped response later VISIBLE.
             visibility_cfg = dict(cfg,load_timeout=60)
             visible,_ = j4.wait_visible(visibility_cfg,txn,threading.Event())
             assert visible=='visible'
@@ -218,7 +246,7 @@ def main():
                 e2e.change(source,sequence)
             proc,handle = e2e.start(directory,env,2)
             e2e.wait_started(proc,directory)
-            after_rows,status = wait_healthy(proc,directory,source,cfg)
+            e2e.wait_equal(proc,directory,source,cfg)
             e2e.stop(proc,handle)
             proc,handle = None,None
             con = sqlite3.connect('file:'+str(directory/'state.sqlite3')+'?mode=ro',uri=True)
@@ -227,19 +255,19 @@ def main():
                     ON u.delivery_id=p.delivery_id AND u.part=p.part WHERE p.txn_id IS NULL AND p.visible=0''').fetchone()[0]
             finally:
                 con.close()
-            assert retained==1 and len(status.get('quarantined_tables',{}))==1
+            assert retained==0
             with lock:
                 assert not outcome['errors'], outcome['errors']
                 attempts = outcome['request_counts'][outcome['dropped_payload']]
                 assert attempts == 1, 'unknown payload was replayed through the actual BE proxy'
-            report = dict(format_version=1,kind='actual_accepted_merge_response_loss_quarantine',
+            report = dict(format_version=1,kind='actual_accepted_merge_response_reconciled',
                           protocol='merge_async',gtid_mode=gtid_mode,starrocks_version=version,
                           dropped_accepted_requests=1,independently_confirmed_visible=True,
-                          unrelated_target_exact_before_restart=True,unrelated_target_exact_after_restart=True,
-                          before_rows=before_rows,after_rows=after_rows,
+                          exact_before_restart=True,exact_after_restart=True,
+                          before_rows=before_rows,
                           durable_unknown_parts=retained,unknown_payload_not_replayed=True,
                           unknown_payload_forward_attempts=attempts,
-                          health='degraded',scope='target_isolation_not_automatic_remote_reconciliation')
+                          scope='visible_txn_advances_without_replay')
             args.output.parent.mkdir(parents=True,exist_ok=True)
             args.output.write_text(json.dumps(report,indent=2)+'\n')
             print(json.dumps(report),flush=True)

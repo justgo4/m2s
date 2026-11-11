@@ -8,6 +8,13 @@
 Materialize、Bytewax、Proton、Pathway、Arroyo 對照的通用增量／串流 SQL。
 比較對象的能力只作為驗收範圍，不複製它們的程式。
 
+## 實作順序
+
+里程碑 1、2、3 已完成。strict-small 卡在未知 Merge Commit 的
+`merge_uncertain` 隔離，所以先做里程碑 5 的自動對帳與安全解隔離，
+獨立 PR。里程碑 4 接在這次對帳之後。里程碑 5 其餘項目
+（barrier、checkpoint、savepoint）仍在里程碑 4 之後，按本文件往下做。
+
 ## 不可放寬的契約
 
 - 正式 profile `p11-50m-50rps-72h-v4` 的定義、門檻與計時起點保持不變。
@@ -146,7 +153,10 @@ JOIN 使用雙線性規則：輸出權重是左右權重的乘積；NULL 鍵不�
 - 全域 barrier 與非同步 checkpoint。
 - 端到端 exactly-once：來源位置、狀態、輸出一起切。
 - savepoint。
-- `merge_uncertain` 自動對帳與安全解隔離。解不了就維持現有隔離，不重送未知 delete。
+- `merge_uncertain` 自動對帳與安全解隔離。這項提前到里程碑 4 之前。
+  用 StarRocks label／txn 狀態確認遠端結果。舊 txn 要先 fence。
+  已確認 VISIBLE 才前進；已確認中止才做 delete-safe 重放。
+  無法確認就維持隔離，不重送未知 delete。
 
 驗收：進程強退、重放、重複 checkpoint、未知 HTTP 的故障注入。
 既有 fail-closed 測試仍通過。不能對帳的案例必須仍隔離。
