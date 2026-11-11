@@ -4,9 +4,9 @@
 
 ## 當前里程碑
 
-里程碑 4：狀態後端。分支 `cursor/state-backend-m4-23fa`。
-SQLite 為預設，RocksDB 為第二實作。Rust consolidate 有 Python fallback。
-CDC 熱路徑沒有換成這兩個後端。正式 profile 與 5s／10s 門檻不改。
+里程碑 5 剩餘部分：barrier、checkpoint、savepoint。
+分支 `cursor/checkpoint-m5-23fa`。`merge_uncertain` 對帳已在 PR #68。
+正式 profile 與 5s／10s 門檻不改。
 
 ## 倉庫位置
 
@@ -52,7 +52,7 @@ CDC 熱路徑沒有換成這兩個後端。正式 profile 與 5s／10s 門檻不
 
 ## 正在做
 
-里程碑 4 的後端差分已通過。CDC 預設批次沒有改。正在開 PR。
+里程碑 5 的 checkpoint 測試已通過。workflow 檔已退回串流工作開始前的內容，不再往 GitHub Actions 加步驟。測試只在本機 VM 跑。
 
 ## 里程碑 3 程式
 
@@ -94,7 +94,7 @@ CDC 熱路徑沒有換成這兩個後端。正式 profile 與 5s／10s 門檻不
 
 ## 下一步
 
-合併里程碑 4 後做里程碑 5 剩餘部分：barrier、非同步 checkpoint、savepoint、exactly-once。`merge_uncertain` 對帳已在 PR #68。門檻維持 P95≤5s、P99≤10s。
+合併里程碑 5 後做里程碑 6：單機多進程的協調／計算／來源、hash 分片、背壓、重分片、故障轉移、熱點預聚合。不把單機 strict-small 說成分散式 SLO。門檻維持 P95≤5s、P99≤10s。
 
 ## 未解決
 
