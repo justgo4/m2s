@@ -4,10 +4,9 @@
 
 ## 當前里程碑
 
-第二輪離線包：產生含 wheels、原生二進位、設定範本與安裝腳本的包，不進 Git。
-在 `sudo unshare -n` 的無網路環境安裝並跑 `j4.py selftest`。
-分支 `cursor/offline-bundle-23fa`，基線 `9e8c2fdd20954a1627dec948551589761b0ddc62`。
-不修改 workflow。門檻不改。
+第二輪第 11 項：在離線包合併後的 `main` 重跑 strict-small。
+分支 `cursor/strict-small-rerun-23fa`。門檻不改。不修改 workflow。
+實測程式 SHA `adbbfb8dc317eb46fa149b6e43050701df999c3f`。`gate.json` 的 `ok` 是 true。
 
 Nexmark 已合併。實測程式 SHA `13f52326b54e06ecd74fba49648d4c0968855ef4`，
 合併提交 `9e8c2fdd20954a1627dec948551589761b0ddc62`，PR #86。
@@ -61,7 +60,8 @@ scale 0.01，22 條都是 incremental。
 
 ## 正在做
 
-離線包已在無網路的環境安裝並跑過 selftest。下一步是開 PR，然後在合併後的 `main` 重跑 strict-small。
+strict-small 已通過。數字只屬於 SHA `adbbfb8dc317eb46fa149b6e43050701df999c3f`。
+下一步是把這次結果寫進 PR。正式 72h 仍沒有隔離主機。
 
 ## 里程碑 3 程式
 
@@ -159,11 +159,24 @@ q7 是 `m2s_tumble`，對照 SQL 是同樣的整段分組，不是官方原文�
 同一個命名空間裡 `j4.py selftest` 印出 `SELFTEST OK: 37 offline regression groups`，線上檢查跳過：沒有資料庫設定。
 結尾：`offline_install_test ok bytes=106913552 wheels=18 native_bytes=306272`。
 
+## strict-small（2026-11-12）
+
+命令：`python3 tools/validation_run.py run --isolated --profile small --run-directory /tmp/m2s-validation-small-r2 --mysql-resource-pid 4210 --starrocks-fe-resource-pid 9376 --starrocks-be-resource-pid 9814`。
+MySQL 帳號由 `M2S_TEST_MYSQL_USER` 提供。目錄是新的，不是 `/tmp/m2s-validation-small-m5`。
+程式 SHA：`adbbfb8dc317eb46fa149b6e43050701df999c3f`。`status.json` 的 revision 相同。
+MySQL 8.0.46，GTID ON。StarRocks `4.1.1-14b7e3f`，`default_replication_num=1`。
+`gate.json`：`ok=true`，`failures=[]`。elapsed 304.28334542000084 秒。
+健康樣本 n=291，P95=2.0328105999997206 秒，P99=3.0322560660006275 秒。
+超過 5 秒與 10 秒的都是 0。samples/s=0.9940815827448978。
+恢復樣本 n=9，P95=P99=1.624497284001336 秒，max=2.031456826998692 秒。
+兩次 fault。事件、三個聚合、三個 JOIN 的全列摘要一致。pending=0。
+門檻仍是 P95≤5 秒、P99≤10 秒。
+舊結果 SHA `96501dcd0d7bf3c7b84b7d2ac17aaed7d759a9d0` 不能算到這個 SHA。
+
 ## 下一步
 
-開離線包的 PR 並合併，然後在那個 `main` SHA 重跑 strict-small。新的 run directory，門檻不改。
-舊 strict-small SHA `96501dcd0d7bf3c7b84b7d2ac17aaed7d759a9d0` 不能算到新 SHA。
-正式 72h 仍無數據，阻塞原因是沒有可連續 72 小時的隔離主機。
+第二輪 1–11 都有本機實測。正式 `p11-50m-50rps-72h-v4` 仍無數據。
+阻塞原因是沒有可連續 72 小時的隔離主機。不要在這台 VM 上啟動它。
 
 ## 未解決
 

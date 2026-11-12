@@ -41,7 +41,12 @@ Materialize、Bytewax、Proton、Pathway、Arroyo 對照的通用增量／串流
     撤回後列數 399,399,120,10,5,35,35,135,50,5。
     結尾 `nexmark_diff_test ok queries=10 persons=50 auctions=40 bids=400`。
     SHA `13f52326b54e06ecd74fba49648d4c0968855ef4`。
-11. 重跑 strict-small。門檻不改。數字只屬於該次 SHA。
+11. 重跑 strict-small：已通過。SHA `adbbfb8dc317eb46fa149b6e43050701df999c3f`。
+    目錄 `/tmp/m2s-validation-small-r2`。`gate.json` ok=true。
+    健康樣本 n=291，P95=2.0328105999997206 秒，P99=3.0322560660006275 秒，
+    超過 5 秒與 10 秒都是 0。恢復樣本 n=9，P95=P99=1.624497284001336 秒，
+    max=2.031456826998692 秒。兩次 fault。全列摘要一致。pending=0。
+    elapsed 304.28334542000084 秒。門檻仍是 5 秒／10 秒。
 
 ## 實作順序
 
