@@ -48,6 +48,19 @@ Materialize、Bytewax、Proton、Pathway、Arroyo 對照的通用增量／串流
     max=2.031456826998692 秒。兩次 fault。全列摘要一致。pending=0。
     elapsed 304.28334542000084 秒。門檻仍是 5 秒／10 秒。
 
+## 第三輪
+
+對照原定 10 個里程碑，第二輪沒有真正執行的能力在這裡逐項實作。
+每項獨立 PR。正式 72h 仍阻塞：這台 VM 沒有可連續 72 小時的隔離主機。
+
+1. UDF：Python 聚合與表函數在 `python -I` 沙盒執行。WASM 與 Rust
+   都進 wasmtime，Rust 先編成 wasm32。拒絕 import，fuel 用盡就失敗。
+   同一輸入跑兩次結果相同。SHA `2c3779a331ef9929ff458e9913b144f9c6c175e0`。
+   `udf_exec python_udaf=2 python_udtf=[3, 4] wasm=5 wasm_fuel=4 rust=42 rust_bytes=361 rust_fuel=4`。
+2. Web UI：作業 DAG、運算子吞吐與延遲、checkpoint，以及暫停／恢復。
+3. 跨節點：至少 3 個節點，真實 TCP，Arrow Flight 交換、故障接管、擴縮，附延遲。
+4. DDL：MySQL 與 PostgreSQL 的加欄、改型、刪欄，以及下游 MV 的處理。
+
 ## 實作順序
 
 里程碑 1、2、3 已完成。strict-small 卡在未知 Merge Commit 的
