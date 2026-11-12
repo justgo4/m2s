@@ -5,9 +5,10 @@
 ## 當前里程碑
 
 第四輪：ClickHouse 已合併，PR #94，程式 SHA `03ed3ed000fb8f6163ebf87c586ee132dc75dc59`。
-TPC-DS 正在 `cursor/tpcds-rest-23fa`。99 條現在都能編成 incremental 計畫，沒有 `theta_join` 或 `recompute`。
-sf=0.01 差分用 `/tmp/tpcds01.duckdb` 重跑中。Q72 會列入結果，不跳過。
-已知 Q2 有 42 列和 DuckDB 不一致（1974 列裡）。正式 72h 仍阻塞：沒有隔離主機。
+TPC-DS 正在 `cursor/tpcds-rest-23fa`。99 條都能編成 incremental 計畫。
+Q72 單獨重跑已通過：`tpcds q72 incremental rows=10`。原因是先接有篩選的日期維度，
+再把週次等式放進 inventory join，避免 2,438,402 列的中間結果。
+全 99 條的 sf=0.01 差分正在重跑。正式 72h 仍阻塞：沒有隔離主機。
 頁面畫出 DAG、每個運算子的列數與延遲、checkpoint epoch。
 暫停時新批次不落地，checkpoint 不前進；恢復後才寫入。
 WASM 用 wasmtime 50.0.1，限制 fuel，拒絕 import。Rust 先編成 wasm32 再進同一個沙盒。

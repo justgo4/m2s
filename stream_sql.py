@@ -348,10 +348,110 @@ def _compile_from(tree, sources, frame, read):
         scope = _compile_comma(bare, tree, sources, frame, read)
     else:
         scope = _compile_from_item(bare[0], sources, frame, read)
+    if not explicit:
+        return scope
+    where = tree.args.get("where")
+    terms = []
+    if where is not None:
+        expr = where.this if isinstance(where, exp.Where) else where
+        terms = _and_terms(expr)
+    used = set()
+    scope = _push_single_filters(scope, terms, used, frame)
+    prepared = []
+    outer = []
+    seen_outer = False
     for join in explicit:
+        side = str(join.args.get("side") or "").upper()
+        if side in {"LEFT", "RIGHT", "FULL"}:
+            seen_outer = True
+        if seen_outer:
+            outer.append(join)
+        else:
+            prepared.append(join)
+    ready = []
+    for join in prepared:
         right = _compile_from_item(join.this, sources, frame, read)
+        right, filtered = _push_single_filters(right, terms, used, frame, report=True)
+        ready.append([join, right, filtered, _and_terms(
+            (join.args.get("on").this if isinstance(join.args.get("on"), exp.Where)
+             else join.args.get("on")) or exp.true())])
+    deferred = []
+    while ready:
+        chosen = None
+        for index, (join, right, filtered, on_terms) in enumerate(ready):
+            pairs = [
+                term for term in on_terms + deferred + terms
+                if not _has_subquery(term) and _equality_pair(term, scope, right)
+            ]
+            if not pairs:
+                continue
+            rank = (0 if filtered else 1, 0 if _scope_name(right) == "date_dim" else 1, -len(pairs))
+            if chosen is None or rank < chosen[0]:
+                chosen = (rank, index, pairs)
+        if chosen is None:
+            join, right, _filtered, _on_terms = ready.pop(0)
+            scope = _compile_join(scope, right, join, frame)
+        else:
+            _rank, index, pairs = chosen
+            join, right, _filtered, on_terms = ready.pop(index)
+            for term in on_terms:
+                if term not in pairs and not _has_subquery(term):
+                    deferred.append(term)
+            rewritten = join.copy()
+            expr = pairs[0]
+            for extra in pairs[1:]:
+                expr = exp.and_(expr, extra)
+            rewritten.set("on", expr)
+            scope = _compile_join(scope, right, rewritten, frame)
+        scope = _push_single_filters(scope, terms, used, frame)
+    for join in outer:
+        right = _compile_from_item(join.this, sources, frame, read)
+        right = _push_single_filters(right, terms, used, frame)
         scope = _compile_join(scope, right, join, frame)
+        scope = _push_single_filters(scope, terms, used, frame)
     return scope
+
+
+def _where_terms(tree):
+    where = tree.args.get("where")
+    if where is None:
+        return []
+    expr = where.this if isinstance(where, exp.Where) else where
+    return _and_terms(expr)
+
+
+def _push_single_filters(scope, terms, used, frame, report=False):
+    filtered = False
+    for index, term in enumerate(terms):
+        if index in used or _has_subquery(term):
+            continue
+        if _refs_only(term, scope):
+            scope = _filter_scope(frame, scope, _rewrite(term, scope))
+            used.add(index)
+            filtered = True
+    return (scope, filtered) if report else scope
+
+
+def _scope_name(scope):
+    names = [alias for alias, _column in scope.by_alias if alias]
+    return names[0] if len(names) == 1 else ""
+
+
+def _join_pairs(scope, right, join, terms):
+    """Original predicate nodes that are equi keys between these inputs."""
+    found = []
+    on = join.args.get("on")
+    if on is not None:
+        expr = on.this if isinstance(on, exp.Where) else on
+        for term in _and_terms(expr):
+            if _equality_pair(term, scope, right):
+                found.append(term)
+    for term in terms:
+        if _has_subquery(term):
+            continue
+        if _equality_pair(term, scope, right):
+            found.append(term)
+    return found
 
 
 def _compile_comma(items, tree, sources, frame, read):
