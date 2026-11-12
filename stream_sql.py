@@ -265,6 +265,23 @@ def _unordered_limit_is_noop(tree, grouped):
     return True
 
 
+def _detach_expr(scope, expr, frame):
+    sources = frame.sources
+    read = frame.read
+    while True:
+        found = [node for node in expr.walk() if isinstance(node, exp.Subquery)]
+        if not found:
+            return scope, expr
+        sql = found[0].sql()
+        scope, name = _attach_scalar(scope, found[0], sources, frame, read)
+        def replace(node, sql=sql, name=name):
+            if isinstance(node, exp.Subquery) and node.sql() == sql:
+                return exp.column(name, quoted=True)
+            return node
+        expr = expr.transform(replace)
+    return scope, expr
+
+
 def _compile_select(tree, sources, frame, read):
     if tree.args.get("offset") is not None:
         raise ValueError("OFFSET is not part of this relational subset")
@@ -275,13 +292,23 @@ def _compile_select(tree, sources, frame, read):
         if any(isinstance(node, exp.Window) for node in item.walk()):
             own_window = True
             break
-    if own_window:
-        scope = _compile_from(tree, sources, frame, read)
-        scope = _apply_where(
-            scope, tree.args.get("where"), sources, frame, read)
-        return _compile_over(scope, tree, frame)
+    frame.sources = sources
+    frame.read = read
     scope = _compile_from(tree, sources, frame, read)
-    scope = _apply_where(scope, tree.args.get("where"), sources, frame, read)
+    scope = _apply_where(
+        scope, tree.args.get("where"), sources, frame, read)
+    replaced = []
+    for item in tree.expressions:
+        if isinstance(item, exp.Alias):
+            scope, new = _detach_expr(scope, item.this, frame)
+            item.set("this", new)
+            replaced.append(item)
+        else:
+            scope, new = _detach_expr(scope, item, frame)
+            replaced.append(new)
+    tree.set("expressions", replaced)
+    if own_window:
+        return _compile_over(scope, tree, frame)
     grouped = _compile_aggregate(scope, tree, frame, sources, read)
     if grouped is not None:
         scope = grouped
