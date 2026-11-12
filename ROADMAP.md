@@ -25,8 +25,12 @@ Materialize、Bytewax、Proton、Pathway、Arroyo 對照的通用增量／串流
 6. 結構演進：在真實 PostgreSQL 上加可空欄位會出現在後續變更裡；
    刪除欄位不會靜默丟列，而是標成需要重建。
 7. Prometheus 與 Web UI：本機埠的 `/metrics` 與 HTML 頁面由 HTTP 客戶端讀到。
-8. Docker／Helm／離線包：盡力在 VM 上建映像、渲染 chart、打離線包。
-   工具無法安裝時寫明命令與錯誤，不把空檔案當映像。
+8. Docker／Helm／離線包：映像與 Helm 已在 PR #84 量過。
+   離線包已完成。SHA `ba76eac23ca0b4d4bfb9641e874216ef760f0adb`。
+   `python3 tools/offline_install_test.py` 產生 106913552 位元組、18 個 wheels、
+   `mysql_arrow_reader` 306272 位元組與 `stream_hot_rs.so` 529632 位元組。
+   `unshare -n` 只開 loopback，探針 `network-blocked URLError`。
+   `SELFTEST OK: 37 offline regression groups`。包不進 Git。
 9. TPC-H Q1–Q22：已完成。DuckDB 產生器提供資料與查詢文字，原文不進 Git。
    SHA `7ba9cf9398aefa1e7287feb6606ee91858dc8218`，`python3 tools/tpch_diff_test.py`，
    scale 0.01。Q1–Q22 都是 incremental，列數 4,4,10,5,5,1,4,2,173,20,359,2,32,1,1,296,1,2,1,1,1,7。
