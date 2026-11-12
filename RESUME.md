@@ -4,11 +4,13 @@
 
 ## 當前里程碑
 
-第二輪第 9 項：TPC-H Q1–Q22 對 DuckDB 的增量差分。
-分支 `cursor/tpch-diff-23fa`，基線 `aaac2b681d738380ee0ca6b4c633dfed36f72f87`。
-不修改 workflow。門檻不改。查詢文字由 DuckDB `tpch_queries()` 在執行時取得，不進 Git。
-22 條都是增量計畫（沒有 `recompute` 或 `theta_join`），scale 0.01 與獨立 DuckDB 逐列一致。
-實測程式 SHA：`7ba9cf9398aefa1e7287feb6606ee91858dc8218`。
+第二輪第 10 項：Nexmark 合成資料對 DuckDB 的差分。
+分支 `cursor/nexmark-diff-23fa`，基線是 TPC-H 合併 `34ac0c8ce0a6e59f33e088c56e3a8a58dbbdd6c7`。
+不修改 workflow。門檻不改。查詢是本倉庫自己的語句，不收錄官方原文。
+
+TPC-H Q1–Q22 已合併。實測程式 SHA `7ba9cf9398aefa1e7287feb6606ee91858dc8218`，
+合併提交 `34ac0c8ce0a6e59f33e088c56e3a8a58dbbdd6c7`，PR #85。
+scale 0.01，22 條都是 incremental。
 
 ## 倉庫位置
 
@@ -54,8 +56,8 @@
 
 ## 正在做
 
-TPC-H Q1–Q22 已在本機差分通過。下一步是開 PR，然後做 Nexmark。
-離線包仍只有 1126 位元組的目錄打包，不能算完成；要在 Nexmark 之後做成含全部 wheels 的安裝包，並在斷網環境安裝、跑 `j4.py selftest`。
+Nexmark 差分已在本機通過。下一步是開 PR，然後做真正的離線包。
+離線包仍只有 1126 位元組的目錄打包，不能算完成。要做成含全部 wheels 的安裝包，並在斷網環境安裝、跑 `j4.py selftest`。
 
 ## 里程碑 3 程式
 
@@ -130,9 +132,20 @@ TPC-H Q1–Q22 已在本機差分通過。下一步是開 PR，然後做 Nexmark
 
 最後一行：`tpch_diff_test ok queries=22 scale=0.01`。沒有用 `force_recompute`。
 
+## Nexmark 差分
+
+命令：`python3 tools/nexmark_diff_test.py`。種子 `20261112`。
+person 50、auction 40、bid 400。先插入 250 筆 bid，再插入其餘 150 筆，最後撤回 1 筆。
+三個階段都與 DuckDB 逐列一致。10 條都是 incremental，沒有 `recompute` 或 `theta_join`。
+撤回後的列數：q0=399，q1=399，q2=120，q3=10，q4=5，q5=35，q6=35，q7=135，q8=50，q9=5。
+q7 是 `m2s_tumble`，對照 SQL 是同樣的整段分組，不是官方原文。
+結尾：`nexmark_diff_test ok queries=10 persons=50 auctions=40 bids=400`。
+`python3 tools/privacy_check.py` 為 `PRIVACY PASS files=283 findings=0`。
+實測程式 SHA：`13f52326b54e06ecd74fba49648d4c0968855ef4`。
+
 ## 下一步
 
-開 TPC-H 的 PR 並合併後做 Nexmark，再做真正的離線包，最後在當時的 `main` 重跑 strict-small。
+開 Nexmark 的 PR 並合併後做離線包，最後在當時的 `main` 重跑 strict-small。
 舊 strict-small SHA `96501dcd0d7bf3c7b84b7d2ac17aaed7d759a9d0` 不能算到新 SHA。
 正式 72h 仍無數據，阻塞原因是沒有可連續 72 小時的隔離主機。
 

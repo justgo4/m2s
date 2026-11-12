@@ -31,7 +31,12 @@ Materialize、Bytewax、Proton、Pathway、Arroyo 對照的通用增量／串流
    SHA `7ba9cf9398aefa1e7287feb6606ee91858dc8218`，`python3 tools/tpch_diff_test.py`，
    scale 0.01。Q1–Q22 都是 incremental，列數 4,4,10,5,5,1,4,2,173,20,359,2,32,1,1,296,1,2,1,1,1,7。
    結尾 `tpch_diff_test ok queries=22 scale=0.01`。沒有用 `force_recompute`。
-10. Nexmark：合成 person／auction／bid，查詢與 DuckDB 全量重算逐列一致。
+10. Nexmark：已完成。合成 person 50、auction 40、bid 400，種子 `20261112`。
+    `python3 tools/nexmark_diff_test.py`。q0–q9 都是 incremental。
+    插入兩批再撤回一筆，三階段都與 DuckDB 逐列一致。
+    撤回後列數 399,399,120,10,5,35,35,135,50,5。
+    結尾 `nexmark_diff_test ok queries=10 persons=50 auctions=40 bids=400`。
+    SHA `13f52326b54e06ecd74fba49648d4c0968855ef4`。
 11. 重跑 strict-small。門檻不改。數字只屬於該次 SHA。
 
 ## 實作順序
