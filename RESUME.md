@@ -14,7 +14,7 @@ WASM 用 wasmtime 50.0.1，限制 fuel，拒絕 import。Rust 先編成 wasm32 �
 無限迴圈在 fuel=40 時被沙盒擋下。帶 import 的模組被拒絕。
 非確定聚合被拒絕。`python3 tools/stream_ops_test.py` 為 `stream_ops_test ok`。
 `python3 tools/privacy_check.py` 為 `PRIVACY PASS files=286 findings=0`。
-實測程式 SHA 在提交後補上。
+實測程式 SHA：`2c3779a331ef9929ff458e9913b144f9c6c175e0`。
 
 Nexmark 已合併。實測程式 SHA `13f52326b54e06ecd74fba49648d4c0968855ef4`，
 合併提交 `9e8c2fdd20954a1627dec948551589761b0ddc62`，PR #86。

@@ -55,7 +55,8 @@ Materialize、Bytewax、Proton、Pathway、Arroyo 對照的通用增量／串流
 
 1. UDF：Python 聚合與表函數在 `python -I` 沙盒執行。WASM 與 Rust
    都進 wasmtime，Rust 先編成 wasm32。拒絕 import，fuel 用盡就失敗。
-   同一輸入跑兩次結果相同。
+   同一輸入跑兩次結果相同。SHA `2c3779a331ef9929ff458e9913b144f9c6c175e0`。
+   `udf_exec python_udaf=2 python_udtf=[3, 4] wasm=5 wasm_fuel=4 rust=42 rust_bytes=361 rust_fuel=4`。
 2. Web UI：作業 DAG、運算子吞吐與延遲、checkpoint，以及暫停／恢復。
 3. 跨節點：至少 3 個節點，真實 TCP，Arrow Flight 交換、故障接管、擴縮，附延遲。
 4. DDL：MySQL 與 PostgreSQL 的加欄、改型、刪欄，以及下游 MV 的處理。
