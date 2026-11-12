@@ -4,9 +4,11 @@
 
 ## 當前里程碑
 
-第三輪第 4 項：MySQL 與 PostgreSQL 的加欄、放寬型別、縮窄型別、刪欄。
-分支 `cursor/ddl-mv-23fa`。下游 MV 對加欄與放寬是 propagate，對縮窄與刪欄是 rebuild。
-兩種都不丟列。門檻不改。
+第四輪第 1 項：TPC-DS。分支 `cursor/tpcds-diff-23fa`，基線 `c92ef9766f95806cf94788ad90b8df88e93290c4`。
+查詢文字由 DuckDB `tpcds_queries()` 在執行時取得，不進 Git。scale 0.01。
+退回全量或結果不一致的題目不算完成。正式 72h 仍阻塞。
+實測程式 SHA：`f8086a70e3b4d2430a5cec26e96e52b23825f83d`。
+59 條 incremental 且與 DuckDB 逐列一致。Q72 exit 137（OOM）。其餘見 ROADMAP。
 頁面畫出 DAG、每個運算子的列數與延遲、checkpoint epoch。
 暫停時新批次不落地，checkpoint 不前進；恢復後才寫入。
 WASM 用 wasmtime 50.0.1，限制 fuel，拒絕 import。Rust 先編成 wasm32 再進同一個沙盒。

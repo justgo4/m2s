@@ -104,6 +104,8 @@ def _initial(aggregates):
             result[item["output"]] = dict(count=0)
         elif function in {"sum", "avg"}:
             result[item["output"]] = dict(nonnull=0, sum=None)
+        elif function == "stddev_samp":
+            result[item["output"]] = dict(nonnull=0, sum=None, sumsq=None)
         else:
             result[item["output"]] = dict(values={})
     return result
@@ -176,6 +178,22 @@ def _accumulate(slot, row, value, aggregates):
         if raw is None:
             continue
         number = _numeric(raw, output)
+        if function == "stddev_samp":
+            previous = int(state["nonnull"])
+            next_nonnull = previous + value
+            if next_nonnull < 0 or next_nonnull > next_rows:
+                raise RuntimeError(
+                    "aggregate non-NULL count violates group cardinality")
+            if previous == 0:
+                total = number * value
+                squares = (number * number) * value
+            else:
+                total = state["sum"] + (number * value)
+                squares = state["sumsq"] + ((number * number) * value)
+            state["nonnull"] = next_nonnull
+            state["sum"] = None if next_nonnull == 0 else total
+            state["sumsq"] = None if next_nonnull == 0 else squares
+            continue
         previous = int(state["nonnull"])
         next_nonnull = previous + value
         if next_nonnull < 0 or next_nonnull > next_rows:
@@ -200,6 +218,14 @@ def _accumulate(slot, row, value, aggregates):
                 if int(state["nonnull"]) != 0 or state["sum"] is not None:
                     raise RuntimeError(
                         "empty aggregate group retains SUM/AVG state")
+            elif function == "stddev_samp":
+                if (
+                    int(state["nonnull"]) != 0
+                    or state["sum"] is not None
+                    or state["sumsq"] is not None
+                ):
+                    raise RuntimeError(
+                        "empty aggregate group retains STDDEV state")
             elif state["values"]:
                 raise RuntimeError(
                     "empty aggregate group retains " + function + " state")
@@ -222,6 +248,16 @@ def _render(group_keys, key, aggregates, slot):
             row[output] = (
                 None if int(state["nonnull"]) == 0
                 else float(state["sum"] / int(state["nonnull"])))
+        elif function == "stddev_samp":
+            count = int(state["nonnull"])
+            if count < 2 or state["sum"] is None:
+                row[output] = None
+            else:
+                centered = state["sumsq"] - (state["sum"] * state["sum"] / count)
+                variance = centered / (count - 1)
+                if variance < 0 and variance > -1e-9:
+                    variance = 0
+                row[output] = math.sqrt(float(variance))
         elif function == "count_distinct":
             row[output] = len(state["values"])
         elif function == "min":

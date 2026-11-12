@@ -27,6 +27,7 @@ SEMANTICS = dict(
 FILTER_SCOPES = {"source", "query", "predicate"}
 AGGREGATE_FUNCTIONS = {
     "count", "sum", "avg", "min", "max", "count_distinct", "string_agg",
+    "stddev_samp",
 }
 SET_MODES = {
     "union_all", "union", "intersect_all", "intersect",

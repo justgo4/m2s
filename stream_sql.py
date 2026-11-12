@@ -217,6 +217,9 @@ def _compile_recompute(sql, sources, frame, read, strategy="full_input_recompute
 def _output_name(item):
     if isinstance(item, exp.Alias):
         return str(item.alias).strip()
+    target = item
+    if isinstance(target, exp.Count) and isinstance(target.this, exp.Star):
+        return "count_star()"
     if isinstance(item, exp.Column):
         return item.name
     try:
@@ -241,7 +244,12 @@ def _compile_select(tree, sources, frame, read):
         raise ValueError("OFFSET is not part of this relational subset")
     if tree.args.get("with_") is not None:
         _bind_ctes(tree.args["with_"], sources, frame, read)
-    if any(isinstance(node, exp.Window) for node in tree.walk()):
+    own_window = False
+    for item in tree.expressions:
+        if any(isinstance(node, exp.Window) for node in item.walk()):
+            own_window = True
+            break
+    if own_window:
         scope = _compile_from(tree, sources, frame, read)
         scope = _apply_where(
             scope, tree.args.get("where"), sources, frame, read)
@@ -252,10 +260,13 @@ def _compile_select(tree, sources, frame, read):
     if grouped is not None:
         scope = grouped
     if tree.args.get("limit") is not None:
-        if tree.args.get("order") is None:
+        if tree.args.get("order") is not None:
+            scope = _compile_projection(scope, tree, frame)
+            return _compile_topn(scope, tree, frame)
+        # One global aggregate row is unchanged by LIMIT. Any other
+        # unordered LIMIT stays rejected because the kept rows are not stable.
+        if grouped is None or tree.args.get("group") is not None:
             raise ValueError("LIMIT without ORDER BY is rejected")
-        scope = _compile_projection(scope, tree, frame)
-        return _compile_topn(scope, tree, frame)
     scope = _compile_projection(scope, tree, frame)
     if tree.args.get("distinct") is not None:
         node = frame.add(dict(
@@ -460,7 +471,8 @@ def _compile_from_item(item, sources, frame, read):
         return _rename_scope(frame, node, outputs, alias, outputs)
     if isinstance(item, exp.Table):
         if item.name in frame.ctes:
-            return frame.ctes[item.name]
+            return _alias_scope(
+                frame.ctes[item.name], str(item.alias or item.name))
         return _compile_table(item, sources, frame)
     raise ValueError("unsupported FROM item")
 
@@ -489,6 +501,13 @@ def _compile_table(table, sources, frame):
         id=frame.nid("p"), op="project", input=input_id,
         expressions=expressions))
     return _Scope(node, outputs, by_alias, by_name)
+
+
+def _alias_scope(scope, alias):
+    by_alias = {}
+    for (_previous, column), internal in scope.by_alias.items():
+        by_alias[(alias, column)] = internal
+    return _Scope(scope.node, list(scope.outputs), by_alias, dict(scope.by_name))
 
 
 def _rename_scope(frame, node, outputs, alias, public_names):
@@ -791,6 +810,18 @@ def _peel_term(scope, term, sources, frame, read):
     compared = _scalar_eq(term)
     if compared is not None:
         return _scalar_eq_join(scope, compared, sources, frame, read)
+    if isinstance(term, (exp.EQ, exp.LT, exp.GT, exp.LTE, exp.GTE)):
+        nested = [
+            node for node in term.walk() if isinstance(node, exp.Subquery)
+        ]
+        if len(nested) == 1:
+            scope, name = _attach_scalar(scope, nested[0], sources, frame, read)
+            def replace(node):
+                if isinstance(node, exp.Subquery):
+                    return exp.column(name, quoted=True)
+                return node
+            return _filter_scope(
+                frame, scope, _rewrite(term.copy().transform(replace), scope))
     if any(isinstance(node, (exp.Subquery, exp.Exists)) for node in term.walk()):
         raise _Fallback()
     return None
@@ -908,11 +939,14 @@ def _scalar_eq_join(scope, compared, sources, frame, read):
     if not isinstance(inner, exp.Select) or len(inner.expressions) != 1:
         raise _Fallback()
     agg = inner.expressions[0]
-    if not (_is_agg(agg) or _contains_agg(agg)):
-        raise _Fallback()
     inner_scope = _schema_scope(inner, sources)
     correlations, local, residuals = _split_correlation(
         inner.args.get("where"), scope, inner_scope)
+    if not (_is_agg(agg) or _contains_agg(agg)):
+        if correlations or residuals:
+            raise _Fallback()
+        return _uncorrelated_scalar(
+            scope, outer_expr, inner, compare, sources, frame, read)
     if residuals:
         raise _Fallback()
     if not correlations:
@@ -949,6 +983,63 @@ def _scalar_eq_join(scope, compared, sources, frame, read):
         this=exp.column(left_key, quoted=True),
         expression=exp.column(right_outs[-1], quoted=True))
     return _filter_scope(frame, scope, _rewrite(pred, scope))
+
+
+def _attach_scalar(scope, subquery, sources, frame, read):
+    """Join one scalar subquery and return the column that holds its value."""
+    inner = subquery.this
+    if not isinstance(inner, exp.Select) or len(inner.expressions) != 1:
+        raise _Fallback()
+    inner_scope = _schema_scope(inner, sources)
+    correlations, local, residuals = _split_correlation(
+        inner.args.get("where"), scope, inner_scope)
+    if residuals:
+        raise _Fallback()
+    copied = inner.copy()
+    _set_where(copied, local)
+    select = copied.expressions[0]
+    if correlations:
+        if not (_is_agg(select) or _contains_agg(select)):
+            raise _Fallback()
+        keys = [column.copy() for _outer, column in correlations]
+        copied.set(
+            "expressions",
+            keys + [exp.alias_(select, "_m_val", quoted=True)])
+        copied.set(
+            "group", exp.Group(expressions=[column.copy() for column in keys]))
+        right_id, right_outs = _compile_query(copied, sources, frame, read)
+        if len(right_outs) != len(keys) + 1:
+            raise _Fallback()
+        right = _Scope(
+            right_id, right_outs,
+            {("", name): name for name in right_outs},
+            {name: name for name in right_outs})
+        right, mapping = _freshen_scope(frame, right)
+        right_outs = [mapping[name] for name in right_outs]
+        pairs = []
+        for (outer_col, _inner), corr_name in zip(correlations, right_outs[:-1]):
+            pairs.append((_lookup(outer_col, scope), corr_name))
+        return _equi(scope, right, pairs, frame), right_outs[-1]
+    if not isinstance(select, exp.Alias):
+        copied.set(
+            "expressions",
+            [exp.alias_(select, "_m_val", quoted=True)])
+    right_id, right_outs = _compile_query(copied, sources, frame, read)
+    if len(right_outs) != 1:
+        raise _Fallback()
+    fresh = frame.col()
+    right_id = frame.add(dict(
+        id=frame.nid("p"), op="project", input=right_id,
+        expressions=[dict(
+            output=fresh,
+            expression=_q(right_outs[0]) + " AS " + _q(fresh))]))
+    scope, left_key = _materialize_expr(scope, exp.Literal.number(1), frame)
+    right = _Scope(
+        right_id, [fresh],
+        {("", fresh): fresh},
+        {fresh: fresh})
+    right, right_key = _materialize_expr(right, exp.Literal.number(1), frame)
+    return _equi(scope, right, [(left_key, right_key)], frame), fresh
 
 
 def _uncorrelated_scalar(scope, outer_expr, inner, compare, sources, frame, read):
@@ -1109,7 +1200,24 @@ def _compile_aggregate(scope, tree, frame, sources=None, read="duckdb"):
                 aggregates.append(spec)
                 seen_outputs.add(spec["output"])
         if not aggregates:
-            raise ValueError("GROUP BY without an aggregate is unsupported")
+            expressions = []
+            produced = []
+            for kind, public, internal, _spec in outputs:
+                if kind == "hidden":
+                    continue
+                produced.append(public)
+                if kind == "const":
+                    expr = internal + " AS " + _q(public)
+                else:
+                    expr = _q(internal) + " AS " + _q(public)
+                expressions.append(dict(output=public, expression=expr))
+            node = frame.add(dict(
+                id=frame.nid("p"), op="project", input=scope.node,
+                expressions=expressions))
+            node = frame.add(dict(
+                id=frame.nid("d"), op="distinct", input=node))
+            branches.append((node, produced))
+            continue
         node = frame.add(dict(
             id=frame.nid("a"),
             op="aggregate",
@@ -1126,6 +1234,8 @@ def _compile_aggregate(scope, tree, frame, sources=None, read="duckdb"):
                     expr = _q(internal) + " AS " + _q(public)
                 else:
                     expr = "NULL AS " + _q(public)
+            elif kind == "const":
+                expr = internal + " AS " + _q(public)
             elif kind == "formula":
                 expr = internal + " AS " + _q(public)
             else:
@@ -1200,8 +1310,18 @@ def _select_slots(tree, scope, frame):
                 public = target.name
             slots.append(("key", public, internal, None))
             continue
-        raise ValueError(
-            "grouped select list must be grouping columns and aggregates")
+        if not any(isinstance(node, exp.Column) for node in target.walk()):
+            if not public:
+                public = frame.col()
+            slots.append((
+                "const", public, target.sql(dialect="duckdb").strip(), None))
+            continue
+        scope, internal = _materialize_expr(scope, target, frame)
+        frame.scope = scope
+        if not public:
+            public = frame.col()
+        slots.append(("key", public, internal, None))
+    return slots
     return slots
 
 
@@ -1415,6 +1535,7 @@ def _agg_spec(target, scope, frame):
         exp.Avg: "avg",
         exp.Min: "min",
         exp.Max: "max",
+        exp.StddevSamp: "stddev_samp",
     }
     function = functions.get(type(target))
     if function is None:
@@ -1826,12 +1947,44 @@ def _compile_over(scope, tree, frame):
     return node, outputs
 
 
+def _order_column(item, scope, tree):
+    expr = item.this
+    if isinstance(expr, exp.Column):
+        try:
+            return _lookup(expr, scope)
+        except ValueError:
+            pass
+    if isinstance(expr, exp.Literal) and not expr.args.get("is_string"):
+        try:
+            index = int(expr.this) - 1
+        except ValueError:
+            index = -1
+        if 0 <= index < len(scope.outputs):
+            return scope.outputs[index]
+    try:
+        text = expr.sql(dialect="duckdb").strip().lower()
+    except Exception:
+        text = ""
+    for select_item, output in zip(tree.expressions, scope.outputs):
+        if isinstance(select_item, exp.Alias) and str(select_item.alias).lower() == text:
+            return output
+        target = select_item.this if isinstance(select_item, exp.Alias) else select_item
+        try:
+            if target.sql(dialect="duckdb").strip().lower() == text:
+                return output
+        except Exception:
+            continue
+    if text and text in [name.lower() for name in scope.outputs]:
+        return scope.outputs[[name.lower() for name in scope.outputs].index(text)]
+    raise ValueError("ORDER BY is not a select output")
+
+
 def _compile_topn(scope, tree, frame):
     limit = int(tree.args["limit"].expression.this)
     order = []
     for item in tree.args["order"].expressions:
         order.append(dict(
-            column=_lookup(item.this, scope),
+            column=_order_column(item, scope, tree),
             desc=bool(item.args.get("desc")),
             nulls_first=bool(item.args.get("nulls_first")),
         ))
