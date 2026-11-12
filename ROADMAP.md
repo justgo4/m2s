@@ -61,6 +61,7 @@ Materialize、Bytewax、Proton、Pathway、Arroyo 對照的通用增量／串流
    `python3 tools/ops_ui_test.py`：operators=4，output_rows=101，
    paused_rejects=1，checkpoint_epoch=1，max_operator_latency_seconds=0.038459。
    Chrome `--headless=new --dump-dom` 讀到 job、checkpoint_epoch=1、svg 與表格。
+   SHA `d42c18dada0aea9cb37736bd45a0efbfe5f89fe0`。
 3. 跨節點：至少 3 個節點，真實 TCP，Arrow Flight 交換、故障接管、擴縮，附延遲。
 4. DDL：MySQL 與 PostgreSQL 的加欄、改型、刪欄，以及下游 MV 的處理。
 

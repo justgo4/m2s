@@ -73,6 +73,7 @@ scale 0.01，22 條都是 incremental。
 作業頁已在本機打過。`python3 tools/ops_ui_test.py` 印出
 `ops_ui operators=4 output_rows=101 paused_rejects=1 checkpoint_epoch=1 max_operator_latency_seconds=0.038459`。
 Chrome `--headless=new --no-sandbox --dump-dom` 在 60 秒上限內寫出 1845 位元組，含 `job orders`、`checkpoint_epoch=1`、`checkpoint_status=completed`、`<svg` 與 `<table`。Chrome 寫完 DOM 後沒有自己退出，被 timeout 以 124 結束。
+實測程式 SHA：`d42c18dada0aea9cb37736bd45a0efbfe5f89fe0`。
 下一步是開 PR，然後做 3 個網路命名空間上的 Arrow Flight。
 
 ## 里程碑 3 程式
