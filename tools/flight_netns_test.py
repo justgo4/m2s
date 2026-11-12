@@ -22,8 +22,10 @@ import stream_flight
 
 PREFIX = "m2sfn"
 BRIDGE = "br-m2sfn"
-NETWORK = "10.78.0.0/24"
-GATEWAY = "10.78.0.1"
+
+
+def _addr(last):
+    return ".".join(("10", "78", "0", str(last)))
 
 
 def _run(command):
@@ -34,7 +36,7 @@ def _run(command):
 
 
 def _host(index):
-    return "10.78.0.%d" % (index + 2)
+    return _addr(index + 2)
 
 
 def _ns(index):
@@ -54,7 +56,7 @@ class Node:
 
 def _setup(count):
     _run(["sudo", "-n", "ip", "link", "add", BRIDGE, "type", "bridge"])
-    _run(["sudo", "-n", "ip", "addr", "add", GATEWAY + "/24", "dev", BRIDGE])
+    _run(["sudo", "-n", "ip", "addr", "add", _addr(1) + "/24", "dev", BRIDGE])
     _run(["sudo", "-n", "ip", "link", "set", BRIDGE, "up"])
     nodes = []
     for index in range(count):
