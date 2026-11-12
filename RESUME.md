@@ -4,9 +4,14 @@
 
 ## 當前里程碑
 
-第二輪第 10 項：Nexmark 合成資料對 DuckDB 的差分。
-分支 `cursor/nexmark-diff-23fa`，基線是 TPC-H 合併 `34ac0c8ce0a6e59f33e088c56e3a8a58dbbdd6c7`。
-不修改 workflow。門檻不改。查詢是本倉庫自己的語句，不收錄官方原文。
+第二輪離線包：產生含 wheels、原生二進位、設定範本與安裝腳本的包，不進 Git。
+在 `sudo unshare -n` 的無網路環境安裝並跑 `j4.py selftest`。
+分支 `cursor/offline-bundle-23fa`，基線 `9e8c2fdd20954a1627dec948551589761b0ddc62`。
+不修改 workflow。門檻不改。
+
+Nexmark 已合併。實測程式 SHA `13f52326b54e06ecd74fba49648d4c0968855ef4`，
+合併提交 `9e8c2fdd20954a1627dec948551589761b0ddc62`，PR #86。
+q0–q9 都是 incremental。
 
 TPC-H Q1–Q22 已合併。實測程式 SHA `7ba9cf9398aefa1e7287feb6606ee91858dc8218`，
 合併提交 `34ac0c8ce0a6e59f33e088c56e3a8a58dbbdd6c7`，PR #85。
