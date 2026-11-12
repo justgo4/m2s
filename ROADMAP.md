@@ -58,6 +58,10 @@ Materialize、Bytewax、Proton、Pathway、Arroyo 對照的通用增量／串流
    同一輸入跑兩次結果相同。SHA `2c3779a331ef9929ff458e9913b144f9c6c175e0`。
    `udf_exec python_udaf=2 python_udtf=[3, 4] wasm=5 wasm_fuel=4 rust=42 rust_bytes=361 rust_fuel=4`。
 2. Web UI：作業 DAG、運算子吞吐與延遲、checkpoint，以及暫停／恢復。
+   `python3 tools/ops_ui_test.py`：operators=4，output_rows=101，
+   paused_rejects=1，checkpoint_epoch=1，max_operator_latency_seconds=0.038459。
+   Chrome `--headless=new --dump-dom` 讀到 job、checkpoint_epoch=1、svg 與表格。
+   SHA `d42c18dada0aea9cb37736bd45a0efbfe5f89fe0`。
 3. 跨節點：至少 3 個節點，真實 TCP，Arrow Flight 交換、故障接管、擴縮，附延遲。
 4. DDL：MySQL 與 PostgreSQL 的加欄、改型、刪欄，以及下游 MV 的處理。
 
