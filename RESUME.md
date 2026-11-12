@@ -141,7 +141,7 @@ person 50、auction 40、bid 400。先插入 250 筆 bid，再插入其餘 150 �
 q7 是 `m2s_tumble`，對照 SQL 是同樣的整段分組，不是官方原文。
 結尾：`nexmark_diff_test ok queries=10 persons=50 auctions=40 bids=400`。
 `python3 tools/privacy_check.py` 為 `PRIVACY PASS files=283 findings=0`。
-實測程式 SHA 在提交後補上。
+實測程式 SHA：`13f52326b54e06ecd74fba49648d4c0968855ef4`。
 
 ## 下一步
 

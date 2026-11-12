@@ -36,7 +36,7 @@ Materialize、Bytewax、Proton、Pathway、Arroyo 對照的通用增量／串流
     插入兩批再撤回一筆，三階段都與 DuckDB 逐列一致。
     撤回後列數 399,399,120,10,5,35,35,135,50,5。
     結尾 `nexmark_diff_test ok queries=10 persons=50 auctions=40 bids=400`。
-    SHA 在該提交寫進 RESUME。
+    SHA `13f52326b54e06ecd74fba49648d4c0968855ef4`。
 11. 重跑 strict-small。門檻不改。數字只屬於該次 SHA。
 
 ## 實作順序
