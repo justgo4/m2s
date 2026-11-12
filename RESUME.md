@@ -4,11 +4,11 @@
 
 ## 當前里程碑
 
-第四輪第 1 項：TPC-DS。分支 `cursor/tpcds-diff-23fa`，基線 `c92ef9766f95806cf94788ad90b8df88e93290c4`。
-查詢文字由 DuckDB `tpcds_queries()` 在執行時取得，不進 Git。scale 0.01。
-退回全量或結果不一致的題目不算完成。正式 72h 仍阻塞。
-實測程式 SHA：`f8086a70e3b4d2430a5cec26e96e52b23825f83d`。
-59 條 incremental 且與 DuckDB 逐列一致。Q72 exit 137（OOM）。其餘見 ROADMAP。
+第四輪：ClickHouse 寫入程式 SHA `03ed3ed000fb8f6163ebf87c586ee132dc75dc59`。
+`clickhouse_sink rows=4 deliveries=2 replayed=0 restarted=1`。
+接著必須把 TPC-DS 剩下的約 40 條修到全部增量且與 DuckDB 一致。
+Q89 的 `ORDER BY is not a select output` 是這次引入的回歸，要修。
+Q72 不能跳過，要修到不再 OOM。正式 72h 仍阻塞：沒有隔離主機。
 頁面畫出 DAG、每個運算子的列數與延遲、checkpoint epoch。
 暫停時新批次不落地，checkpoint 不前進；恢復後才寫入。
 WASM 用 wasmtime 50.0.1，限制 fuel，拒絕 import。Rust 先編成 wasm32 再進同一個沙盒。

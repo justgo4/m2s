@@ -27,7 +27,7 @@ def test_incremental_and_ddl():
     sink.write("d2", again)
     if sink.rows != {2: {"id": 2, "v": 7}}:
         raise AssertionError(sink.rows)
-    for name in ("postgresql", "kafka", "doris", "clickhouse", "iceberg", "paimon"):
+    for name in ("postgresql", "kafka", "doris", "iceberg", "paimon"):
         try:
             stream_connector.open_connector(name, "source")
             raise AssertionError(name + " was accepted")
