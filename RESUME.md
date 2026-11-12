@@ -8,7 +8,7 @@
 分支 `cursor/tpch-diff-23fa`，基線 `aaac2b681d738380ee0ca6b4c633dfed36f72f87`。
 不修改 workflow。門檻不改。查詢文字由 DuckDB `tpch_queries()` 在執行時取得，不進 Git。
 22 條都是增量計畫（沒有 `recompute` 或 `theta_join`），scale 0.01 與獨立 DuckDB 逐列一致。
-提交 SHA 在這次提交之後補進下一節。
+實測程式 SHA：`7ba9cf9398aefa1e7287feb6606ee91858dc8218`。
 
 ## 倉庫位置
 
