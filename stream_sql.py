@@ -76,7 +76,8 @@ def _sources(sources):
     return result
 
 
-def compile_sql(sql, sources, read="duckdb", nondeterministic="reject"):
+def compile_sql(sql, sources, read="duckdb", nondeterministic="reject",
+               on_unsupported="raise", force_recompute=False):
     """Compile one statement to a stream plan.
 
     Returns plan, output column names, and the read dialect. The default
@@ -87,6 +88,8 @@ def compile_sql(sql, sources, read="duckdb", nondeterministic="reject"):
         raise ValueError("sql read dialect must be duckdb or mysql")
     if nondeterministic not in {"reject", "timed_recompute"}:
         raise ValueError("nondeterministic mode must be reject or timed_recompute")
+    if on_unsupported not in {"raise", "recompute"}:
+        raise ValueError("on_unsupported must be raise or recompute")
     sources = _sources(sources)
     text = str(sql or "").strip()
     if not text:
@@ -106,11 +109,20 @@ def compile_sql(sql, sources, read="duckdb", nondeterministic="reject"):
         plan = stream_ir._plan(frame.inputs, frame.nodes, node)
         return dict(plan=plan, outputs=list(outputs), read=read)
     frame = _Frame()
+    if force_recompute:
+        node, outputs = _compile_recompute(text, sources, frame, read)
+        plan = stream_ir._plan(frame.inputs, frame.nodes, node)
+        return dict(plan=plan, outputs=list(outputs), read=read)
     try:
         node, outputs = _compile_query(tree, sources, frame, read)
-    except _Fallback:
+    except (_Fallback, ValueError) as exc:
+        if on_unsupported != "recompute":
+            raise
         frame = _Frame()
-        node, outputs = _compile_recompute(text, sources, frame, read)
+        try:
+            node, outputs = _compile_recompute(text, sources, frame, read)
+        except ValueError:
+            raise exc
     plan = stream_ir._plan(frame.inputs, frame.nodes, node)
     return dict(plan=plan, outputs=list(outputs), read=read)
 
@@ -170,8 +182,6 @@ def _compile_set(tree, sources, frame, read):
 
 def _compile_recompute(sql, sources, frame, read, strategy="full_input_recompute"):
     tree = sqlglot.parse_one(sql, read=read)
-    if any(isinstance(node, exp.Window) for node in tree.walk()):
-        raise ValueError("window functions are not in this SQL subset")
     tables = []
     for table in tree.find_all(exp.Table):
         name = table.name
@@ -204,10 +214,22 @@ def _compile_recompute(sql, sources, frame, read, strategy="full_input_recompute
     return node, outputs
 
 
+def _output_name(item):
+    if isinstance(item, exp.Alias):
+        return str(item.alias).strip()
+    if isinstance(item, exp.Column):
+        return item.name
+    try:
+        text = item.sql(dialect="duckdb").strip().lower()
+    except Exception:
+        text = ""
+    return text
+
+
 def _output_names(tree):
     names = []
     for item in tree.expressions:
-        name = str(item.alias_or_name or "").strip()
+        name = _output_name(item)
         if not name or name == "*":
             return []
         names.append(name)
@@ -226,7 +248,7 @@ def _compile_select(tree, sources, frame, read):
         return _compile_over(scope, tree, frame)
     scope = _compile_from(tree, sources, frame, read)
     scope = _apply_where(scope, tree.args.get("where"), sources, frame, read)
-    grouped = _compile_aggregate(scope, tree, frame)
+    grouped = _compile_aggregate(scope, tree, frame, sources, read)
     if grouped is not None:
         scope = grouped
     if tree.args.get("limit") is not None:
@@ -246,19 +268,195 @@ def _compile_from(tree, sources, frame, read):
     origin = tree.args.get("from_")
     if origin is None:
         raise ValueError("SQL subset requires FROM")
-    scope = _compile_from_item(origin.this, sources, frame, read)
+    bare = [origin.this]
+    explicit = []
     for join in tree.args.get("joins") or ():
+        if (
+            join.args.get("on") is None
+            and not str(join.args.get("kind") or "")
+            and not str(join.args.get("side") or "")
+        ):
+            bare.append(join.this)
+        else:
+            explicit.append(join)
+    if len(bare) > 1:
+        scope = _compile_comma(bare, tree, sources, frame, read)
+    else:
+        scope = _compile_from_item(bare[0], sources, frame, read)
+    for join in explicit:
         right = _compile_from_item(join.this, sources, frame, read)
         scope = _compile_join(scope, right, join, frame)
     return scope
 
 
+def _compile_comma(items, tree, sources, frame, read):
+    scopes = [
+        _compile_from_item(item, sources, frame, read) for item in items
+    ]
+    where = tree.args.get("where")
+    terms = []
+    if where is not None:
+        expr = where.this if isinstance(where, exp.Where) else where
+        terms = _and_terms(expr)
+    used = set()
+    pending = list(enumerate(scopes[1:], start=1))
+    scope = scopes[0]
+    while pending:
+        chosen = 0
+        for index, (_origin, nxt) in enumerate(pending):
+            if any(
+                i not in used and _equality_pair(term, scope, nxt)
+                for i, term in enumerate(terms)
+            ):
+                chosen = index
+                break
+        _origin, nxt = pending.pop(chosen)
+        for index, term in enumerate(terms):
+            if index in used or _has_subquery(term):
+                continue
+            if _refs_only(term, nxt):
+                nxt = _filter_scope(frame, nxt, _rewrite(term, nxt))
+                used.add(index)
+        pairs = []
+        extras = []
+        for index, term in enumerate(terms):
+            if index in used or _has_subquery(term):
+                continue
+            pair = _equality_pair(term, scope, nxt)
+            if pair:
+                pairs.append(pair)
+                used.add(index)
+                continue
+            if _refs_only_two(term, scope, nxt):
+                extras.append(term)
+                used.add(index)
+        if pairs and not extras:
+            scope = _equi(scope, nxt, pairs, frame)
+        elif pairs:
+            scope = _equi(scope, nxt, pairs, frame)
+            pred = extras[0]
+            for extra in extras[1:]:
+                pred = exp.and_(pred, extra)
+            scope = _filter_scope(frame, scope, _rewrite(pred, scope))
+        elif extras:
+            split = None
+            if len(extras) == 1:
+                split = _split_or_equi(extras[0], scope, nxt)
+            if split:
+                common, residual = split
+                scope = _equi(scope, nxt, common, frame)
+                scope = _filter_scope(frame, scope, _rewrite(residual, scope))
+            else:
+                pred = extras[0]
+                for extra in extras[1:]:
+                    pred = exp.and_(pred, extra)
+                scope = _theta(scope, nxt, pred, "inner", frame)
+        else:
+            scope = _theta(scope, nxt, exp.true(), "inner", frame)
+    for index, term in enumerate(terms):
+        if index in used or _has_subquery(term):
+            continue
+        if _refs_only(term, scope):
+            scope = _filter_scope(frame, scope, _rewrite(term, scope))
+            used.add(index)
+    remaining = [term for index, term in enumerate(terms) if index not in used]
+    if remaining:
+        expr = remaining[0]
+        for extra in remaining[1:]:
+            expr = exp.and_(expr, extra)
+        tree.set("where", exp.Where(this=expr))
+    else:
+        tree.set("where", None)
+    return scope
+
+
+def _has_subquery(term):
+    return any(
+        isinstance(node, (exp.Subquery, exp.Exists)) for node in term.walk()
+    )
+
+
+def _or_terms(node):
+    if isinstance(node, exp.Paren):
+        return _or_terms(node.this)
+    if isinstance(node, exp.Or):
+        return _or_terms(node.this) + _or_terms(node.expression)
+    return [node]
+
+
+def _split_or_equi(node, left, right):
+    branches = _or_terms(node)
+    if len(branches) < 2:
+        return None
+    common = None
+    leftovers = []
+    for branch in branches:
+        pairs = []
+        rest = []
+        for term in _and_terms(branch):
+            pair = _equality_pair(term, left, right)
+            if pair:
+                pairs.append(pair)
+            else:
+                rest.append(term)
+        key = tuple(sorted(pairs))
+        if not key:
+            return None
+        if common is None:
+            common = key
+        elif key != common:
+            return None
+        leftovers.append(rest)
+    expr = None
+    for rest in leftovers:
+        if not rest:
+            return None
+        branch = rest[0]
+        for extra in rest[1:]:
+            branch = exp.and_(branch, extra)
+        expr = branch if expr is None else exp.or_(expr, branch)
+    return list(common), expr
+
+
+def _refs_only(term, scope):
+    columns = [node for node in term.walk() if isinstance(node, exp.Column)]
+    if not columns:
+        return False
+    return all(_in_scope(column, scope) for column in columns)
+
+
+def _refs_only_two(term, left, right):
+    columns = [node for node in term.walk() if isinstance(node, exp.Column)]
+    if not columns:
+        return False
+    return all(
+        _in_scope(column, left) or _in_scope(column, right)
+        for column in columns
+    )
+
+
 def _compile_from_item(item, sources, frame, read):
     if isinstance(item, exp.Subquery):
+        alias_expr = item.args.get("alias")
         alias = str(item.alias or "").strip()
+        columns = []
+        if alias_expr is not None:
+            alias = str(alias_expr.this.name)
+            columns = [str(column.name) for column in alias_expr.args.get("columns") or ()]
         if not alias:
             raise ValueError("subquery in FROM requires an alias")
         node, outputs = _compile_query(item.this, sources, frame, read)
+        if columns:
+            if len(columns) != len(outputs):
+                raise ValueError("subquery column list does not match its outputs")
+            expressions = [
+                dict(output=new, expression=_q(old) + " AS " + _q(new))
+                for old, new in zip(outputs, columns)
+            ]
+            node = frame.add(dict(
+                id=frame.nid("p"), op="project", input=node,
+                expressions=expressions))
+            outputs = columns
         return _rename_scope(frame, node, outputs, alias, outputs)
     if isinstance(item, exp.Table):
         if item.name in frame.ctes:
@@ -334,6 +532,13 @@ def _compile_join(left, right, join, frame):
     if on is None or kind == "CROSS":
         return _theta(left, right, exp.true(), join_kind, frame)
     pairs, residual = _split_equalities(on, left, right)
+    kept = []
+    for term in residual:
+        if _refs_only(term, right):
+            right = _filter_scope(frame, right, _rewrite(term, right))
+        else:
+            kept.append(term)
+    residual = kept
     if residual or not pairs:
         predicate = on.this if isinstance(on, exp.Where) else on
         return _theta(left, right, predicate, join_kind, frame)
@@ -343,6 +548,8 @@ def _compile_join(left, right, join, frame):
 
 
 def _and_terms(node):
+    if isinstance(node, exp.Paren):
+        return _and_terms(node.this)
     if isinstance(node, exp.And):
         return _and_terms(node.this) + _and_terms(node.expression)
     return [node]
@@ -393,7 +600,36 @@ def _projections_from(scope, source):
     ]
 
 
+def _freshen_scope(frame, scope):
+    mapping = {}
+    expressions = []
+    outputs = []
+    for name in scope.outputs:
+        fresh = frame.col()
+        mapping[name] = fresh
+        expressions.append(dict(
+            output=fresh, expression=_q(name) + " AS " + _q(fresh)))
+        outputs.append(fresh)
+    by_alias = {}
+    for key, internal in scope.by_alias.items():
+        if internal in mapping:
+            by_alias[key] = mapping[internal]
+    by_name = {}
+    for public, internal in scope.by_name.items():
+        if internal in mapping and public not in by_name:
+            by_name[public] = mapping[internal]
+    for name in outputs:
+        by_name.setdefault(name, name)
+    node = frame.add(dict(
+        id=frame.nid("p"), op="project", input=scope.node,
+        expressions=expressions))
+    return _Scope(node, outputs, by_alias, by_name), mapping
+
+
 def _equi(left, right, pairs, frame):
+    if set(left.outputs) & set(right.outputs):
+        right, mapping = _freshen_scope(frame, right)
+        pairs = [(left_name, mapping[right_name]) for left_name, right_name in pairs]
     projections = (
         _projections_from(left, "left")
         + _projections_from(right, "right"))
@@ -547,9 +783,14 @@ def _peel_term(scope, term, sources, frame, read):
     if isinstance(term, exp.Not) and isinstance(term.this, exp.Exists):
         return _exists_join(scope, term.this, sources, frame, read, anti=True)
     if isinstance(term, exp.Not) and isinstance(term.this, exp.In):
+        if term.this.args.get("query") is not None:
+            return _in_join(scope, term.this, sources, frame, read, anti=True)
         raise _Fallback()
     if isinstance(term, exp.In) and term.args.get("query") is not None:
-        return _in_join(scope, term, sources, frame, read)
+        return _in_join(scope, term, sources, frame, read, anti=False)
+    compared = _scalar_eq(term)
+    if compared is not None:
+        return _scalar_eq_join(scope, compared, sources, frame, read)
     if any(isinstance(node, (exp.Subquery, exp.Exists)) for node in term.walk()):
         raise _Fallback()
     return None
@@ -561,7 +802,9 @@ def _exists_join(scope, exists, sources, frame, read, anti):
         inner = exists.this.this if isinstance(exists.this, exp.Subquery) else None
     if not isinstance(inner, exp.Select):
         raise _Fallback()
-    correlations, local = _split_correlation(inner.args.get("where"), scope)
+    inner_scope = _schema_scope(inner, sources)
+    correlations, local, residuals = _split_correlation(
+        inner.args.get("where"), scope, inner_scope)
     if not correlations:
         raise _Fallback()
     inner = inner.copy()
@@ -572,6 +815,9 @@ def _exists_join(scope, exists, sources, frame, read, anti):
         for extra in local[1:]:
             pred = exp.and_(pred, extra)
         right = _filter_scope(frame, right, _rewrite(pred, right))
+    if residuals:
+        return _exists_equi_filter(
+            scope, right, correlations, residuals, frame, anti)
     pairs = []
     for outer_col, inner_col in correlations:
         pairs.append((
@@ -580,58 +826,210 @@ def _exists_join(scope, exists, sources, frame, read, anti):
     return _keyed(scope, right, pairs, "anti" if anti else "semi", frame)
 
 
-def _in_join(scope, term, sources, frame, read):
+def _exists_equi_filter(scope, right, correlations, residuals, frame, anti):
+    pairs = [
+        (_lookup(outer_col, scope), _lookup(inner_col, right))
+        for outer_col, inner_col in correlations
+    ]
+    joined = _equi(scope, right, pairs, frame)
+    pred = residuals[0]
+    for extra in residuals[1:]:
+        pred = exp.and_(pred, extra)
+    joined = _filter_scope(frame, joined, _rewrite(pred, joined))
+    expressions = [
+        dict(output=name, expression=_q(name) + " AS " + _q(name))
+        for name in scope.outputs
+    ]
+    projected = frame.add(dict(
+        id=frame.nid("p"), op="project", input=joined.node,
+        expressions=expressions))
+    distinct = frame.add(dict(
+        id=frame.nid("d"), op="distinct", input=projected))
+    matched = _Scope(
+        distinct, list(scope.outputs),
+        {("", name): name for name in scope.outputs},
+        {name: name for name in scope.outputs})
+    identity = [(name, name) for name in scope.outputs]
+    return _keyed(scope, matched, identity, "anti" if anti else "semi", frame)
+
+
+def _in_join(scope, term, sources, frame, read, anti=False):
     query = term.args["query"]
     inner = query.this if isinstance(query, exp.Subquery) else query
     if not isinstance(inner, exp.Select) or len(inner.expressions) != 1:
         raise _Fallback()
-    correlations, local = _split_correlation(inner.args.get("where"), scope)
+    inner_scope = _schema_scope(inner, sources)
+    correlations, local, _residuals = _split_correlation(
+        inner.args.get("where"), scope, inner_scope)
+    if _residuals:
+        raise _Fallback()
     inner = inner.copy()
+    if correlations:
+        inner.set(
+            "expressions",
+            list(inner.expressions) + [column.copy() for _outer, column in correlations])
     _set_where(inner, local)
     right_id, right_outs = _compile_query(inner, sources, frame, read)
+    if len(right_outs) < 1:
+        raise _Fallback()
+    right = _Scope(
+        right_id, right_outs,
+        {("", name): name for name in right_outs},
+        {name: name for name in right_outs})
+    left_expr = term.this
+    if isinstance(left_expr, exp.Column):
+        left_key = _lookup(left_expr, scope)
+    else:
+        scope, left_key = _materialize_expr(scope, left_expr, frame)
+    pairs = []
+    corr_names = right_outs[1:]
+    if correlations:
+        if len(corr_names) < len(correlations):
+            raise _Fallback()
+        for (outer_col, _inner), corr_name in zip(correlations, corr_names):
+            pairs.append((_lookup(outer_col, scope), corr_name))
+    pairs.append((left_key, right_outs[0]))
+    return _keyed(scope, right, pairs, "anti" if anti else "semi", frame)
+
+
+def _scalar_eq(term):
+    if not isinstance(term, (exp.EQ, exp.LT, exp.GT, exp.LTE, exp.GTE)):
+        return None
+    if isinstance(term.expression, exp.Subquery):
+        return term, term.this, term.expression
+    if isinstance(term.this, exp.Subquery):
+        return term, term.expression, term.this
+    return None
+
+
+def _scalar_eq_join(scope, compared, sources, frame, read):
+    compare, outer_expr, subquery = compared
+    inner = subquery.this
+    if not isinstance(inner, exp.Select) or len(inner.expressions) != 1:
+        raise _Fallback()
+    agg = inner.expressions[0]
+    if not (_is_agg(agg) or _contains_agg(agg)):
+        raise _Fallback()
+    inner_scope = _schema_scope(inner, sources)
+    correlations, local, residuals = _split_correlation(
+        inner.args.get("where"), scope, inner_scope)
+    if residuals:
+        raise _Fallback()
+    if not correlations:
+        return _uncorrelated_scalar(
+            scope, outer_expr, inner, compare, sources, frame, read)
+    grouped = inner.copy()
+    keys = [column.copy() for _outer, column in correlations]
+    grouped.set(
+        "expressions",
+        keys + [exp.alias_(agg.copy(), "_m_agg", quoted=True)])
+    grouped.set("group", exp.Group(expressions=[column.copy() for column in keys]))
+    _set_where(grouped, local)
+    right_id, right_outs = _compile_query(grouped, sources, frame, read)
+    if len(right_outs) != len(correlations) + 1:
+        raise _Fallback()
+    right = _Scope(
+        right_id, right_outs,
+        {("", name): name for name in right_outs},
+        {name: name for name in right_outs})
+    right, mapping = _freshen_scope(frame, right)
+    right_outs = [mapping[name] for name in right_outs]
+    if isinstance(outer_expr, exp.Column):
+        left_key = _lookup(outer_expr, scope)
+    else:
+        scope, left_key = _materialize_expr(scope, outer_expr, frame)
+    pairs = []
+    for (outer_col, _inner), corr_name in zip(correlations, right_outs[:-1]):
+        pairs.append((_lookup(outer_col, scope), corr_name))
+    if isinstance(compare, exp.EQ):
+        pairs.append((left_key, right_outs[-1]))
+        return _equi(scope, right, pairs, frame)
+    scope = _equi(scope, right, pairs, frame)
+    pred = type(compare)(
+        this=exp.column(left_key, quoted=True),
+        expression=exp.column(right_outs[-1], quoted=True))
+    return _filter_scope(frame, scope, _rewrite(pred, scope))
+
+
+def _uncorrelated_scalar(scope, outer_expr, inner, compare, sources, frame, read):
+    copied = inner.copy()
+    if not isinstance(copied.expressions[0], exp.Alias):
+        copied.set(
+            "expressions",
+            [exp.alias_(copied.expressions[0], "_m_val", quoted=True)])
+    right_id, right_outs = _compile_query(copied, sources, frame, read)
     if len(right_outs) != 1:
         raise _Fallback()
+    if isinstance(outer_expr, exp.Column):
+        left_name = _lookup(outer_expr, scope)
+    else:
+        scope, left_name = _materialize_expr(scope, outer_expr, frame)
+    fresh = frame.col()
+    right_id = frame.add(dict(
+        id=frame.nid("p"), op="project", input=right_id,
+        expressions=[dict(
+            output=fresh,
+            expression=_q(right_outs[0]) + " AS " + _q(fresh))]))
+    right_outs = [fresh]
+    scope, left_key = _materialize_expr(scope, exp.Literal.number(1), frame)
     right = _Scope(
         right_id, right_outs,
         {("", right_outs[0]): right_outs[0]},
         {right_outs[0]: right_outs[0]})
-    # The compiled subquery exposes public names. Correlation columns inside
-    # it were renamed, so equality on those columns is only available when
-    # the subquery select list is the join key. Correlated IN falls back
-    # unless the correlation columns are exactly the selected output.
-    if correlations:
-        raise _Fallback()
-    left_expr = term.this
-    if not isinstance(left_expr, exp.Column):
-        raise _Fallback()
-    pairs = [(_lookup(left_expr, scope), right_outs[0])]
-    return _keyed(scope, right, pairs, "semi", frame)
+    right, right_key = _materialize_expr(right, exp.Literal.number(1), frame)
+    scope = _equi(scope, right, [(left_key, right_key)], frame)
+    pred = type(compare)(
+        this=exp.column(left_name, quoted=True),
+        expression=exp.column(right_outs[0], quoted=True))
+    return _filter_scope(frame, scope, _rewrite(pred, scope))
 
 
-def _split_correlation(where, outer):
+def _split_correlation(where, outer, inner=None):
     if where is None:
-        return [], []
+        return [], [], []
     expr = where.this if isinstance(where, exp.Where) else where
     correlations = []
     local = []
+    residuals = []
     for term in _and_terms(expr):
         if (
             isinstance(term, exp.EQ)
             and isinstance(term.this, exp.Column)
             and isinstance(term.expression, exp.Column)
         ):
-            left_outer = _is_outer(term.this, outer)
-            right_outer = _is_outer(term.expression, outer)
+            left_outer = _column_is_outer(term.this, outer, inner)
+            right_outer = _column_is_outer(term.expression, outer, inner)
             if left_outer and not right_outer:
                 correlations.append((term.this, term.expression))
                 continue
             if right_outer and not left_outer:
                 correlations.append((term.expression, term.this))
                 continue
-        if _references_outer(term, outer):
-            raise _Fallback()
+        if _references_outer(term, outer, inner):
+            residuals.append(term)
+            continue
         local.append(term)
-    return correlations, local
+    return correlations, local, residuals
+
+
+def _schema_scope(select, sources):
+    by_alias = {}
+    by_name = {}
+    for table in select.find_all(exp.Table):
+        alias = str(table.alias or table.name)
+        for column in sources.get(table.name) or ():
+            by_alias[(alias, column)] = column
+            if column in by_name:
+                by_name[column] = None
+            else:
+                by_name[column] = column
+    return _Scope(None, [], by_alias, by_name)
+
+
+def _column_is_outer(column, outer, inner):
+    if inner is not None and _in_scope(column, inner):
+        return False
+    return _is_outer(column, outer)
 
 
 def _set_where(select, terms):
@@ -651,9 +1049,9 @@ def _is_outer(column, outer):
         return False
 
 
-def _references_outer(term, outer):
+def _references_outer(term, outer, inner=None):
     for node in term.walk():
-        if isinstance(node, exp.Column) and _is_outer(node, outer):
+        if isinstance(node, exp.Column) and _column_is_outer(node, outer, inner):
             return True
     return False
 
@@ -665,19 +1063,32 @@ def _filter_scope(frame, scope, predicate):
     return _Scope(node, scope.outputs, scope.by_alias, scope.by_name)
 
 
-def _compile_aggregate(scope, tree, frame):
+def _compile_aggregate(scope, tree, frame, sources=None, read="duckdb"):
     group = tree.args.get("group")
-    select_has_agg = any(_is_agg(item) for item in tree.expressions)
+    _resolve_group_aliases(tree)
+    select_has_agg = any(_contains_agg(item) for item in tree.expressions)
     having = tree.args.get("having")
     if group is None and not select_has_agg and having is None:
         return None
     window_call = _find_m2s_window(tree)
     if window_call is not None:
         return _compile_window_agg(scope, tree, frame, window_call)
+    scope, tree = _bind_computed(scope, tree, frame)
+    frame.scope = scope
+    group = tree.args.get("group")
     sets = _grouping_sets(group, scope)
     if sets is None:
         sets = [[]]
     outputs = _select_slots(tree, scope, frame)
+    scope = getattr(frame, "scope", scope)
+    having = tree.args.get("having")
+    if having is not None:
+        having_expr = having.this if isinstance(having, exp.Having) else having
+        having_expr, extra = _pull_aggs(having_expr, scope, frame)
+        tree.set("having", exp.Having(this=having_expr))
+        having = tree.args.get("having")
+        for spec in extra:
+            outputs.append(("hidden", spec["output"], spec["output"], spec))
     grouped_cols = {column for item in sets for column in item}
     for kind, _public, internal, _spec in outputs:
         if kind == "key" and internal not in grouped_cols:
@@ -687,10 +1098,16 @@ def _compile_aggregate(scope, tree, frame):
         aggregates = []
         seen_outputs = set()
         for slot in outputs:
-            if slot[0] != "agg" or slot[3]["output"] in seen_outputs:
-                continue
-            aggregates.append(slot[3])
-            seen_outputs.add(slot[3]["output"])
+            specs = []
+            if slot[0] == "agg":
+                specs = [slot[3]]
+            elif slot[0] in {"formula", "hidden"}:
+                specs = slot[3] if slot[0] == "formula" else [slot[3]]
+            for spec in specs:
+                if spec["output"] in seen_outputs:
+                    continue
+                aggregates.append(spec)
+                seen_outputs.add(spec["output"])
         if not aggregates:
             raise ValueError("GROUP BY without an aggregate is unsupported")
         node = frame.add(dict(
@@ -709,6 +1126,8 @@ def _compile_aggregate(scope, tree, frame):
                     expr = _q(internal) + " AS " + _q(public)
                 else:
                     expr = "NULL AS " + _q(public)
+            elif kind == "formula":
+                expr = internal + " AS " + _q(public)
             else:
                 expr = _q(spec["output"]) + " AS " + _q(public)
             expressions.append(dict(output=public, expression=expr))
@@ -727,11 +1146,24 @@ def _compile_aggregate(scope, tree, frame):
             node, produced,
             {("", name): name for name in produced},
             {name: name for name in produced})
-        if any(isinstance(item, exp.AggFunc) for item in having_expr.walk()):
-            raise ValueError("HAVING must use select aliases of aggregates")
-        node_id = _filter_scope(
-            frame, post, _rewrite(having_expr, post)).node
-        node = node_id
+        if any(isinstance(item, (exp.Subquery, exp.Exists)) for item in having_expr.walk()):
+            post = _apply_where(post, having_expr, sources, frame, read)
+            node = post.node
+            produced = list(post.outputs)
+        else:
+            if any(isinstance(item, exp.AggFunc) for item in having_expr.walk()):
+                raise ValueError("HAVING must use select aliases of aggregates")
+            node = _filter_scope(
+                frame, post, _rewrite(having_expr, post)).node
+    visible = [slot[1] for slot in outputs if slot[0] != "hidden"]
+    if any(slot[0] == "hidden" for slot in outputs):
+        expressions = [
+            dict(output=name, expression=_q(name) + " AS " + _q(name))
+            for name in visible
+        ]
+        node = frame.add(dict(
+            id=frame.nid("p"), op="project", input=node, expressions=expressions))
+        produced = visible
     return _Scope(
         node, produced,
         {("", name): name for name in produced},
@@ -742,7 +1174,7 @@ def _select_slots(tree, scope, frame):
     slots = []
     seen_aggs = {}
     for item in tree.expressions:
-        public = str(item.alias_or_name or "").strip()
+        public = _output_name(item)
         target = item.this if isinstance(item, exp.Alias) else item
         if isinstance(target, exp.Star):
             raise ValueError("SELECT * cannot be combined with GROUP BY")
@@ -755,6 +1187,12 @@ def _select_slots(tree, scope, frame):
             if not public or public == spec["output"]:
                 public = spec["output"]
             slots.append(("agg", public, spec["output"], spec))
+            continue
+        if _contains_agg(target):
+            sql, specs = _swap_aggs(target, scope, frame)
+            if not public:
+                public = frame.col()
+            slots.append(("formula", public, sql, specs))
             continue
         if isinstance(target, exp.Column):
             internal = _lookup(target, scope)
@@ -809,9 +1247,146 @@ def _grouping_columns(item, scope):
     raise ValueError("unsupported GROUPING SETS entry")
 
 
+def _resolve_group_aliases(tree):
+    aliases = {}
+    for item in tree.expressions:
+        if isinstance(item, exp.Alias):
+            aliases[str(item.alias)] = item.this
+    group = tree.args.get("group")
+    if group is None:
+        return
+    rewritten = []
+    for item in group.expressions or []:
+        if isinstance(item, exp.Column) and not item.table and item.name in aliases:
+            rewritten.append(aliases[item.name].copy())
+        else:
+            rewritten.append(item)
+    group.set("expressions", rewritten)
+
+
+def _contains_agg(node):
+    target = node.this if isinstance(node, exp.Alias) else node
+    return any(
+        isinstance(item, (exp.AggFunc, exp.GroupConcat)) for item in target.walk()
+    )
+
+
+def _swap_aggs(expr, scope, frame):
+    specs = []
+
+    def walk(node):
+        if isinstance(node, exp.Subquery):
+            return node
+        if isinstance(node, (exp.AggFunc, exp.GroupConcat)):
+            spec = _agg_spec(node, scope, frame)
+            specs.append(spec)
+            return exp.column(spec["output"], quoted=True)
+        if not isinstance(node, exp.Expression):
+            return node
+        for arg, value in list(node.args.items()):
+            if isinstance(value, list):
+                node.set(arg, [
+                    walk(item) if isinstance(item, exp.Expression) else item
+                    for item in value
+                ])
+            elif isinstance(value, exp.Expression):
+                node.set(arg, walk(value))
+        return node
+
+    return walk(expr.copy()).sql(dialect="duckdb"), specs
+
+
+def _pull_aggs(expr, scope, frame):
+    sql, specs = _swap_aggs(expr, scope, frame)
+    return sqlglot.parse_one(sql, read="duckdb"), specs
+
+
 def _is_agg(node):
     target = node.this if isinstance(node, exp.Alias) else node
     return isinstance(target, (exp.AggFunc, exp.GroupConcat))
+
+
+def _bind_computed(scope, tree, frame):
+    """Project arithmetic inside aggregates and GROUP BY to real columns.
+
+    SUM(price * (1 - discount)) then groups by that column. The aggregate
+    itself stays incremental.
+    """
+    tree = tree.copy()
+    wanted = []
+
+    def consider(node):
+        if node is None or isinstance(node, (exp.Column, exp.Star, exp.Literal)):
+            return
+        wanted.append(node)
+
+    group = tree.args.get("group")
+    if group is not None:
+        for item in group.expressions or []:
+            consider(item)
+    for item in tree.expressions:
+        target = item.this if isinstance(item, exp.Alias) else item
+        if isinstance(target, (exp.AggFunc, exp.GroupConcat)):
+            arg = target.this
+            if isinstance(arg, exp.Order):
+                consider(arg.this)
+            elif isinstance(arg, exp.Distinct) and arg.expressions:
+                consider(arg.expressions[0])
+            else:
+                consider(arg)
+    mapping = {}
+    for node in wanted:
+        try:
+            key = node.sql(dialect="duckdb")
+        except Exception:
+            continue
+        if key in mapping:
+            continue
+        scope, name = _materialize_expr(scope, node, frame)
+        mapping[key] = name
+    if not mapping:
+        return scope, tree
+
+    def replace(node):
+        if isinstance(node, exp.Subquery):
+            return node
+        if not isinstance(node, exp.Expression):
+            return node
+        try:
+            key = node.sql(dialect="duckdb")
+        except Exception:
+            key = None
+        if key in mapping:
+            return exp.column(mapping[key], quoted=True)
+        for arg, value in list(node.args.items()):
+            if isinstance(value, list):
+                node.set(arg, [
+                    replace(item) if isinstance(item, exp.Expression) else item
+                    for item in value
+                ])
+            elif isinstance(value, exp.Expression):
+                node.set(arg, replace(value))
+        return node
+
+    return scope, replace(tree)
+
+
+def _materialize_expr(scope, expr, frame):
+    name = frame.col()
+    expressions = [
+        dict(output=column, expression=_q(column) + " AS " + _q(column))
+        for column in scope.outputs
+    ]
+    expressions.append(dict(
+        output=name,
+        expression=_rewrite(expr, scope) + " AS " + _q(name)))
+    node = frame.add(dict(
+        id=frame.nid("p"), op="project", input=scope.node,
+        expressions=expressions))
+    by_alias = dict(scope.by_alias)
+    by_name = dict(scope.by_name)
+    by_name[name] = name
+    return _Scope(node, list(scope.outputs) + [name], by_alias, by_name), name
 
 
 def _agg_spec(target, scope, frame):
@@ -844,10 +1419,14 @@ def _agg_spec(target, scope, frame):
     function = functions.get(type(target))
     if function is None:
         raise ValueError("unsupported aggregate")
-    if not isinstance(target.this, exp.Column):
-        raise ValueError(function + " input must be a column")
+    if isinstance(target.this, exp.Column):
+        source = _lookup(target.this, scope)
+    else:
+        scope, source = _materialize_expr(
+            getattr(frame, "scope", scope), target.this, frame)
+        frame.scope = scope
     return dict(
-        output=output, function=function, input=_lookup(target.this, scope))
+        output=output, function=function, input=source)
 
 
 def _string_agg_spec(target, scope, output):
@@ -885,7 +1464,7 @@ def _string_agg_spec(target, scope, output):
 
 def _compile_projection(scope, tree, frame):
     if tree.args.get("group") is not None or any(
-        _is_agg(item) for item in tree.expressions
+        _contains_agg(item) for item in tree.expressions
     ):
         return scope
     expressions = []
@@ -893,7 +1472,7 @@ def _compile_projection(scope, tree, frame):
     by_name = {}
     for item in tree.expressions:
         target = item.this if isinstance(item, exp.Alias) else item
-        public = str(item.alias_or_name or "").strip()
+        public = _output_name(item)
         if isinstance(target, exp.Star):
             for internal in _star_columns(scope, target):
                 public = _public_of(scope, internal)
@@ -984,6 +1563,8 @@ def _lookup(column, scope):
             raise ValueError("unknown column " + table + "." + name)
         return scope.by_alias[key]
     if name not in scope.by_name or scope.by_name[name] is None:
+        if scope.outputs.count(name) == 1:
+            return name
         raise ValueError("ambiguous or unknown column " + name)
     return scope.by_name[name]
 

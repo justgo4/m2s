@@ -269,7 +269,7 @@ def test_scripted_sql():
         compiled = run_sql(sql, sources, [first, second], sql)
         text = stream_ir.explain(compiled["plan"])
         if "NOT IN" in sql:
-            assert "recompute" in text
+            assert "keyed_join" in text
         elif "FULL OUTER" in sql or " LEFT " in sql or "ANTI " in sql:
             assert "keyed_join" in text
         elif "o.amount > c.id" in sql:

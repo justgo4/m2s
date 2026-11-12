@@ -1,11 +1,14 @@
 # 斷點
 
-更新：2026-11-11。新會話先讀本檔，再讀 [ROADMAP.md](ROADMAP.md)。不要重做里程碑 1 的降下與差分測試。
+更新：2026-11-12。新會話先讀本檔，再讀 [ROADMAP.md](ROADMAP.md)。不要重做已合併的里程碑，也不要重跑已通過的 TPC-H 差分，除非編譯器又改了。
 
 ## 當前里程碑
 
-第二輪第 8 項：Docker、Helm、離線包。
-分支 `cursor/package-23fa`。不修改 workflow。門檻不改。
+第二輪第 9 項：TPC-H Q1–Q22 對 DuckDB 的增量差分。
+分支 `cursor/tpch-diff-23fa`，基線 `aaac2b681d738380ee0ca6b4c633dfed36f72f87`。
+不修改 workflow。門檻不改。查詢文字由 DuckDB `tpch_queries()` 在執行時取得，不進 Git。
+22 條都是增量計畫（沒有 `recompute` 或 `theta_join`），scale 0.01 與獨立 DuckDB 逐列一致。
+實測程式 SHA：`7ba9cf9398aefa1e7287feb6606ee91858dc8218`。
 
 ## 倉庫位置
 
@@ -51,8 +54,8 @@
 
 ## 正在做
 
-指標頁面已合併，PR [#83](https://github.com/justgo4/m2s/pull/83)。
-Helm 渲染 448 位元組，映像 `sha256:4076ba3f69fa` 共 43276576 位元組，離線包 1126 位元組。正在開 PR。
+TPC-H Q1–Q22 已在本機差分通過。下一步是開 PR，然後做 Nexmark。
+離線包仍只有 1126 位元組的目錄打包，不能算完成；要在 Nexmark 之後做成含全部 wheels 的安裝包，並在斷網環境安裝、跑 `j4.py selftest`。
 
 ## 里程碑 3 程式
 
@@ -92,9 +95,44 @@ Helm 渲染 448 位元組，映像 `sha256:4076ba3f69fa` 共 43276576 位元組�
 
 `stream_sql_test.py` 含腳本化與種子 `20261111` 的隨機增刪改，每批結束與 DuckDB 全量重算逐列一致。也含方言、MV watermark 與 v1 semantic id。
 
+## TPC-H 差分（scale 0.01）
+
+命令：`python3 tools/tpch_diff_test.py`。Python 3.12.3，DuckDB 1.5.5。
+`python3 tools/stream_sql_test.py` 為 `stream_sql_test ok`。
+`python3 tools/stream_zset_test.py` 為 `stream_zset_test ok`。
+`python3 tools/privacy_check.py` 為 `PRIVACY PASS files=282 findings=0`。
+每一題都印 `incremental`。列數是輸出權重和：
+
+| 題 | 模式 | 列數 |
+|---|---|---|
+| Q1 | incremental | 4 |
+| Q2 | incremental | 4 |
+| Q3 | incremental | 10 |
+| Q4 | incremental | 5 |
+| Q5 | incremental | 5 |
+| Q6 | incremental | 1 |
+| Q7 | incremental | 4 |
+| Q8 | incremental | 2 |
+| Q9 | incremental | 173 |
+| Q10 | incremental | 20 |
+| Q11 | incremental | 359 |
+| Q12 | incremental | 2 |
+| Q13 | incremental | 32 |
+| Q14 | incremental | 1 |
+| Q15 | incremental | 1 |
+| Q16 | incremental | 296 |
+| Q17 | incremental | 1 |
+| Q18 | incremental | 2 |
+| Q19 | incremental | 1 |
+| Q20 | incremental | 1 |
+| Q21 | incremental | 1 |
+| Q22 | incremental | 7 |
+
+最後一行：`tpch_diff_test ok queries=22 scale=0.01`。沒有用 `force_recompute`。
+
 ## 下一步
 
-合併包裝後做 TPC-H Q1–Q22 對 DuckDB，再做 Nexmark，然後重跑 strict-small。
+開 TPC-H 的 PR 並合併後做 Nexmark，再做真正的離線包，最後在當時的 `main` 重跑 strict-small。
 舊 strict-small SHA `96501dcd0d7bf3c7b84b7d2ac17aaed7d759a9d0` 不能算到新 SHA。
 正式 72h 仍無數據，阻塞原因是沒有可連續 72 小時的隔離主機。
 

@@ -239,7 +239,17 @@ def _eval_aggregate(groups, delta, node):
     emitted = []
     keys = node["group_keys"]
     aggregates = node["aggregates"]
-    for row, value in stream_zset.consolidate(delta):
+    consolidated = stream_zset.consolidate(delta)
+    # SQL returns one row for an aggregate with no GROUP BY, even when the
+    # input is empty. SUM/AVG/MIN/MAX are NULL and COUNT is 0. A later row
+    # retracts that empty row; retracting the last row publishes it again.
+    if not keys and () not in groups and not consolidated:
+        slot = dict(
+            rows=0, accum=_initial(aggregates), values=(), published=True)
+        groups[()] = slot
+        emitted.append((_render(keys, (), aggregates, slot), 1))
+        return stream_zset.consolidate(emitted)
+    for row, value in consolidated:
         value = stream_zset.weight(value)
         if value == 0:
             continue
@@ -256,17 +266,29 @@ def _eval_aggregate(groups, delta, node):
         old = None
         if slot is not None and slot["rows"] != 0:
             old = _render(keys, slot["values"], aggregates, slot)
+        elif (
+            slot is not None
+            and not keys
+            and slot.get("published")
+            and slot["rows"] == 0
+        ):
+            old = _render(keys, slot["values"], aggregates, slot)
         if slot is None:
             if value < 0:
                 raise RuntimeError(
                     "aggregate retract references a missing group")
             slot = dict(
-                rows=0, accum=_initial(aggregates), values=values)
+                rows=0, accum=_initial(aggregates), values=values,
+                published=False)
             groups[key] = slot
         _accumulate(slot, row, value, aggregates)
         if slot["rows"] == 0:
-            groups.pop(key, None)
-            new = None
+            if keys:
+                groups.pop(key, None)
+                new = None
+            else:
+                slot["published"] = True
+                new = _render(keys, slot["values"], aggregates, slot)
         else:
             new = _render(keys, slot["values"], aggregates, slot)
         if old == new:

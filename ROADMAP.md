@@ -27,8 +27,10 @@ Materialize、Bytewax、Proton、Pathway、Arroyo 對照的通用增量／串流
 7. Prometheus 與 Web UI：本機埠的 `/metrics` 與 HTML 頁面由 HTTP 客戶端讀到。
 8. Docker／Helm／離線包：盡力在 VM 上建映像、渲染 chart、打離線包。
    工具無法安裝時寫明命令與錯誤，不把空檔案當映像。
-9. TPC-H Q1–Q22：DuckDB 產生器提供資料與查詢文字，不把官方原文另存進 Git。
-   每一題與獨立的 DuckDB 執行逐列一致。失敗的題目保留錯誤。
+9. TPC-H Q1–Q22：已完成。DuckDB 產生器提供資料與查詢文字，原文不進 Git。
+   SHA `7ba9cf9398aefa1e7287feb6606ee91858dc8218`，`python3 tools/tpch_diff_test.py`，
+   scale 0.01。Q1–Q22 都是 incremental，列數 4,4,10,5,5,1,4,2,173,20,359,2,32,1,1,296,1,2,1,1,1,7。
+   結尾 `tpch_diff_test ok queries=22 scale=0.01`。沒有用 `force_recompute`。
 10. Nexmark：合成 person／auction／bid，查詢與 DuckDB 全量重算逐列一致。
 11. 重跑 strict-small。門檻不改。數字只屬於該次 SHA。
 
