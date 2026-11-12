@@ -74,6 +74,7 @@ scale 0.01，22 條都是 incremental。
 三個網路命名空間的 Flight 已量過。`python3 tools/flight_netns_test.py` 印出
 `flight_netns nodes=3 scale_nodes=4 rows=200 sum=600 bytes=9996 ping_ms=0.139 exchange_seconds=0.014985 rtt_seconds=0.001443 failover_seconds=0.119745 scale_seconds=0.181041`。
 既有 `python3 tools/stream_flight_test.py` 仍通過。
+實測程式 SHA：`ebc780671b9a16409c1e5670af4a91a6d77d0906`。
 下一步是開 PR，然後做 MySQL 與 PostgreSQL 的加欄、改型、刪欄，以及下游 MV。
 
 ## 里程碑 3 程式

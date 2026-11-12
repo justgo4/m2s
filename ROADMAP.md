@@ -66,7 +66,7 @@ Materialize、Bytewax、Proton、Pathway、Arroyo 對照的通用增量／串流
    `python3 tools/flight_netns_test.py`：sum=600，bytes=9996，ping_ms=0.139，
    exchange_seconds=0.014985，rtt_seconds=0.001443，
    failover_seconds=0.119745，scale_seconds=0.181041。
-   這不是分散式 SLO。
+   這不是分散式 SLO。SHA `ebc780671b9a16409c1e5670af4a91a6d77d0906`。
 4. DDL：MySQL 與 PostgreSQL 的加欄、改型、刪欄，以及下游 MV 的處理。
 
 ## 實作順序
