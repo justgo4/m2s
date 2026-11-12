@@ -61,8 +61,7 @@ scale 0.01，22 條都是 incremental。
 
 ## 正在做
 
-Nexmark 差分已在本機通過。下一步是開 PR，然後做真正的離線包。
-離線包仍只有 1126 位元組的目錄打包，不能算完成。要做成含全部 wheels 的安裝包，並在斷網環境安裝、跑 `j4.py selftest`。
+離線包已在無網路的環境安裝並跑過 selftest。下一步是開 PR，然後在合併後的 `main` 重跑 strict-small。
 
 ## 里程碑 3 程式
 
@@ -148,9 +147,21 @@ q7 是 `m2s_tumble`，對照 SQL 是同樣的整段分組，不是官方原文�
 `python3 tools/privacy_check.py` 為 `PRIVACY PASS files=283 findings=0`。
 實測程式 SHA：`13f52326b54e06ecd74fba49648d4c0968855ef4`。
 
+## 離線包
+
+命令：`python3 tools/offline_install_test.py`。
+產生器：`python3 tools/make_offline_bundle.py /tmp/m2s-offline.tgz`。包不進 Git。
+實測程式 SHA：`ba76eac23ca0b4d4bfb9641e874216ef760f0adb`。
+包大小 106913552 位元組，wheels=18（requirements.txt 加上 rocksdict 0.3.29、minio 7.2.20、psycopg2-binary 2.9.9 與其依賴）。
+原生檔：`mysql_arrow_reader` 306272 位元組，`stream_hot_rs.so` 529632 位元組。另有 `deploy/` 設定範本與 `install.sh`。
+安裝在 `sudo unshare -n` 裡進行，只把 loopback 拉起來。探針對 `https://pypi.org` 得到 `network-blocked URLError`。
+`pip install --no-index --find-links` 印出 `offline_install ok`。
+同一個命名空間裡 `j4.py selftest` 印出 `SELFTEST OK: 37 offline regression groups`，線上檢查跳過：沒有資料庫設定。
+結尾：`offline_install_test ok bytes=106913552 wheels=18 native_bytes=306272`。
+
 ## 下一步
 
-開 Nexmark 的 PR 並合併後做離線包，最後在當時的 `main` 重跑 strict-small。
+開離線包的 PR 並合併，然後在那個 `main` SHA 重跑 strict-small。新的 run directory，門檻不改。
 舊 strict-small SHA `96501dcd0d7bf3c7b84b7d2ac17aaed7d759a9d0` 不能算到新 SHA。
 正式 72h 仍無數據，阻塞原因是沒有可連續 72 小時的隔離主機。
 
