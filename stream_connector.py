@@ -11,6 +11,7 @@ SEMANTICS = ("at_least_once", "effectively_once", "downstream_dedup")
 _IMPLEMENTED = {
     "mysql": "source",
     "starrocks": "sink",
+    "clickhouse": "sink",
 }
 
 
@@ -26,6 +27,9 @@ def open_connector(name, direction):
             "connector %s/%s is not implemented; refusing it" % (key, direction))
     if key == "mysql":
         return MysqlSource()
+    if key == "clickhouse":
+        from clickhouse_sink import ClickHouseSink
+        return ClickHouseSink()
     return StarrocksSink()
 
 

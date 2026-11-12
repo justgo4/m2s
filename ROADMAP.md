@@ -54,7 +54,9 @@ Materialize、Bytewax、Proton、Pathway、Arroyo 對照的通用增量／串流
    1,3,4,5,6,7,11,15,16,17,18,19,21,24,25,26,27,29,30,31,32,33,34,37,39,40,42,43,46,48,50,52,55,56,59,60,62,64,65,66,68,69,71,73,74,75,76,78,80,81,82,84,87,91,92,94,95,96,97。
    共 59 條，都是 incremental。SHA `f8086a70e3b4d2430a5cec26e96e52b23825f83d`。
    其餘還沒通過：有的退回全量，有的計畫或列值不一致，Q72 在這台 VM 上被 OOM 殺掉（exit 137）。
-2. ClickHouse、Doris、Iceberg、Paimon 下游寫入。
+2. ClickHouse：官方靜態包 v26.10.2.103。1 GiB 上限在啟動後 RSS 已超過上限，查詢被拒，所以伺服器上限設成 4 GiB。
+   `python3 tools/clickhouse_sink_test.py`：rows=4，deliveries=2，重送 d1 沒有再寫，重啟後仍是 4 列。
+   Doris、Iceberg、Paimon 還沒做。
 3. CDC 熱路徑對照。新的沒有比較快就不切換。
 
 ## 第三輪
