@@ -15,8 +15,8 @@ import stream_cluster
 
 
 class _Worker(flight.FlightServerBase):
-    def __init__(self):
-        super().__init__("grpc://127.0.0.1:0")
+    def __init__(self, host="127.0.0.1"):
+        super().__init__("grpc://%s:0" % host)
         self.state = {}
         self.batches = 0
         self.nbytes = 0
@@ -37,6 +37,14 @@ class _Worker(flight.FlightServerBase):
 def _serve(ready):
     server = _Worker()
     ready.put(int(server.port))
+    server.serve()
+
+
+def serve_address(host, port_path):
+    """Bind one Flight worker on a real address and publish its port."""
+    server = _Worker(host)
+    with open(port_path, "w") as handle:
+        handle.write(str(int(server.port)))
     server.serve()
 
 
@@ -139,3 +147,9 @@ class FlightCluster:
         self.clients[index] = client
         self.mirror[index] = state
         return time.perf_counter() - started
+
+
+if __name__ == "__main__":
+    import sys
+    if len(sys.argv) == 4 and sys.argv[1] == "serve":
+        serve_address(sys.argv[2], sys.argv[3])
