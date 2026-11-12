@@ -4,8 +4,9 @@
 
 ## 當前里程碑
 
-第三輪第 2 項：可操作的作業頁。分支 `cursor/ops-ui-23fa`，
-基線 `307ad46787f72a35abe1581e07213c339b940d73`。
+第三輪第 3 項：三個網路命名空間上的 Arrow Flight。
+分支 `cursor/flight-netns-23fa`。每個 worker 綁自己的 veth 位址。
+不把這次延遲寫成分散式 SLO。門檻不改。
 頁面畫出 DAG、每個運算子的列數與延遲、checkpoint epoch。
 暫停時新批次不落地，checkpoint 不前進；恢復後才寫入。
 WASM 用 wasmtime 50.0.1，限制 fuel，拒絕 import。Rust 先編成 wasm32 再進同一個沙盒。
@@ -70,11 +71,10 @@ scale 0.01，22 條都是 incremental。
 
 ## 正在做
 
-作業頁已在本機打過。`python3 tools/ops_ui_test.py` 印出
-`ops_ui operators=4 output_rows=101 paused_rejects=1 checkpoint_epoch=1 max_operator_latency_seconds=0.038459`。
-Chrome `--headless=new --no-sandbox --dump-dom` 在 60 秒上限內寫出 1845 位元組，含 `job orders`、`checkpoint_epoch=1`、`checkpoint_status=completed`、`<svg` 與 `<table`。Chrome 寫完 DOM 後沒有自己退出，被 timeout 以 124 結束。
-實測程式 SHA：`d42c18dada0aea9cb37736bd45a0efbfe5f89fe0`。
-下一步是開 PR，然後做 3 個網路命名空間上的 Arrow Flight。
+三個網路命名空間的 Flight 已量過。`python3 tools/flight_netns_test.py` 印出
+`flight_netns nodes=3 scale_nodes=4 rows=200 sum=600 bytes=9996 ping_ms=0.139 exchange_seconds=0.014985 rtt_seconds=0.001443 failover_seconds=0.119745 scale_seconds=0.181041`。
+既有 `python3 tools/stream_flight_test.py` 仍通過。
+下一步是開 PR，然後做 MySQL 與 PostgreSQL 的加欄、改型、刪欄，以及下游 MV。
 
 ## 里程碑 3 程式
 
