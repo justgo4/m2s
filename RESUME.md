@@ -4,7 +4,9 @@
 
 ## 當前里程碑
 
-第四輪：ClickHouse 寫入剛測完，接著必須把 TPC-DS 剩下的約 40 條修到全部增量且與 DuckDB 一致。
+第四輪：ClickHouse 寫入程式 SHA `03ed3ed000fb8f6163ebf87c586ee132dc75dc59`。
+`clickhouse_sink rows=4 deliveries=2 replayed=0 restarted=1`。
+接著必須把 TPC-DS 剩下的約 40 條修到全部增量且與 DuckDB 一致。
 Q89 的 `ORDER BY is not a select output` 是這次引入的回歸，要修。
 Q72 不能跳過，要修到不再 OOM。正式 72h 仍阻塞：沒有隔離主機。
 頁面畫出 DAG、每個運算子的列數與延遲、checkpoint epoch。
