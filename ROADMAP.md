@@ -70,7 +70,7 @@ Materialize、Bytewax、Proton、Pathway、Arroyo 對照的通用增量／串流
 4. DDL：已完成。MySQL 與 PostgreSQL 都做了加可空欄、int 放寬成 bigint、
    varchar(32) 縮成 varchar(8)、刪欄。來源列數維持 1。
    下游 MV：加欄與放寬是 propagate，縮窄與刪欄是 rebuild，drop_rows=0，retained_rows=1。
-   `python3 tools/ddl_mv_test.py`。
+   `python3 tools/ddl_mv_test.py`。SHA `a3074c85f20e129f02688b692143cfeed2bf225f`。
 
 ## 實作順序
 

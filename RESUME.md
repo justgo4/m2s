@@ -75,6 +75,7 @@ DDL 已在真實 MySQL 8.0.46 與 PostgreSQL 上跑過。
 `ddl_mv mysql=add,widen,narrow,drop postgres=add,widen,narrow,drop mv_add=propagate mv_widen=propagate mv_narrow=rebuild mv_drop=rebuild retained_rows=1 drop_rows=0`。
 來源表列數維持 1。`stream_connector_test` 與 `pg_ddl_test` 仍通過。
 `python3 tools/privacy_check.py` 為 `PRIVACY PASS files=290 findings=0`。
+實測程式 SHA：`a3074c85f20e129f02688b692143cfeed2bf225f`。
 
 ## 里程碑 3 程式
 
@@ -188,8 +189,10 @@ MySQL 8.0.46，GTID ON。StarRocks `4.1.1-14b7e3f`，`default_replication_num=1`
 
 ## 下一步
 
-第二輪 1–11 都有本機實測。正式 `p11-50m-50rps-72h-v4` 仍無數據。
+第三輪要求的 UDF、作業頁、三節點 Flight、DDL 都有本機實測。
+正式 `p11-50m-50rps-72h-v4` 仍無數據。
 阻塞原因是沒有可連續 72 小時的隔離主機。不要在這台 VM 上啟動它。
+Doris、ClickHouse、Iceberg、Paimon 這台 VM 沒有服務，連接器維持拒絕。
 
 ## 未解決
 
