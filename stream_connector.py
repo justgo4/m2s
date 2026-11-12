@@ -77,10 +77,16 @@ class StarrocksSink:
 def plan_ddl(change):
     action = str(change.get("action") or "")
     if action == "add" and bool(change.get("nullable")):
-        return dict(propagate=True, rebuild=False, drop_rows=False)
-    if action in {"drop", "narrow"}:
-        return dict(propagate=False, rebuild=True, drop_rows=False)
-    raise ValueError("DDL change is not classified")
+        decision = dict(propagate=True, rebuild=False, drop_rows=False, mv="propagate")
+    elif action == "widen":
+        decision = dict(propagate=True, rebuild=False, drop_rows=False, mv="propagate")
+    elif action in {"drop", "narrow", "incompatible"}:
+        decision = dict(propagate=False, rebuild=True, drop_rows=False, mv="rebuild")
+    elif action == "add":
+        decision = dict(propagate=False, rebuild=True, drop_rows=False, mv="rebuild")
+    else:
+        raise ValueError("DDL change is not classified")
+    return decision
 
 
 def apply_add_nullable(rows, column):
@@ -90,3 +96,21 @@ def apply_add_nullable(rows, column):
         item.setdefault(column, None)
         copied.append(item)
     return copied
+
+
+def apply_mv(change, rows):
+    """Apply a classified DDL change to a downstream MV image.
+
+    A propagated add puts NULL in the new column and keeps every row.
+    A widen keeps the values. A rebuild keeps the current rows too:
+    nothing is deleted while the MV waits to be rebuilt.
+    """
+    decision = plan_ddl(change)
+    copied = [dict(row) for row in rows]
+    if decision["mv"] == "propagate" and str(change.get("action")) == "add":
+        column = str(change["column"])
+        for row in copied:
+            row.setdefault(column, None)
+    decision = dict(decision)
+    decision["retained_rows"] = len(copied)
+    return decision, copied

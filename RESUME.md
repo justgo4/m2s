@@ -4,9 +4,9 @@
 
 ## 當前里程碑
 
-第三輪第 3 項：三個網路命名空間上的 Arrow Flight。
-分支 `cursor/flight-netns-23fa`。每個 worker 綁自己的 veth 位址。
-不把這次延遲寫成分散式 SLO。門檻不改。
+第三輪第 4 項：MySQL 與 PostgreSQL 的加欄、放寬型別、縮窄型別、刪欄。
+分支 `cursor/ddl-mv-23fa`。下游 MV 對加欄與放寬是 propagate，對縮窄與刪欄是 rebuild。
+兩種都不丟列。門檻不改。
 頁面畫出 DAG、每個運算子的列數與延遲、checkpoint epoch。
 暫停時新批次不落地，checkpoint 不前進；恢復後才寫入。
 WASM 用 wasmtime 50.0.1，限制 fuel，拒絕 import。Rust 先編成 wasm32 再進同一個沙盒。
@@ -71,11 +71,10 @@ scale 0.01，22 條都是 incremental。
 
 ## 正在做
 
-三個網路命名空間的 Flight 已量過。`python3 tools/flight_netns_test.py` 印出
-`flight_netns nodes=3 scale_nodes=4 rows=200 sum=600 bytes=9996 ping_ms=0.139 exchange_seconds=0.014985 rtt_seconds=0.001443 failover_seconds=0.119745 scale_seconds=0.181041`。
-既有 `python3 tools/stream_flight_test.py` 仍通過。
-實測程式 SHA：`ebc780671b9a16409c1e5670af4a91a6d77d0906`。
-下一步是開 PR，然後做 MySQL 與 PostgreSQL 的加欄、改型、刪欄，以及下游 MV。
+DDL 已在真實 MySQL 8.0.46 與 PostgreSQL 上跑過。
+`ddl_mv mysql=add,widen,narrow,drop postgres=add,widen,narrow,drop mv_add=propagate mv_widen=propagate mv_narrow=rebuild mv_drop=rebuild retained_rows=1 drop_rows=0`。
+來源表列數維持 1。`stream_connector_test` 與 `pg_ddl_test` 仍通過。
+`python3 tools/privacy_check.py` 為 `PRIVACY PASS files=290 findings=0`。
 
 ## 里程碑 3 程式
 

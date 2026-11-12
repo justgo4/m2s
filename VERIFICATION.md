@@ -23,6 +23,12 @@
 
 目前 `main` 文件提交是 `79279976e0f7ed112c3c0d618079b9b6a5b1bbc1`。
 
+## 後續
+
+上面 1–11 已在第二輪與第三輪做完，數字在 [ROADMAP.md](ROADMAP.md) 與 [RESUME.md](RESUME.md)。
+這份文件不再把它們當成未完成。正式 72 小時認證仍然沒有跑。
+Doris、ClickHouse、Iceberg、Paimon 仍然拒絕，因為這台 VM 沒有那些服務。
+
 ## 第一輪不夠，第二輪必須做完
 
 下面每一項都還沒有達標。不得再用「未納入」把它們劃掉。

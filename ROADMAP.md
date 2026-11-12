@@ -62,12 +62,15 @@ Materialize、Bytewax、Proton、Pathway、Arroyo 對照的通用增量／串流
    paused_rejects=1，checkpoint_epoch=1，max_operator_latency_seconds=0.038459。
    Chrome `--headless=new --dump-dom` 讀到 job、checkpoint_epoch=1、svg 與表格。
    SHA `d42c18dada0aea9cb37736bd45a0efbfe5f89fe0`。
-3. 跨節點：已完成。3 個 network namespace，veth `10.78.0.2–4`，再擴到 4。
+3. 跨節點：已完成。3 個 network namespace，各自的 veth，再擴到 4。
    `python3 tools/flight_netns_test.py`：sum=600，bytes=9996，ping_ms=0.139，
    exchange_seconds=0.014985，rtt_seconds=0.001443，
    failover_seconds=0.119745，scale_seconds=0.181041。
    這不是分散式 SLO。SHA `ebc780671b9a16409c1e5670af4a91a6d77d0906`。
-4. DDL：MySQL 與 PostgreSQL 的加欄、改型、刪欄，以及下游 MV 的處理。
+4. DDL：已完成。MySQL 與 PostgreSQL 都做了加可空欄、int 放寬成 bigint、
+   varchar(32) 縮成 varchar(8)、刪欄。來源列數維持 1。
+   下游 MV：加欄與放寬是 propagate，縮窄與刪欄是 rebuild，drop_rows=0，retained_rows=1。
+   `python3 tools/ddl_mv_test.py`。
 
 ## 實作順序
 
