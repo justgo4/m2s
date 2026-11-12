@@ -4,9 +4,17 @@
 
 ## 當前里程碑
 
-第二輪第 11 項：在離線包合併後的 `main` 重跑 strict-small。
-分支 `cursor/strict-small-rerun-23fa`。門檻不改。不修改 workflow。
-實測程式 SHA `adbbfb8dc317eb46fa149b6e43050701df999c3f`。`gate.json` 的 `ok` 是 true。
+第三輪第 1 項：Python UDAF／UDTF，以及 Rust、WASM 的實際執行。
+分支 `cursor/udf-exec-23fa`，基線 `540ee807a31ffbe06f5c0b9c8a7faaaa13fd275d`。
+WASM 用 wasmtime 50.0.1，限制 fuel，拒絕 import。Rust 先編成 wasm32 再進同一個沙盒。
+不修改 workflow。門檻不改。正式 72h 仍阻塞：沒有隔離主機。
+
+`python3 tools/udf_exec_test.py`：
+`udf_exec python_udaf=2 python_udtf=[3, 4] wasm=5 wasm_fuel=4 rust=42 rust_bytes=361 rust_fuel=4`。
+無限迴圈在 fuel=40 時被沙盒擋下。帶 import 的模組被拒絕。
+非確定聚合被拒絕。`python3 tools/stream_ops_test.py` 為 `stream_ops_test ok`。
+`python3 tools/privacy_check.py` 為 `PRIVACY PASS files=286 findings=0`。
+實測程式 SHA 在提交後補上。
 
 Nexmark 已合併。實測程式 SHA `13f52326b54e06ecd74fba49648d4c0968855ef4`，
 合併提交 `9e8c2fdd20954a1627dec948551589761b0ddc62`，PR #86。
