@@ -222,11 +222,52 @@ def _output_name(item):
         return "count_star()"
     if isinstance(item, exp.Column):
         return item.name
+    named = _duckdb_result_name(target)
+    if named:
+        return named
     try:
         text = item.sql(dialect="duckdb").strip().lower()
     except Exception:
         text = ""
     return text
+
+
+def _duckdb_result_name(expr):
+    """Column name DuckDB would assign to an unnamed select expression."""
+    if any(isinstance(node, (exp.Subquery, exp.Exists, exp.Window)) for node in expr.walk()):
+        return ""
+    try:
+        sql = expr.sql(dialect="duckdb")
+    except Exception:
+        return ""
+    columns = []
+    seen = set()
+    for node in expr.walk():
+        if not isinstance(node, exp.Column):
+            continue
+        key = (str(node.table or ""), node.name)
+        if key not in seen:
+            seen.add(key)
+            columns.append(key)
+    tables = [table for table, _name in columns if table]
+    if len(set(tables)) > 1:
+        return ""
+    import duckdb
+    con = duckdb.connect()
+    try:
+        if not columns:
+            cursor = con.execute("SELECT %s LIMIT 0" % sql)
+        else:
+            pieces = ["NULL AS " + _q(name) for _table, name in columns]
+            source = "(SELECT %s)" % ", ".join(pieces)
+            if tables:
+                source += " AS " + _q(tables[0])
+            cursor = con.execute("SELECT %s FROM %s LIMIT 0" % (sql, source))
+        return cursor.description[0][0]
+    except Exception:
+        return ""
+    finally:
+        con.close()
 
 
 def _output_names(tree):
@@ -2303,10 +2344,16 @@ def _compile_over(scope, tree, frame):
 
     def transform(node):
         if isinstance(node, exp.Column):
-            if not node.table and node.name in aliases:
-                return node
-            return exp.Column(this=exp.to_identifier(
-                _lookup(node, scope), quoted=True))
+            # A select alias that collides with an input column, such as
+            # `s_state AS s_state`, still refers to the input inside GROUP BY
+            # and OVER. Keep the alias only when the name is not an input.
+            try:
+                internal = _lookup(node, scope)
+            except ValueError:
+                if not node.table and node.name in aliases:
+                    return node
+                raise
+            return exp.Column(this=exp.to_identifier(internal, quoted=True))
         return node
 
     cloned = cloned.transform(transform)
