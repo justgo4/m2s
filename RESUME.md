@@ -8,8 +8,10 @@
 TPC-DS 尚未完成。分支 `cursor/tpcds-rest-23fa`。資料庫 `/tmp/tpcds01.duckdb`，scale 0.01，`store_sales=28810`。
 Q72 在 SHA `b9be97ebaa4c2420895ec9f5d0d8b5282ed4a9ba` 重跑通過：
 `TPCDS_DB=/tmp/tpcds01.duckdb python3 tools/tpcds_diff_test.py 72` → `tpcds q72 incremental rows=10`。
-Q2 的 1974 列數值相同，差在最後一欄名稱。未命名表達式改為向 DuckDB 取欄名。
-全 99 條還沒有在同一個 SHA 上通過。PR #93 的 59/99 只是中途結果。正式 72h 仍阻塞：沒有隔離主機。
+欄名、視窗別名與 Top-N 排序修正在 `0a721084da69c4e4df6dff1ade5ca8887d568707`。
+這個 SHA 上已單獨通過的有 Q2、Q9、Q14、Q22、Q41、Q57、Q61、Q67、Q70、Q72、Q79、Q85、Q89。
+全 99 條正在這個 SHA 上重跑，日誌 `/tmp/tpcds-final.log`。還沒全部通過，不要開 PR。
+PR #93 的 59/99 只是中途結果。正式 72h 仍阻塞：沒有隔離主機。
 頁面畫出 DAG、每個運算子的列數與延遲、checkpoint epoch。
 暫停時新批次不落地，checkpoint 不前進；恢復後才寫入。
 WASM 用 wasmtime 50.0.1，限制 fuel，拒絕 import。Rust 先編成 wasm32 再進同一個沙盒。
