@@ -14,7 +14,10 @@ TPC-DS 99/99 已在同一個 SHA 上通過。分支 `cursor/tpcds-rest-23fa`。
 Doris 已在本機測過。官方包 2.1.11，FE heap 512m，BE mem_limit 1 GiB。
 `python3 tools/doris_sink_test.py`：rows=4，deliveries=2，replayed=0，restarted=1，
 version `doris-2.1.11-rc01-97b77e6cda`。4.1.5 要 FoundationDB，沒有拿它當這次的單機 FE+BE。
-下一步是 Iceberg、Paimon，然後 CDC 熱路徑對照。正式 72h 仍阻塞：沒有隔離主機。
+Iceberg 已在本機測過。pyiceberg 0.10.0，SQLite catalog，MinIO 由
+Go 模組 `RELEASE.2025-10-15T17-29-55Z` 編成（官方二進位網址回 410）。
+`python3 tools/iceberg_sink_test.py`：rows=4，deliveries=2，replayed=0，restarted=1，snapshots=2。
+下一步是 Paimon，然後 CDC 熱路徑對照。正式 72h 仍阻塞：沒有隔離主機。
 頁面畫出 DAG、每個運算子的列數與延遲、checkpoint epoch。
 暫停時新批次不落地，checkpoint 不前進；恢復後才寫入。
 WASM 用 wasmtime 50.0.1，限制 fuel，拒絕 import。Rust 先編成 wasm32 再進同一個沙盒。

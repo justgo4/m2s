@@ -62,7 +62,11 @@ Materialize、Bytewax、Proton、Pathway、Arroyo 對照的通用增量／串流
    FE heap 512m，BE `mem_limit` 1 GiB。`python3 tools/doris_sink_test.py`：
    rows=4，deliveries=2，重送 d1 沒有再寫，FE 與 BE 重啟後仍是 4 列。
    version `doris-2.1.11-rc01-97b77e6cda`。
-   Iceberg、Paimon 還沒做。
+   Iceberg：pyiceberg 0.10.0、SQLite SQL catalog、本機 MinIO。
+   官方二進位網址回 410，所以用 Go 模組 `RELEASE.2025-10-15T17-29-55Z` 編成伺服器。
+   `python3 tools/iceberg_sink_test.py`：rows=4，deliveries=2，重送沒有再寫，
+   MinIO 重啟後仍是 4 列、snapshots=2。
+   Paimon 還沒做。
 3. CDC 熱路徑對照。新的沒有比較快就不切換。
 
 ## 第三輪
