@@ -58,7 +58,11 @@ Materialize、Bytewax、Proton、Pathway、Arroyo 對照的通用增量／串流
 2. ClickHouse：官方靜態包 v26.10.2.103。1 GiB 上限在啟動後 RSS 已超過上限，查詢被拒，所以伺服器上限設成 4 GiB。
    `python3 tools/clickhouse_sink_test.py`：rows=4，deliveries=2，重送 d1 沒有再寫，重啟後仍是 4 列。
    SHA `03ed3ed000fb8f6163ebf87c586ee132dc75dc59`。
-   Doris、Iceberg、Paimon 還沒做。
+   Doris：官方包 2.1.11（4.1.5 要另外的 FoundationDB，不是 StarRocks 那種 FE+BE）。
+   FE heap 512m，BE `mem_limit` 1 GiB。`python3 tools/doris_sink_test.py`：
+   rows=4，deliveries=2，重送 d1 沒有再寫，FE 與 BE 重啟後仍是 4 列。
+   version `doris-2.1.11-rc01-97b77e6cda`。
+   Iceberg、Paimon 還沒做。
 3. CDC 熱路徑對照。新的沒有比較快就不切換。
 
 ## 第三輪
