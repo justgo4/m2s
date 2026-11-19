@@ -19,7 +19,13 @@ Go 模組 `RELEASE.2025-10-15T17-29-55Z` 編成（官方二進位網址回 410�
 `python3 tools/iceberg_sink_test.py`：rows=4，deliveries=2，replayed=0，restarted=1，snapshots=2。
 Paimon 已在本機測過。pypaimon 2.1.0，filesystem catalog。
 `python3 tools/paimon_sink_test.py`：rows=4，deliveries=2，replayed=0，restarted=1，snapshots=2。
-PyArrow 仍是 25.0.1。下一步是 CDC 熱路徑對照。正式 72h 仍阻塞：沒有隔離主機。
+PyArrow 仍是 25.0.1。
+CDC 熱路徑沒有切換。`python3 tools/hot_path_bench.py`：
+50000 列、5000 鍵。DuckDB SQL 0.019081 秒，SQLite SQL 0.035355 秒，
+SQLite 增量聚合 0.598323 秒，RocksDB 逐鍵寫入 0.123764 秒，
+Python consolidate 0.006479 秒，Rust consolidate 0.008415 秒。
+DuckDB SQL 最快。RocksDB 的裸 put 沒有聚合契約。Rust 沒有比 Python 快。
+`cdc_hot_path_unchanged()` 仍是 true。正式 72h 仍阻塞：沒有隔離主機。
 頁面畫出 DAG、每個運算子的列數與延遲、checkpoint epoch。
 暫停時新批次不落地，checkpoint 不前進；恢復後才寫入。
 WASM 用 wasmtime 50.0.1，限制 fuel，拒絕 import。Rust 先編成 wasm32 再進同一個沙盒。

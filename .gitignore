@@ -28,3 +28,4 @@ mysql_arrow_reader-linux-x86_64
 native/mysql_arrow_reader
 native/CMakeFiles/
 native/CMakeCache.txt
+native/stream_hot/target/

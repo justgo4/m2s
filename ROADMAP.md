@@ -69,7 +69,12 @@ Materialize、Bytewax、Proton、Pathway、Arroyo 對照的通用增量／串流
    Paimon：pypaimon 2.1.0，本機 filesystem catalog，主鍵 id。沒有獨立伺服器，
    倉庫目錄就是持久狀態。`python3 tools/paimon_sink_test.py`：rows=4，deliveries=2，
    新行程重開倉庫後仍是 4 列、snapshots=2，重送沒有再寫。
-3. CDC 熱路徑對照。新的沒有比較快就不切換。
+3. CDC 熱路徑對照：沒有切換。`python3 tools/hot_path_bench.py`，50000 列、5000 個鍵。
+   DuckDB SQL 0.019081 秒，SQLite SQL 0.035355 秒，SQLite 增量聚合 0.598323 秒，
+   RocksDB 逐鍵寫入 0.123764 秒，Python consolidate 0.006479 秒，
+   Rust consolidate 0.008415 秒。分組和與 consolidate 結果一致。
+   DuckDB SQL 仍是這次聚合裡最快的。RocksDB 比較快的是裸 put，沒有水位、摘要與撤回契約，
+   不能換上 CDC。Rust consolidate 沒有比 Python 快。`cdc_hot_path_unchanged()` 仍是 true。
 
 ## 第三輪
 
