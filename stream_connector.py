@@ -2,8 +2,8 @@
 """Connector SDK. Only connectors with a real incremental path are openable.
 
 MySQL changelog events and a StarRocks primary-key apply are implemented.
-The live StarRocks HTTP writer remains in j4. ClickHouse, Doris and Iceberg
-have local sinks. PostgreSQL, Kafka and Paimon are refused instead of being
+The live StarRocks HTTP writer remains in j4. ClickHouse, Doris, Iceberg and
+Paimon have local sinks. PostgreSQL and Kafka are refused instead of being
 stubbed.
 """
 
@@ -15,6 +15,7 @@ _IMPLEMENTED = {
     "clickhouse": "sink",
     "doris": "sink",
     "iceberg": "sink",
+    "paimon": "sink",
 }
 
 
@@ -39,6 +40,9 @@ def open_connector(name, direction):
     if key == "iceberg":
         from iceberg_sink import IcebergSink
         return IcebergSink()
+    if key == "paimon":
+        from paimon_sink import PaimonSink
+        return PaimonSink()
     return StarrocksSink()
 
 

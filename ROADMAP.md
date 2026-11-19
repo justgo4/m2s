@@ -66,7 +66,9 @@ Materialize、Bytewax、Proton、Pathway、Arroyo 對照的通用增量／串流
    官方二進位網址回 410，所以用 Go 模組 `RELEASE.2025-10-15T17-29-55Z` 編成伺服器。
    `python3 tools/iceberg_sink_test.py`：rows=4，deliveries=2，重送沒有再寫，
    MinIO 重啟後仍是 4 列、snapshots=2。
-   Paimon 還沒做。
+   Paimon：pypaimon 2.1.0，本機 filesystem catalog，主鍵 id。沒有獨立伺服器，
+   倉庫目錄就是持久狀態。`python3 tools/paimon_sink_test.py`：rows=4，deliveries=2，
+   新行程重開倉庫後仍是 4 列、snapshots=2，重送沒有再寫。
 3. CDC 熱路徑對照。新的沒有比較快就不切換。
 
 ## 第三輪

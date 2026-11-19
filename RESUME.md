@@ -17,7 +17,9 @@ version `doris-2.1.11-rc01-97b77e6cda`。4.1.5 要 FoundationDB，沒有拿它�
 Iceberg 已在本機測過。pyiceberg 0.10.0，SQLite catalog，MinIO 由
 Go 模組 `RELEASE.2025-10-15T17-29-55Z` 編成（官方二進位網址回 410）。
 `python3 tools/iceberg_sink_test.py`：rows=4，deliveries=2，replayed=0，restarted=1，snapshots=2。
-下一步是 Paimon，然後 CDC 熱路徑對照。正式 72h 仍阻塞：沒有隔離主機。
+Paimon 已在本機測過。pypaimon 2.1.0，filesystem catalog。
+`python3 tools/paimon_sink_test.py`：rows=4，deliveries=2，replayed=0，restarted=1，snapshots=2。
+PyArrow 仍是 25.0.1。下一步是 CDC 熱路徑對照。正式 72h 仍阻塞：沒有隔離主機。
 頁面畫出 DAG、每個運算子的列數與延遲、checkpoint epoch。
 暫停時新批次不落地，checkpoint 不前進；恢復後才寫入。
 WASM 用 wasmtime 50.0.1，限制 fuel，拒絕 import。Rust 先編成 wasm32 再進同一個沙盒。
