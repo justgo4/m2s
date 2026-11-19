@@ -447,7 +447,12 @@ def _compile_from(tree, sources, frame, read):
         scope = _push_single_filters(scope, terms, used, frame)
     for join in outer:
         right = _compile_from_item(join.this, sources, frame, read)
-        right = _push_single_filters(right, terms, used, frame)
+        # A WHERE predicate on the null-producing side has to stay until
+        # after the outer join. `wr_order_number IS NULL` is true only for
+        # the non-matching row; pushing it into web_returns drops the matches.
+        side = str(join.args.get("side") or "").upper()
+        if side not in {"LEFT", "FULL"}:
+            right = _push_single_filters(right, terms, used, frame)
         scope = _compile_join(scope, right, join, frame)
         scope = _push_single_filters(scope, terms, used, frame)
     return scope

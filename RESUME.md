@@ -8,9 +8,10 @@
 TPC-DS 尚未完成。分支 `cursor/tpcds-rest-23fa`。資料庫 `/tmp/tpcds01.duckdb`，scale 0.01，`store_sales=28810`。
 Q72 在 SHA `b9be97ebaa4c2420895ec9f5d0d8b5282ed4a9ba` 重跑通過：
 `TPCDS_DB=/tmp/tpcds01.duckdb python3 tools/tpcds_diff_test.py 72` → `tpcds q72 incremental rows=10`。
-欄名、視窗別名與 Top-N 排序修正在 `0a721084da69c4e4df6dff1ade5ca8887d568707`。
-這個 SHA 上已單獨通過的有 Q2、Q9、Q14、Q22、Q41、Q57、Q61、Q67、Q70、Q72、Q79、Q85、Q89。
-全 99 條正在這個 SHA 上重跑，日誌 `/tmp/tpcds-final.log`。還沒全部通過，不要開 PR。
+欄名、視窗別名與 Top-N 排序在 `0a721084da69c4e4df6dff1ade5ca8887d568707`。
+該程式的全 99 條跑完：只有 Q78 不一致（100 列對 100 列）。日誌 `/tmp/tpcds-final.log`，SHA 行是文件提交 `7ca817d`，程式與 `0a72108` 相同。
+Q78 的原因是把 `wr_order_number IS NULL` 推進 LEFT JOIN 的右側。修正後 Q49、Q75、Q77、Q78 已重跑通過。
+計畫位元組只有 Q49 與 Q78 和 `0a72108` 不同。全 99 條會在修正提交上再跑一次。
 PR #93 的 59/99 只是中途結果。正式 72h 仍阻塞：沒有隔離主機。
 頁面畫出 DAG、每個運算子的列數與延遲、checkpoint epoch。
 暫停時新批次不落地，checkpoint 不前進；恢復後才寫入。
