@@ -4,11 +4,14 @@
 
 ## 當前里程碑
 
-第四輪：ClickHouse 寫入程式 SHA `03ed3ed000fb8f6163ebf87c586ee132dc75dc59`。
-`clickhouse_sink rows=4 deliveries=2 replayed=0 restarted=1`。
-接著必須把 TPC-DS 剩下的約 40 條修到全部增量且與 DuckDB 一致。
-Q89 的 `ORDER BY is not a select output` 是這次引入的回歸，要修。
-Q72 不能跳過，要修到不再 OOM。正式 72h 仍阻塞：沒有隔離主機。
+第四輪：ClickHouse 已合併，PR #94，程式 SHA `03ed3ed000fb8f6163ebf87c586ee132dc75dc59`。
+TPC-DS 99/99 已在同一個 SHA 上通過。分支 `cursor/tpcds-rest-23fa`。
+資料庫 `/tmp/tpcds01.duckdb`，scale 0.01，`store_sales=28810`。
+程式 SHA `dd55f9b326ed50a3f8a889aefb81771a17b94eb5`。
+命令：`TPCDS_DB=/tmp/tpcds01.duckdb python3 tools/tpcds_diff_test.py NN`，NN 從 01 到 99。
+99 條都印 incremental，沒有 FAIL。Q72 是 10 列。Q78 是 100 列。Q89 是 21 列。
+列數見 ROADMAP 第四輪。PR #93 的 59/99 只是中途結果。
+下一步是 Doris、Iceberg、Paimon，然後 CDC 熱路徑對照。正式 72h 仍阻塞：沒有隔離主機。
 頁面畫出 DAG、每個運算子的列數與延遲、checkpoint epoch。
 暫停時新批次不落地，checkpoint 不前進；恢復後才寫入。
 WASM 用 wasmtime 50.0.1，限制 fuel，拒絕 import。Rust 先編成 wasm32 再進同一個沙盒。

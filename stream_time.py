@@ -457,16 +457,29 @@ def eval_topn(state, delta, node):
     return stream_zset.consolidate(emitted)
 
 
+def _order_identity(value):
+    identity = stream_zset.tag(value)
+    # Float tags store a hex string so equal values stay identical. Ordering
+    # needs the numeric value; hex text is not numeric order.
+    if identity[0] == "float":
+        return ("float", float(value))
+    return identity
+
+
 def _topn_key(row, specs):
     keys = []
     for spec in specs:
         value = row.get(spec["column"])
-        identity = stream_zset.tag(value)
+        if value is None:
+            # NULLS FIRST/LAST is independent of ASC/DESC. The pair stays a
+            # tuple so it can be ordered beside a non-null key.
+            keys.append((0 if spec["nulls_first"] else 1,))
+            continue
+        identity = _order_identity(value)
         if spec["desc"]:
-            keys.append((0, _invert_tag(identity)))
-        else:
-            keys.append((0, identity))
-    keys.append((1, stream_zset.row_key(row)))
+            identity = _invert_tag(identity)
+        keys.append((1 if spec["nulls_first"] else 0, identity))
+    keys.append(stream_zset.row_key(row))
     return tuple(keys)
 
 
@@ -477,7 +490,10 @@ def _invert_tag(identity):
     if kind in {"int", "decimal"}:
         return (kind, -identity[1])
     if kind == "float":
-        return (kind, tuple(-item for item in identity[1:]))
+        payload = identity[1]
+        if isinstance(payload, tuple):
+            return (kind, tuple(-item for item in payload))
+        return (kind, -float(payload))
     if kind == "str":
         return (kind, tuple(-ord(char) for char in identity[1]))
     return ("inv", identity)

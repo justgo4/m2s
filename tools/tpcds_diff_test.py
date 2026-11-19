@@ -6,6 +6,7 @@ The official text is not copied into this repository. A query that falls
 back to a full recompute is a failure.
 """
 from pathlib import Path
+import os
 import sys
 
 import duckdb
@@ -72,10 +73,15 @@ def _mode(plan):
 
 
 def main():
-    con = duckdb.connect()
-    con.execute("INSTALL tpcds")
-    con.execute("LOAD tpcds")
-    con.execute("CALL dsdgen(sf=0.01)")
+    database = os.environ.get("TPCDS_DB", "")
+    if database:
+        con = duckdb.connect(database, read_only=True)
+        con.execute("LOAD tpcds")
+    else:
+        con = duckdb.connect()
+        con.execute("INSTALL tpcds")
+        con.execute("LOAD tpcds")
+        con.execute("CALL dsdgen(sf=0.01)")
     columns = _columns(con)
     tables = {name: _rows(con, name, cols) for name, cols in columns.items()}
     queries = con.execute(
