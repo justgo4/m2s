@@ -5,14 +5,13 @@
 ## 當前里程碑
 
 第四輪：ClickHouse 已合併，PR #94，程式 SHA `03ed3ed000fb8f6163ebf87c586ee132dc75dc59`。
-TPC-DS 尚未完成。分支 `cursor/tpcds-rest-23fa`。資料庫 `/tmp/tpcds01.duckdb`，scale 0.01，`store_sales=28810`。
-Q72 在 SHA `b9be97ebaa4c2420895ec9f5d0d8b5282ed4a9ba` 重跑通過：
-`TPCDS_DB=/tmp/tpcds01.duckdb python3 tools/tpcds_diff_test.py 72` → `tpcds q72 incremental rows=10`。
-欄名、視窗別名與 Top-N 排序在 `0a721084da69c4e4df6dff1ade5ca8887d568707`。
-該程式的全 99 條跑完：只有 Q78 不一致（100 列對 100 列）。日誌 `/tmp/tpcds-final.log`，SHA 行是文件提交 `7ca817d`，程式與 `0a72108` 相同。
-Q78 的原因是把 `wr_order_number IS NULL` 推進 LEFT JOIN 的右側。修正後 Q49、Q75、Q77、Q78 已重跑通過。
-計畫位元組只有 Q49 與 Q78 和 `0a72108` 不同。全 99 條會在修正提交上再跑一次。
-PR #93 的 59/99 只是中途結果。正式 72h 仍阻塞：沒有隔離主機。
+TPC-DS 99/99 已在同一個 SHA 上通過。分支 `cursor/tpcds-rest-23fa`。
+資料庫 `/tmp/tpcds01.duckdb`，scale 0.01，`store_sales=28810`。
+程式 SHA `dd55f9b326ed50a3f8a889aefb81771a17b94eb5`。
+命令：`TPCDS_DB=/tmp/tpcds01.duckdb python3 tools/tpcds_diff_test.py NN`，NN 從 01 到 99。
+99 條都印 incremental，沒有 FAIL。Q72 是 10 列。Q78 是 100 列。Q89 是 21 列。
+列數見 ROADMAP 第四輪。PR #93 的 59/99 只是中途結果。
+下一步是 Doris、Iceberg、Paimon，然後 CDC 熱路徑對照。正式 72h 仍阻塞：沒有隔離主機。
 頁面畫出 DAG、每個運算子的列數與延遲、checkpoint epoch。
 暫停時新批次不落地，checkpoint 不前進；恢復後才寫入。
 WASM 用 wasmtime 50.0.1，限制 fuel，拒絕 import。Rust 先編成 wasm32 再進同一個沙盒。
