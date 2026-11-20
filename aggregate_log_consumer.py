@@ -13,6 +13,7 @@ import duckdb
 import aggregate_ir
 import aggregate_outbox
 import aggregate_physical_state
+import aggregate_shadow
 import aggregate_state
 import source_state
 
@@ -151,7 +152,8 @@ def transform_commit(commit,source_relation,ir,engine=None):
 
 
 def process_next(
-        con,consumer_id,ir,engine=None,fault_after_state=None
+        con,consumer_id,ir,engine=None,fault_after_state=None,
+        shadow=None
 ):
     consumer_id=_text(consumer_id,"consumer_id")
     current=source_state.consumer_info(con,consumer_id)
@@ -201,6 +203,16 @@ def process_next(
                 "aggregate state unexpectedly treated next source seq as retry")
         if fault_after_state is not None:
             fault_after_state(seq)
+        # shadow runs before enqueue and before COMMIT. apply_transaction
+        # does not commit while this BEGIN is open, so a mismatch rolls
+        # the state write back with the outbox and the watermark.
+        if aggregate_shadow.enabled(shadow):
+            if callable(shadow):
+                shadow(con, consumer_id, ir, seq)
+            else:
+                aggregate_shadow.verify(
+                    con, ir, state_id, seq,
+                    metadata["source_relation"], transform_commit)
         aggregate_physical_state.sync_instance(
             con,state_id,ir,generation=1)
         aggregate_outbox.enqueue_incremental(

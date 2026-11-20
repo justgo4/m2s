@@ -19,6 +19,13 @@
 shadow 沒有自己的 checkpoint。來源 log 被裁掉就 fail-closed，不冒充持久通用算子。
 本輪不做 JOIN、視窗、新 Sink、分布式、RocksDB 切換，也不做 50M/72h。
 
+2026-11-20 程式切片：`python3 tools/aggregate_shadow_test.py` 為
+`aggregate_shadow rows=7 batches=7 mismatch_rolled_back=1 restart_verified=1 starrocks=not_run`，
+接著 `python3 tools/aggregate_log_consumer_test.py` 為
+`aggregate_log_consumer_test ok atomic_state_watermark filter retract zero_output restart`。
+這是合成 source log，不是 MySQL binlog，也不是 StarRocks VISIBLE。
+這台開機沒有 `mysqld`。正式 72h 沒有啟動。
+
 第四輪：ClickHouse 已合併，PR #94，程式 SHA `03ed3ed000fb8f6163ebf87c586ee132dc75dc59`。
 TPC-DS 99/99 已在同一個 SHA 上通過。分支 `cursor/tpcds-rest-23fa`。
 資料庫 `/tmp/tpcds01.duckdb`，scale 0.01，`store_sales=28810`。
