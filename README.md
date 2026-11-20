@@ -2,7 +2,7 @@
 
 MySQL → StarRocks 实时同步与受限增量计算项目。  
 **当前状态：受限 v1 的核心功能已形成；PR #58 已合并到 `main`，strict-small 已通过，但正式规模与生产认证尚未完成。**  
-更新：2026-10-04。
+更新：2026-10-04。2026-11-20 更正：后来合并的通用 SQL、TPC-DS 99/99 与下游 Sink 是参考引擎或各自的测量，不是 Binlog 到 StarRocks 的通用执行器。持久 CDC 仍是 `j4.py` 的映射与 `aggregate_state`/`join_state` outbox。正式 72h 仍未跑，而且也不是唯一未完成项。
 
 运行与恢复说明见 [OPERATIONS.md](OPERATIONS.md)；详细实验、提交 SHA、失败证据和历史过程见 [PROGRESS.md](PROGRESS.md)。  
 通用 SQL 增量／串流計算的順序方案見 [ROADMAP.md](ROADMAP.md)；中斷後從 [RESUME.md](RESUME.md) 的下一步繼續。  

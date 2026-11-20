@@ -4,6 +4,21 @@
 
 ## 當前里程碑
 
+2026-11-20 更正：已合併的里程碑不是「只差正式 72h」。
+`stream_sql` / `stream_eval` / `stream_zset` 是記憶體參考引擎。TPC-DS sf=0.01 的 99/99
+是一次 `+1` 插入對 DuckDB，不是 Binlog、重啟或 StarRocks VISIBLE。
+持久 CDC 仍是 `j4.py` 的 DuckDB 映射，以及 `aggregate_state` / `join_state` → outbox → StarRocks。
+`stream_ir` 在熱路徑上只產生計畫身份，不執行 DAG。
+正式 `p11-50m-50rps-72h-v4` 另外仍無數據，不要在這台 VM 啟動。
+
+下一步只做一條 COUNT/SUM GROUP BY 的 shadow。發布路徑不變。
+`process_next` 預設不對照。顯式開啟時，在同一筆尚未提交的交易裡、outbox 寫入之前，
+用來源 log 重算 `stream_eval` 聚合。不一致就回滾，不發布。
+`fault_after_state` 在 `BEGIN` 之內、`COMMIT` 之前。它失敗時狀態、outbox 與水位一起回滾，
+不是「狀態已提交、outbox 未寫」。
+shadow 沒有自己的 checkpoint。來源 log 被裁掉就 fail-closed，不冒充持久通用算子。
+本輪不做 JOIN、視窗、新 Sink、分布式、RocksDB 切換，也不做 50M/72h。
+
 第四輪：ClickHouse 已合併，PR #94，程式 SHA `03ed3ed000fb8f6163ebf87c586ee132dc75dc59`。
 TPC-DS 99/99 已在同一個 SHA 上通過。分支 `cursor/tpcds-rest-23fa`。
 資料庫 `/tmp/tpcds01.duckdb`，scale 0.01，`store_sales=28810`。
@@ -208,10 +223,10 @@ MySQL 8.0.46，GTID ON。StarRocks `4.1.1-14b7e3f`，`default_replication_num=1`
 
 ## 下一步
 
-第三輪要求的 UDF、作業頁、三節點 Flight、DDL 都有本機實測。
+通用引擎尚未接到持久 CDC。下一個程式切片是 COUNT/SUM GROUP BY shadow，見本檔開頭。
 正式 `p11-50m-50rps-72h-v4` 仍無數據。
 阻塞原因是沒有可連續 72 小時的隔離主機。不要在這台 VM 上啟動它。
-Doris、ClickHouse、Iceberg、Paimon 這台 VM 沒有服務，連接器維持拒絕。
+第三輪的 UDF、作業頁、三節點 Flight、DDL 是已測量的參考或單機能力，不是這條熱路徑。
 
 ## 未解決
 
