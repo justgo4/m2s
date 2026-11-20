@@ -1296,5 +1296,7 @@ Distributed scale and failover in `stream_cluster_test.py` are single-machine pr
 
 ## 2026-11-20 aggregate shadow plan
 
-Base `d0a3f51056acc14343008b27af39479ad1be714b`. Completed milestones are not a production general engine. Next code is one COUNT/SUM GROUP BY shadow on `aggregate_log_consumer.process_next`, default off. Publish path stays `aggregate_state` and `aggregate_outbox` in one transaction. `fault_after_state` rolls both back. Shadow replays the durable source log through `stream_eval` and does not store its own frontier. No 72h run. MySQL binlog to StarRocks VISIBLE for this slice is not claimed.
+Base `d0a3f51056acc14343008b27af39479ad1be714b`. Completed milestones are not a production general engine. The COUNT/SUM shadow landed in PR #101 at `5a4265938bec55c4a5de331774f2630adaceb016`. Publish path stays `aggregate_state` and `aggregate_outbox` in one transaction. `fault_after_state` is before COMMIT, so a SIGKILL there rolls the state write and the outbox write back together. Shadow replays the durable source log and does not store its own frontier.
+
+`python3 tools/aggregate_shadow_kill_test.py` on the kill-test tree printed `aggregate_shadow_kill exit=-9 cut_seq=1 rolled_back_watermark=0 outbox_seq1=absent replay_seq=1 replay_rows=1 second_consume=none shadow_ok=1 starrocks=not_run daemon=not_run`. The parent confirmed the child reached the hook and that the exit status was SIGKILL. Reopen of the same SQLite file is not a daemon restart and not MySQL or StarRocks. No 72h run. Next work is not started.
 

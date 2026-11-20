@@ -62,10 +62,12 @@ Materialize、Bytewax、Proton、Pathway、Arroyo 對照的通用增量／串流
 參考路徑：`stream_sql` / `stream_eval` 在記憶體裡對 DuckDB。TPC-DS、TPC-H、Nexmark
 與作業頁使用它。`stream_checkpoint` 與 `stream_durable` 沒有被 `j4.py` 呼叫。
 
-下一個程式切片只做 COUNT/SUM、單一 GROUP BY：
-發布仍走現有 aggregate outbox。shadow 預設關閉。開啟時用已持久的來源 log
-重算 DAG，在 outbox 寫入前比對；不一致則整筆回滾。
-shadow 自己沒有 durable frontier。本切片不做 JOIN、視窗、新後端與 50M/72h。
+COUNT/SUM shadow 已接到 `process_next`，預設關閉。程式 SHA
+`5a4265938bec55c4a5de331774f2630adaceb016`。
+同一 SQLite 檔的子程序在 `fault_after_state` 被 `SIGKILL`（exit=-9）後，
+水位與 outbox 回到上一筆；隨後的子程序只發布一次。命令
+`python3 tools/aggregate_shadow_kill_test.py`。
+這不是 daemon 完整恢復，也不是 Binlog 或 StarRocks。不擴 JOIN、視窗、後端或 50M/72h。
 
 ## 第四輪
 

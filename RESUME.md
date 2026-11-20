@@ -11,20 +11,16 @@
 `stream_ir` 在熱路徑上只產生計畫身份，不執行 DAG。
 正式 `p11-50m-50rps-72h-v4` 另外仍無數據，不要在這台 VM 啟動。
 
-下一步只做一條 COUNT/SUM GROUP BY 的 shadow。發布路徑不變。
-`process_next` 預設不對照。顯式開啟時，在同一筆尚未提交的交易裡、outbox 寫入之前，
-用來源 log 重算 `stream_eval` 聚合。不一致就回滾，不發布。
-`fault_after_state` 在 `BEGIN` 之內、`COMMIT` 之前。它失敗時狀態、outbox 與水位一起回滾，
-不是「狀態已提交、outbox 未寫」。
-shadow 沒有自己的 checkpoint。來源 log 被裁掉就 fail-closed，不冒充持久通用算子。
-本輪不做 JOIN、視窗、新 Sink、分布式、RocksDB 切換，也不做 50M/72h。
-
-2026-11-20 程式切片：`python3 tools/aggregate_shadow_test.py` 為
-`aggregate_shadow rows=7 batches=7 mismatch_rolled_back=1 restart_verified=1 starrocks=not_run`，
-接著 `python3 tools/aggregate_log_consumer_test.py` 為
-`aggregate_log_consumer_test ok atomic_state_watermark filter retract zero_output restart`。
-這是合成 source log，不是 MySQL binlog，也不是 StarRocks VISIBLE。
-這台開機沒有 `mysqld`。正式 72h 沒有啟動。
+COUNT/SUM shadow 已在 PR #101，程式 SHA `5a4265938bec55c4a5de331774f2630adaceb016`。
+發布路徑仍是 `aggregate_state` 與 outbox。對照預設關閉。
+`fault_after_state` 在 `BEGIN` 之內、outbox 與 `COMMIT` 之前。
+子程序在這個 hook 停住後被父程序 `SIGKILL`，exit=-9。
+重開同一 SQLite 檔時水位仍是 0，seq 1 的 outbox 不存在。
+下一個子程序用 shadow 發布 seq 1 一次；再一個子程序印 `none`，沒有第二筆 outbox。
+命令：`python3 tools/aggregate_shadow_kill_test.py`。
+輸出：`aggregate_shadow_kill exit=-9 cut_seq=1 rolled_back_watermark=0 outbox_seq1=absent replay_seq=1 replay_rows=1 second_consume=none shadow_ok=1 starrocks=not_run daemon=not_run`。
+這不是 daemon 恢復，不是 MySQL binlog，也不是 StarRocks VISIBLE。
+正式 72h 沒有啟動。下一步先停，不開始新功能。
 
 第四輪：ClickHouse 已合併，PR #94，程式 SHA `03ed3ed000fb8f6163ebf87c586ee132dc75dc59`。
 TPC-DS 99/99 已在同一個 SHA 上通過。分支 `cursor/tpcds-rest-23fa`。
