@@ -1294,3 +1294,7 @@ Gaps, kept on purpose:
 
 Distributed scale and failover in `stream_cluster_test.py` are single-machine process tests, not a distributed SLO. PR [#75](https://github.com/justgo4/m2s/pull/75) merged at `fbf951272a4170514edef84feb22d2d4472f42e8`. The workflow file was not changed.
 
+## 2026-11-20 aggregate shadow plan
+
+Base `d0a3f51056acc14343008b27af39479ad1be714b`. Completed milestones are not a production general engine. Next code is one COUNT/SUM GROUP BY shadow on `aggregate_log_consumer.process_next`, default off. Publish path stays `aggregate_state` and `aggregate_outbox` in one transaction. `fault_after_state` rolls both back. Shadow replays the durable source log through `stream_eval` and does not store its own frontier. No 72h run. MySQL binlog to StarRocks VISIBLE for this slice is not claimed.
+

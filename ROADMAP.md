@@ -48,6 +48,25 @@ Materialize、Bytewax、Proton、Pathway、Arroyo 對照的通用增量／串流
     max=2.031456826998692 秒。兩次 fault。全列摘要一致。pending=0。
     elapsed 304.28334542000084 秒。門檻仍是 5 秒／10 秒。
 
+## 通用引擎接入（2026-11-20）
+
+已合併的參考引擎、Sink 與 TPC-DS 差分，不等於通用 SQL 已在生產 CDC 上完成。
+正式 72h 仍是另一項未做的認證，不是唯一缺口。
+
+持久路徑：無狀態映射用 `j4.transform_engine` 的 DuckDB；有狀態 v1 用
+`aggregate_log_consumer.process_next` 把 `aggregate_state.apply_transaction`
+和 `aggregate_outbox.enqueue_incremental` 放在同一筆 `BEGIN IMMEDIATE` 裡，
+成功才 `COMMIT`。JOIN 走對稱的 `join_log_consumer`。未知 Merge Commit 留在
+`merge_uncertain`，未證明的刪除不重送。這不是全局 barrier，也不是絕對 exactly-once。
+
+參考路徑：`stream_sql` / `stream_eval` 在記憶體裡對 DuckDB。TPC-DS、TPC-H、Nexmark
+與作業頁使用它。`stream_checkpoint` 與 `stream_durable` 沒有被 `j4.py` 呼叫。
+
+下一個程式切片只做 COUNT/SUM、單一 GROUP BY：
+發布仍走現有 aggregate outbox。shadow 預設關閉。開啟時用已持久的來源 log
+重算 DAG，在 outbox 寫入前比對；不一致則整筆回滾。
+shadow 自己沒有 durable frontier。本切片不做 JOIN、視窗、新後端與 50M/72h。
+
 ## 第四輪
 
 1. TPC-DS：99/99 完成。sf=0.01，查詢文字不進 Git。資料庫 `/tmp/tpcds01.duckdb`，`store_sales=28810`。
