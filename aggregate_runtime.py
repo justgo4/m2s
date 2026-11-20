@@ -17,7 +17,7 @@ import task_generation
 
 def step(
         con,sink_key,plan_version,consumer_id,ir,state_id,
-        mapping,cfg,bootstrap_limit=1000
+        mapping,cfg,bootstrap_limit=1000,shadow=None
 ):
     current=aggregate_generation.begin(
         con,sink_key,plan_version,ir,state_id)
@@ -43,7 +43,7 @@ def step(
             con,consumer_id)
         if int(consumer["watermark"])<source_state.base_applied_seq(con):
             aggregate_log_consumer.process_next(
-                con,consumer_id,ir)
+                con,consumer_id,ir,shadow=shadow)
             consumer=source_state.consumer_info(
                 con,consumer_id)
 
